@@ -1,3 +1,5 @@
+pub mod server;
+
 mod model;
 
 use crate::model::{ClusterState, NodeState, ScuttleButtMessage};
@@ -11,12 +13,11 @@ pub struct ScuttleButt {
 }
 
 impl ScuttleButt {
-
     pub fn with_node_id(self_node_id: String) -> Self {
         ScuttleButt {
             max_transmitted_key_values: 10,
             self_node_id,
-            cluster_state_map: ClusterState::default()
+            cluster_state_map: ClusterState::default(),
         }
     }
 
@@ -24,7 +25,7 @@ impl ScuttleButt {
         self.max_transmitted_key_values = max_transmitted_key_values;
     }
 
-    pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
+    pub fn create_syn_message(&self) -> ScuttleButtMessage {
         let digest = self.cluster_state_map.compute_digest();
         ScuttleButtMessage::Syn { digest }
     }
@@ -32,13 +33,17 @@ impl ScuttleButt {
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
-                let delta = self.cluster_state_map.compute_delta(&digest, self.max_transmitted_key_values);
+                let delta = self
+                    .cluster_state_map
+                    .compute_delta(&digest, self.max_transmitted_key_values);
                 let digest = self.cluster_state_map.compute_digest();
                 Some(ScuttleButtMessage::SynAck { delta, digest })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
                 self.cluster_state_map.apply_delta(delta);
-                let delta = self.cluster_state_map.compute_delta(&digest, self.max_transmitted_key_values);
+                let delta = self
+                    .cluster_state_map
+                    .compute_delta(&digest, self.max_transmitted_key_values);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {

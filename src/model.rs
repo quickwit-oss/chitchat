@@ -54,7 +54,7 @@ impl Delta {
 ///
 /// It is equivalent to a map
 /// peer -> max version.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Digest {
     pub(crate) node_max_version: HashMap<String, Version>,
 }
@@ -72,7 +72,7 @@ impl Digest {
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ScuttleButtMessage {
     /// Node A initiates handshakes.
     Syn { digest: Digest },
@@ -126,7 +126,7 @@ impl NodeState {
         assert!(version > self.max_version);
         self.max_version = version;
         self.key_values
-            .insert(key.to_string(), VersionedValue { version, value });
+            .insert(key, VersionedValue { version, value });
     }
 }
 
