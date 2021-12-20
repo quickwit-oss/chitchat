@@ -145,6 +145,10 @@ impl ClusterState {
         self.node_states.get(node_id)
     }
 
+    pub fn nodes(&self) -> Vec<String> {
+        self.node_states.keys().cloned().collect()
+    }
+
     pub fn apply_delta(&mut self, delta: Delta) {
         for (node_id, node_delta) in delta.node_deltas {
             let mut node_state_map = self
