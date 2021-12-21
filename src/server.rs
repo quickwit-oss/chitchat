@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use rand::prelude::*;
 use tokio::net::UdpSocket;
@@ -15,6 +15,12 @@ use crate::ScuttleButt;
 /// This value is set to avoid UDP fragmentation.
 /// https://jvns.ca/blog/2017/02/07/mtu/
 const BUF_SIZE: usize = 1_472;
+
+/// Maximum heartbeat age before a node is considered dead.
+const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
+
+/// HashMap key for the heartbeat node value.
+const HEARTBEAT_KEY: &str = "heartbeat";
 
 /// Interval between random gossip.
 const GOSSIP_INTERVAL: Duration = Duration::from_secs(1);
@@ -106,7 +112,8 @@ impl UdpServer {
 
     /// Listen for new ScuttleButt messages.
     async fn run(&mut self) -> anyhow::Result<()> {
-        let mut interval = time::interval(GOSSIP_INTERVAL);
+        let mut heartbeat_interval = time::interval(MAX_HEARTBEAT_DELTA);
+        let mut gossip_interval = time::interval(GOSSIP_INTERVAL);
         let mut rng = SmallRng::from_entropy();
 
         let mut buf = [0; BUF_SIZE];
@@ -118,7 +125,8 @@ impl UdpServer {
                     }
                     Err(err) => return Err(err.into()),
                 },
-                _ = interval.tick() => self.gossip_multiple(&mut rng).await,
+                _ = heartbeat_interval.tick() => self.reap_zombies().await,
+                _ = gossip_interval.tick() => self.gossip_multiple(&mut rng).await,
                 message = self.channel.recv() => match message {
                     Some(ChannelMessage::Gossip(addr)) => {
                         let _ = self.gossip(addr).await;
@@ -145,6 +153,20 @@ impl UdpServer {
         Ok(())
     }
 
+    /// Remove all nodes without an up-to-date heartbeat.
+    async fn reap_zombies(&self) {
+        let mut scuttlebutt = self.scuttlebutt.lock().await;
+        let nodes = scuttlebutt.cluster_state_map.node_states();
+        let now = Self::secs_since_epoch();
+
+        nodes.retain(|_node_id, node_state| {
+            let heartbeat = node_state
+                .get(HEARTBEAT_KEY)
+                .and_then(|value| value.parse().ok());
+            now - heartbeat.unwrap_or(0) <= MAX_HEARTBEAT_DELTA.as_secs()
+        });
+    }
+
     /// Gossip to multiple randomly chosen nodes.
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
         let scuttlebutt = self.scuttlebutt.lock().await;
@@ -165,11 +187,24 @@ impl UdpServer {
 
     /// Gossip to one other UDP server.
     async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
-        let syn = self.scuttlebutt.lock().await.create_syn_message();
+        let mut scuttlebutt = self.scuttlebutt.lock().await;
+        scuttlebutt
+            .self_node_state()
+            .set(HEARTBEAT_KEY, Self::secs_since_epoch());
+
+        let syn = scuttlebutt.create_syn_message();
         let message = bincode::serialize(&syn)?;
         let _ = self.socket.send_to(&message, addr.into()).await?;
 
         Ok(())
+    }
+
+    /// Seconds elapsed since the UNIX epoch.
+    fn secs_since_epoch() -> u64 {
+        UNIX_EPOCH
+            .elapsed()
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
     }
 }
 

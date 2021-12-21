@@ -149,6 +149,10 @@ impl ClusterState {
         self.node_states.keys()
     }
 
+    pub fn node_states(&mut self) -> &mut HashMap<String, NodeState> {
+        &mut self.node_states
+    }
+
     pub fn apply_delta(&mut self, delta: Delta) {
         for (node_id, node_delta) in delta.node_deltas {
             let mut node_state_map = self
