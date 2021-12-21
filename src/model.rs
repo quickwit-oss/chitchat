@@ -2,7 +2,7 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
-use std::collections::hash_map::Entry;
+use std::collections::hash_map::{Entry, Keys};
 use std::collections::{BinaryHeap, HashMap};
 use std::iter;
 
@@ -145,8 +145,8 @@ impl ClusterState {
         self.node_states.get(node_id)
     }
 
-    pub fn nodes(&self) -> Vec<String> {
-        self.node_states.keys().cloned().collect()
+    pub fn nodes(&self) -> Keys<'_, String, NodeState> {
+        self.node_states.keys()
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {

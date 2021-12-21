@@ -1,10 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use rand::prelude::*;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time;
 
 use crate::ScuttleButt;
 
@@ -12,6 +15,12 @@ use crate::ScuttleButt;
 /// This value is set to avoid UDP fragmentation.
 /// https://jvns.ca/blog/2017/02/07/mtu/
 const BUF_SIZE: usize = 1_472;
+
+/// Interval between random gossip.
+const GOSSIP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Number of nodes picked for random gossip.
+const GOSSIP_COUNT: usize = 3;
 
 /// UDP ScuttleButt server.
 pub struct ScuttleServer {
@@ -49,31 +58,13 @@ impl ScuttleServer {
         scuttle_server
     }
 
-    /// Call a function with access to the [`ScuttleButt`].
-    pub async fn with_scuttlebutt<F, T>(&self, mut fun: F) -> T
-    where
-        F: FnMut(&ScuttleButt) -> T,
-    {
-        let scuttlebutt = self.scuttlebutt.lock().await;
-        fun(&scuttlebutt)
-    }
-
     /// Call a function with mutable access to the [`ScuttleButt`].
-    ///
-    /// This will automatically gossip about the changes to all known nodes.
-    pub async fn with_scuttlebutt_mut<F, T>(&self, mut fun: F) -> T
+    pub async fn with_scuttlebutt<F, T>(&self, mut fun: F) -> T
     where
         F: FnMut(&mut ScuttleButt) -> T,
     {
         let mut scuttlebutt = self.scuttlebutt.lock().await;
-        let retval = fun(&mut scuttlebutt);
-
-        // Broadcast changes to all nodes after mutation.
-        for node in scuttlebutt.cluster_state_map.nodes() {
-            let _ = self.gossip(node);
-        }
-
-        retval
+        fun(&mut scuttlebutt)
     }
 
     /// Shut the server down.
@@ -84,7 +75,8 @@ impl ScuttleServer {
 
     /// Perform a ScuttleButt "handshake" with another UDP server.
     pub fn gossip(&self, addr: impl Into<String>) -> Result<(), anyhow::Error> {
-        Ok(self.channel.send(ChannelMessage::Gossip(addr.into()))?)
+        self.channel.send(ChannelMessage::Gossip(addr.into()))?;
+        Ok(())
     }
 }
 
@@ -114,6 +106,9 @@ impl UdpServer {
 
     /// Listen for new ScuttleButt messages.
     async fn run(&mut self) -> anyhow::Result<()> {
+        let mut interval = time::interval(GOSSIP_INTERVAL);
+        let mut rng = SmallRng::from_entropy();
+
         let mut buf = [0; BUF_SIZE];
         loop {
             tokio::select! {
@@ -122,6 +117,9 @@ impl UdpServer {
                         let _ = self.process_package(addr, &buf[..len]).await;
                     }
                     Err(err) => return Err(err.into()),
+                },
+                _ = interval.tick() => {
+                    let _ = self.gossip_multiple(&mut rng);
                 },
                 message = self.channel.recv() => match message {
                     Some(ChannelMessage::Gossip(addr)) => {
@@ -149,11 +147,29 @@ impl UdpServer {
         Ok(())
     }
 
-    /// Gossip to another UDP server.
-    async fn gossip(&self, addr: String) -> anyhow::Result<()> {
+    /// Gossip to multiple randomly chosen nodes.
+    async fn gossip_multiple(&self, rng: &mut SmallRng) {
+        let scuttlebutt = self.scuttlebutt.lock().await;
+        let self_node_id = &scuttlebutt.self_node_id;
+        let mut rand_nodes = [""; GOSSIP_COUNT];
+
+        // Select up to [`GOSSIP_COUNT`] node IDs at random.
+        let nodes = scuttlebutt.cluster_state_map.nodes();
+        let count = nodes
+            .filter(|node_id| node_id != &self_node_id)
+            .map(|node_id| node_id.as_str())
+            .choose_multiple_fill(rng, &mut rand_nodes);
+
+        for node in &rand_nodes[..count] {
+            let _ = self.gossip(*node).await;
+        }
+    }
+
+    /// Gossip to one other UDP server.
+    async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
         let syn = self.scuttlebutt.lock().await.create_syn_message();
         let message = bincode::serialize(&syn)?;
-        let _ = self.socket.send_to(&message, addr).await?;
+        let _ = self.socket.send_to(&message, addr.into()).await?;
 
         Ok(())
     }
@@ -256,7 +272,10 @@ mod tests {
         let scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
         // Send broken payload.
-        socket.send_to(&[0; BUF_SIZE + 1], server_addr).await.unwrap();
+        socket
+            .send_to(&[0; BUF_SIZE + 1], server_addr)
+            .await
+            .unwrap();
 
         // Confirm nothing broke using a regular payload.
         let syn = scuttlebutt.create_syn_message();
