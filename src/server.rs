@@ -33,7 +33,7 @@ impl ScuttleServer {
     /// Launch a new server.
     ///
     /// This will start the ScuttleButt server as a new Tokio background task.
-    pub fn spawn(address: impl Into<String>, seed_nodes: Vec<String>) -> Self {
+    pub fn spawn(address: impl Into<String>, seed_nodes: &[String]) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let scuttlebutt = Arc::new(Mutex::new(ScuttleButt::with_node_id(address.into())));
@@ -201,7 +201,7 @@ mod tests {
         let test_addr = "0.0.0.0:1111";
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn("0.0.0.0:1112", Vec::new());
+        let server = ScuttleServer::spawn("0.0.0.0:1112", &[]);
         server.gossip(test_addr).unwrap();
 
         let mut buf = [0; BUF_SIZE];
@@ -221,7 +221,7 @@ mod tests {
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
         let scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
-        let server = ScuttleServer::spawn(server_addr, Vec::new());
+        let server = ScuttleServer::spawn(server_addr, &[]);
 
         let syn = scuttlebutt.create_syn_message();
         let message = bincode::serialize(&syn).unwrap();
@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn ignore_broken_payload() {
         let server_addr = "0.0.0.0:3331";
-        let server = ScuttleServer::spawn(server_addr, Vec::new());
+        let server = ScuttleServer::spawn(server_addr, &[]);
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
         let scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
@@ -267,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn ignore_oversized_payload() {
         let server_addr = "0.0.0.0:4441";
-        let server = ScuttleServer::spawn(server_addr, Vec::new());
+        let server = ScuttleServer::spawn(server_addr, &[]);
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
         let scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
@@ -298,7 +298,7 @@ mod tests {
         let server_addr = "0.0.0.0:5551";
         let socket = UdpSocket::bind(server_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn("0.0.0.0:5552", vec![server_addr.into()]);
+        let server = ScuttleServer::spawn("0.0.0.0:5552", &[server_addr.into()]);
 
         let mut buf = [0; BUF_SIZE];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
