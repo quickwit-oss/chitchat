@@ -118,9 +118,7 @@ impl UdpServer {
                     }
                     Err(err) => return Err(err.into()),
                 },
-                _ = interval.tick() => {
-                    let _ = self.gossip_multiple(&mut rng);
-                },
+                _ = interval.tick() => self.gossip_multiple(&mut rng).await,
                 message = self.channel.recv() => match message {
                     Some(ChannelMessage::Gossip(addr)) => {
                         let _ = self.gossip(addr).await;
