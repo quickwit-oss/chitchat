@@ -66,6 +66,10 @@ impl ScuttleButt {
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
+    use std::hash::Hash;
+    use std::fmt::Debug;
+
     fn run_scuttlebutt_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
         let syn_message = initiating_node.create_syn_message();
         let syn_ack_message = peer_node.process_message(syn_message).unwrap();
@@ -73,16 +77,27 @@ mod tests {
         assert!(peer_node.process_message(ack_message).is_none());
     }
 
-    fn assert_nodes_sync(nodes: &[&ScuttleButt]) -> bool {
-        if nodes.len() <= 1 {
-            return true;
+    fn assert_map_eq<K, V>(lhs: &HashMap<K, V>, rhs: &HashMap<K, V>)
+    where
+        K: Eq + Hash,
+        V: PartialEq + Debug,
+    {
+        assert_eq!(lhs.len(), rhs.len());
+        for (key, value) in lhs {
+            assert_eq!(rhs.get(key), Some(value));
         }
-        let first_node_state = serde_json::to_value(&nodes[0].cluster_state_map).unwrap();
+    }
+
+    fn assert_nodes_sync(nodes: &[&ScuttleButt]) {
+        let first_node_states = &nodes[0].cluster_state_map.node_states;
         for other_node in nodes.iter().skip(1) {
-            let node_state = serde_json::to_value(&other_node.cluster_state_map).unwrap();
-            assert_json_diff::assert_json_eq!(&first_node_state, &node_state);
+            let node_states = &other_node.cluster_state_map.node_states;
+
+            assert_eq!(first_node_states.len(), node_states.len());
+            for (key, value) in first_node_states {
+                assert_map_eq(&value.key_values, &node_states.get(key).unwrap().key_values);
+            }
         }
-        false
     }
 
     #[test]

@@ -89,9 +89,9 @@ pub enum ScuttleButtMessage {
 }
 
 pub struct NodeState {
-    max_version: u64,
-    key_values: HashMap<String, VersionedValue>,
+    pub(crate) key_values: HashMap<String, VersionedValue>,
     last_heartbeat: Instant,
+    max_version: u64,
 }
 
 impl Default for NodeState {
@@ -146,7 +146,7 @@ impl NodeState {
 
 #[derive(Default)]
 pub(crate) struct ClusterState {
-    node_states: HashMap<String, NodeState>,
+    pub(crate) node_states: HashMap<String, NodeState>,
 }
 
 impl ClusterState {
