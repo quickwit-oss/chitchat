@@ -159,10 +159,10 @@ impl ClusterState {
         self.node_states.get(node_id)
     }
 
-    // TODO: Just a demo.
-    pub fn living_nodes(&self) -> impl Iterator<Item = &String> {
+    /// Retrieve a list of all living nodes.
+    pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
         self.node_states.iter().filter_map(|(node_id, node_state)| {
-            (node_state.last_heartbeat.elapsed() <= MAX_HEARTBEAT_DELTA).then(|| node_id)
+            (node_state.last_heartbeat.elapsed() <= MAX_HEARTBEAT_DELTA).then(|| node_id.as_str())
         })
     }
 

@@ -6,26 +6,40 @@ use crate::model::{ClusterState, NodeState, ScuttleButtMessage};
 
 // https://www.cs.cornell.edu/home/rvr/papers/flowgossip.pdf
 
+/// HashMap key for the heartbeat node value.
+pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
+
 pub struct ScuttleButt {
     max_transmitted_key_values: usize, // mtu in the paper
     self_node_id: String,
     cluster_state_map: ClusterState,
+    heartbeat: u64,
 }
 
 impl ScuttleButt {
     pub fn with_node_id(self_node_id: String) -> Self {
-        ScuttleButt {
+        let mut scuttlebutt = ScuttleButt {
             max_transmitted_key_values: 10,
+            heartbeat: 0,
             self_node_id,
             cluster_state_map: ClusterState::default(),
-        }
+        };
+
+        // Immediately mark node as alive to ensure it responds to SYNs.
+        scuttlebutt.self_node_state().set(HEARTBEAT_KEY, 0);
+
+        scuttlebutt
     }
 
     pub fn set_max_num_key_values(&mut self, max_transmitted_key_values: usize) {
         self.max_transmitted_key_values = max_transmitted_key_values;
     }
 
-    pub fn create_syn_message(&self) -> ScuttleButtMessage {
+    pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
+        self.heartbeat += 1;
+        let heartbeat = self.heartbeat;
+        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
+
         let digest = self.cluster_state_map.compute_digest();
         ScuttleButtMessage::Syn { digest }
     }
@@ -60,6 +74,11 @@ impl ScuttleButt {
     pub fn self_node_state(&mut self) -> &mut NodeState {
         self.cluster_state_map.node_state_mut(&self.self_node_id)
     }
+
+    /// Retrieve a list of all living nodes.
+    pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
+        self.cluster_state_map.living_nodes()
+    }
 }
 
 #[cfg(test)]
@@ -67,8 +86,8 @@ mod tests {
     use super::*;
 
     use std::collections::HashMap;
-    use std::hash::Hash;
     use std::fmt::Debug;
+    use std::hash::Hash;
 
     fn run_scuttlebutt_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
         let syn_message = initiating_node.create_syn_message();
