@@ -169,8 +169,7 @@ impl UdpServer {
 
     /// Gossip to one other UDP server.
     async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
-        let mut scuttlebutt = self.scuttlebutt.lock().await;
-        let syn = scuttlebutt.create_syn_message();
+        let syn = self.scuttlebutt.lock().await.create_syn_message();
         let message = bincode::serialize(&syn)?;
         let _ = self.socket.send_to(&message, addr.into()).await?;
 
