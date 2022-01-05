@@ -76,7 +76,11 @@ impl ScuttleButt {
         self.cluster_state_map.living_nodes()
     }
 
-    /// Compute digest, always at least adding a heartbeat as update.
+    /// Compute digest.
+    ///
+    /// This method also increments the heartbeat, to force the presence
+    /// of at least one update, and have the node liveliness propagated
+    /// through the cluster.
     fn compute_digest(&self) -> Digest {
         // Ensure for every reply from this node, at least the heartbeat is changed.
         self.heartbeat += 1;
