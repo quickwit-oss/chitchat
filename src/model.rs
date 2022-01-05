@@ -5,6 +5,10 @@ use std::borrow::Borrow;
 use std::collections::hash_map::{Entry, Keys};
 use std::collections::{BinaryHeap, HashMap};
 use std::iter;
+use std::time::{Duration, Instant};
+
+/// Maximum heartbeat age before a node is considered dead.
+const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
 
 pub type Version = u64;
 
@@ -84,10 +88,20 @@ pub enum ScuttleButtMessage {
     Ack { delta: Delta },
 }
 
-#[derive(Default, Serialize)]
 pub struct NodeState {
+    pub(crate) key_values: HashMap<String, VersionedValue>,
+    last_heartbeat: Instant,
     max_version: u64,
-    key_values: HashMap<String, VersionedValue>,
+}
+
+impl Default for NodeState {
+    fn default() -> Self {
+        Self {
+            last_heartbeat: Instant::now(),
+            max_version: Default::default(),
+            key_values: Default::default(),
+        }
+    }
 }
 
 impl NodeState {
@@ -130,9 +144,9 @@ impl NodeState {
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default)]
 pub(crate) struct ClusterState {
-    node_states: HashMap<String, NodeState>,
+    pub(crate) node_states: HashMap<String, NodeState>,
 }
 
 impl ClusterState {
@@ -145,6 +159,13 @@ impl ClusterState {
         self.node_states.get(node_id)
     }
 
+    /// Retrieve a list of all living nodes.
+    pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
+        self.node_states.iter().filter_map(|(node_id, node_state)| {
+            (node_state.last_heartbeat.elapsed() <= MAX_HEARTBEAT_DELTA).then(|| node_id.as_str())
+        })
+    }
+
     pub fn nodes(&self) -> Keys<'_, String, NodeState> {
         self.node_states.keys()
     }
@@ -155,6 +176,7 @@ impl ClusterState {
                 .node_states
                 .entry(node_id)
                 .or_insert_with(NodeState::default);
+
             for (key, versioned_value) in node_delta.key_values {
                 node_state_map.max_version =
                     node_state_map.max_version.max(versioned_value.version);
@@ -173,6 +195,8 @@ impl ClusterState {
                     }
                 }
             }
+
+            node_state_map.last_heartbeat = Instant::now();
         }
     }
 

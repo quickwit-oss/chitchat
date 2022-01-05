@@ -106,7 +106,7 @@ impl UdpServer {
 
     /// Listen for new ScuttleButt messages.
     async fn run(&mut self) -> anyhow::Result<()> {
-        let mut interval = time::interval(GOSSIP_INTERVAL);
+        let mut gossip_interval = time::interval(GOSSIP_INTERVAL);
         let mut rng = SmallRng::from_entropy();
 
         let mut buf = [0; BUF_SIZE];
@@ -118,7 +118,7 @@ impl UdpServer {
                     }
                     Err(err) => return Err(err.into()),
                 },
-                _ = interval.tick() => self.gossip_multiple(&mut rng).await,
+                _ = gossip_interval.tick() => self.gossip_multiple(&mut rng).await,
                 message = self.channel.recv() => match message {
                     Some(ChannelMessage::Gossip(addr)) => {
                         let _ = self.gossip(addr).await;
@@ -149,17 +149,21 @@ impl UdpServer {
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
         let scuttlebutt = self.scuttlebutt.lock().await;
         let self_node_id = &scuttlebutt.self_node_id;
-        let mut rand_nodes = [""; GOSSIP_COUNT];
+        const EMPTY_STRING: String = String::new();
+        let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
 
         // Select up to [`GOSSIP_COUNT`] node IDs at random.
         let nodes = scuttlebutt.cluster_state_map.nodes();
         let count = nodes
             .filter(|node_id| node_id != &self_node_id)
-            .map(|node_id| node_id.as_str())
+            .cloned()
             .choose_multiple_fill(rng, &mut rand_nodes);
 
+        // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
+        drop(scuttlebutt);
+
         for node in &rand_nodes[..count] {
-            let _ = self.gossip(*node).await;
+            let _ = self.gossip(node).await;
         }
     }
 
@@ -186,7 +190,7 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
 
-    use crate::ScuttleButtMessage;
+    use crate::{ScuttleButtMessage, HEARTBEAT_KEY};
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
         tokio::time::timeout(Duration::from_millis(100), future)
@@ -217,7 +221,7 @@ mod tests {
     async fn syn_ack() {
         let server_addr = "0.0.0.0:2221";
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
-        let scuttlebutt = ScuttleButt::with_node_id("offline".into());
+        let mut scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
         let server = ScuttleServer::spawn(server_addr, &[]);
 
@@ -241,7 +245,7 @@ mod tests {
         let server_addr = "0.0.0.0:3331";
         let server = ScuttleServer::spawn(server_addr, &[]);
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
-        let scuttlebutt = ScuttleButt::with_node_id("offline".into());
+        let mut scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
         // Send broken payload.
         socket.send_to(b"broken", server_addr).await.unwrap();
@@ -267,7 +271,7 @@ mod tests {
         let server_addr = "0.0.0.0:4441";
         let server = ScuttleServer::spawn(server_addr, &[]);
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
-        let scuttlebutt = ScuttleButt::with_node_id("offline".into());
+        let mut scuttlebutt = ScuttleButt::with_node_id("offline".into());
 
         // Send broken payload.
         socket
@@ -305,6 +309,51 @@ mod tests {
             ScuttleButtMessage::Syn { .. } => (),
             message => panic!("unexpected message: {:?}", message),
         }
+
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn heartbeat() {
+        let test_addr = "0.0.0.0:6661";
+        let mut scuttlebutt = ScuttleButt::with_node_id(test_addr.into());
+        let socket = UdpSocket::bind(test_addr).await.unwrap();
+
+        let server_addr = "0.0.0.0:6662";
+        let server = ScuttleServer::spawn(server_addr, &[]);
+
+        // Add our test socket to the server's nodes.
+        server
+            .with_scuttlebutt(|server_scuttlebutt| {
+                let syn = server_scuttlebutt.create_syn_message();
+                let syn_ack = scuttlebutt.process_message(syn).unwrap();
+                server_scuttlebutt.process_message(syn_ack);
+            })
+            .await;
+
+        // Wait for heartbeat.
+        let mut buf = [0; BUF_SIZE];
+        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
+        let message = match bincode::deserialize(&buf[..len]).unwrap() {
+            message @ ScuttleButtMessage::Syn { .. } => message,
+            message => panic!("unexpected message: {:?}", message),
+        };
+
+        // Reply.
+        let syn_ack = scuttlebutt.process_message(message).unwrap();
+        let message = bincode::serialize(&syn_ack).unwrap();
+        socket.send_to(&message, server_addr).await.unwrap();
+
+        // Wait for delta to ensure heartbeat key was incremented.
+        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
+        let delta = match bincode::deserialize(&buf[..len]).unwrap() {
+            ScuttleButtMessage::Ack { delta } => delta,
+            message => panic!("unexpected message: {:?}", message),
+        };
+
+        let node_delta = &delta.node_deltas.get(server_addr).unwrap().key_values;
+        let heartbeat = &node_delta.get(HEARTBEAT_KEY).unwrap().value;
+        assert_eq!(heartbeat, "2");
 
         server.shutdown().await.unwrap();
     }
