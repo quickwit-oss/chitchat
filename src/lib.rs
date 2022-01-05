@@ -2,7 +2,7 @@ pub mod server;
 
 mod model;
 
-use crate::model::{ClusterState, NodeState, ScuttleButtMessage};
+use crate::model::{ClusterState, NodeState, ScuttleButtMessage, Digest};
 
 // https://www.cs.cornell.edu/home/rvr/papers/flowgossip.pdf
 
@@ -36,11 +36,7 @@ impl ScuttleButt {
     }
 
     pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
-        self.heartbeat += 1;
-        let heartbeat = self.heartbeat;
-        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
-
-        let digest = self.cluster_state_map.compute_digest();
+        let digest = self.compute_digest();
         ScuttleButtMessage::Syn { digest }
     }
 
@@ -50,7 +46,7 @@ impl ScuttleButt {
                 let delta = self
                     .cluster_state_map
                     .compute_delta(&digest, self.max_transmitted_key_values);
-                let digest = self.cluster_state_map.compute_digest();
+                let digest = self.compute_digest();
                 Some(ScuttleButtMessage::SynAck { delta, digest })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
@@ -78,6 +74,16 @@ impl ScuttleButt {
     /// Retrieve a list of all living nodes.
     pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
         self.cluster_state_map.living_nodes()
+    }
+
+    /// Compute digest, always at least adding a heartbeat as update.
+    fn compute_digest(&self) -> Digest {
+        // Ensure for every reply from this node, at least the heartbeat is changed.
+        self.heartbeat += 1;
+        let heartbeat = self.heartbeat;
+        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
+
+        self.cluster_state_map.compute_digest()
     }
 }
 
