@@ -1,7 +1,3 @@
-use std::io::BufRead;
-
-use anyhow::bail;
-
 // Copyright (C) 2021 Quickwit, Inc.
 //
 // Quickwit is offered under the AGPL v3.0 and as commercial software.
@@ -21,6 +17,10 @@ use anyhow::bail;
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
+
+use anyhow::bail;
+use std::fmt::Debug;
+use std::io::BufRead;
 
 pub(crate) fn read_u64(buf: &mut &[u8]) -> anyhow::Result<u64> {
     if buf.len() < 8 {
@@ -61,3 +61,16 @@ pub(crate) fn write_str<'a>(s: &str, buf: &mut Vec<u8>) {
     buf.extend(s.as_bytes())
 }
 
+pub trait Serializable: Sized {
+    fn serialize(&self, buf: &mut Vec<u8>);
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self>;
+}
+
+#[cfg(test)]
+pub fn test_serdeser_aux<T: Serializable + PartialEq + Debug>(obj: &T, num_bytes: usize) {
+    let mut buf = Vec::new();
+    obj.serialize(&mut buf);
+    assert_eq!(buf.len(), num_bytes);
+    let obj_serdeser = T::deserialize(&mut &buf[..]).unwrap();
+    assert_eq!(obj, &obj_serdeser);
+}

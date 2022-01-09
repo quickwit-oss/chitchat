@@ -9,7 +9,9 @@ use std::io::BufRead;
 use std::time::{Duration, Instant};
 use std::{iter, mem};
 
-use crate::serialize::{read_str, read_u16, read_u64, write_str, write_u16, write_u64};
+use crate::serialize::{
+    read_str, read_u16, read_u64, write_str, write_u16, write_u64, Serializable,
+};
 
 /// Maximum heartbeat age before a node is considered dead.
 const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
@@ -71,7 +73,7 @@ impl DeltaWriter {
     }
 
     fn attempt_add_bytes(&mut self, num_bytes: usize) -> bool {
-        assert!(self.reached_capacity);
+        assert!(!self.reached_capacity);
         let new_num_bytes = self.num_bytes + num_bytes;
         if new_num_bytes > self.mtu {
             self.reached_capacity = true;
@@ -126,9 +128,30 @@ impl NodeDelta {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Eq, PartialEq, Debug)]
+#[derive(Default, Eq, PartialEq, Debug)]
 pub struct Delta {
     pub(crate) node_deltas: BTreeMap<String, NodeDelta>,
+}
+
+impl Serializable for Delta {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        write_u16(self.node_deltas.len() as u16, buf);
+        for (node_id, node_delta) in &self.node_deltas {
+            write_str(node_id, buf);
+            node_delta.serialize(buf);
+        }
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let mut node_deltas: BTreeMap<String, NodeDelta> = Default::default();
+        let num_nodes = read_u16(buf)?;
+        for _ in 0..num_nodes {
+            let node_id = read_str(buf)?;
+            let node_delta = NodeDelta::deserialize(buf)?;
+            node_deltas.insert(node_id.to_string(), node_delta);
+        }
+        Ok(Delta { node_deltas })
+    }
 }
 
 impl Delta {
@@ -146,25 +169,6 @@ impl Delta {
                 },
             );
     }
-
-    pub fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut node_deltas: BTreeMap<String, NodeDelta> = Default::default();
-        let num_nodes = read_u16(buf)?;
-        for _ in 0..num_nodes {
-            let node_id = read_str(buf)?;
-            let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(node_id.to_string(), node_delta);
-        }
-        Ok(Delta { node_deltas })
-    }
-
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_deltas.len() as u16, buf);
-        for (node_id, node_delta) in &self.node_deltas {
-            write_str(node_id, buf);
-            node_delta.serialize(buf);
-        }
-    }
 }
 
 /// A digest represents is a piece of information summarizing
@@ -172,7 +176,7 @@ impl Delta {
 ///
 /// It is equivalent to a map
 /// peer -> max version.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default)]
 pub struct Digest {
     pub(crate) node_max_version: BTreeMap<String, Version>,
 }
@@ -182,8 +186,18 @@ impl Digest {
     pub fn add_node(&mut self, node: &str, max_version: Version) {
         self.node_max_version.insert(node.to_string(), max_version);
     }
+}
 
-    pub fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+impl Serializable for Digest {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        write_u16(self.node_max_version.len() as u16, buf);
+        for (node_id, version) in &self.node_max_version {
+            write_str(node_id, buf);
+            write_u64(*version, buf);
+        }
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let num_nodes = read_u16(buf)?;
         let mut node_max_version: BTreeMap<String, Version> = Default::default();
         for _ in 0..num_nodes {
@@ -193,14 +207,6 @@ impl Digest {
         }
         Ok(Digest { node_max_version })
     }
-
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_max_version.len() as u16, buf);
-        for (node_id, version) in &self.node_max_version {
-            write_str(node_id, buf);
-            write_u64(*version, buf);
-        }
-    }
 }
 
 /// ScuttleButt message.
@@ -209,7 +215,7 @@ impl Digest {
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub enum ScuttleButtMessage {
     /// Node A initiates handshakes.
     Syn { digest: Digest },
@@ -221,6 +227,7 @@ pub enum ScuttleButtMessage {
     Ack { delta: Delta },
 }
 
+#[derive(Copy, Clone)]
 #[repr(u8)]
 enum MessageType {
     Syn = 0,
@@ -237,10 +244,31 @@ impl MessageType {
             _ => None,
         }
     }
+    pub fn to_code(&self) -> u8 {
+        *self as u8
+    }
 }
 
-impl ScuttleButtMessage {
-    pub fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+impl Serializable for ScuttleButtMessage {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        match self {
+            ScuttleButtMessage::Syn { digest } => {
+                buf.push(MessageType::Syn.to_code());
+                digest.serialize(buf);
+            }
+            ScuttleButtMessage::SynAck { digest, delta } => {
+                buf.push(MessageType::SynAck.to_code());
+                digest.serialize(buf);
+                delta.serialize(buf);
+            }
+            ScuttleButtMessage::Ack { delta } => {
+                buf.push(MessageType::Ack.to_code());
+                delta.serialize(buf);
+            }
+        }
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .get(0)
             .cloned()
@@ -265,8 +293,10 @@ impl ScuttleButtMessage {
     }
 }
 
+#[derive(Clone, Serialize)]
 pub struct NodeState {
     pub(crate) key_values: HashMap<String, VersionedValue>,
+    #[serde(skip_serializing)]
     last_heartbeat: Instant,
     max_version: u64,
 }
@@ -321,12 +351,21 @@ impl NodeState {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Clone)]
 pub(crate) struct ClusterState {
     pub(crate) node_states: HashMap<String, NodeState>,
 }
 
 impl ClusterState {
+    pub fn with_seed_ids(node_ids: Vec<String>) -> ClusterState {
+        ClusterState {
+            node_states: node_ids
+                .into_iter()
+                .map(|node_id| (node_id, NodeState::default()))
+                .collect(),
+        }
+    }
+
     pub fn node_state_mut(&mut self, node_id: &str) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         self.node_states.entry(node_id.to_string()).or_default()
@@ -470,6 +509,7 @@ mod tests {
     use crate::model::Digest;
     use crate::model::Version;
     use crate::model::VersionedValue;
+    use crate::serialize::test_serdeser_aux;
     use std::collections::BTreeMap;
 
     #[test]
@@ -712,17 +752,9 @@ mod tests {
         );
     }
 
-    fn test_delta_serder_aux(delta: &Delta, num_bytes: usize) {
-        let mut buf = Vec::new();
-        delta.serialize(&mut buf);
-        assert_eq!(buf.len(), num_bytes);
-        let delta_serdeser = Delta::deserialize(&mut &buf[..]).unwrap();
-        assert_eq!(delta, &delta_serdeser);
-    }
-
     #[test]
     fn test_delta_serialization_default() {
-        test_delta_serder_aux(&Default::default(), 2);
+        test_serdeser_aux(&Delta::default(), 2);
     }
 
     #[test]
@@ -759,7 +791,7 @@ mod tests {
             },
         );
         let delta = delta_writer.to_delta();
-        test_delta_serder_aux(&delta, 108);
+        test_serdeser_aux(&delta, 108);
     }
 
     #[test]
@@ -782,7 +814,7 @@ mod tests {
         ));
         assert!(delta_writer.add_node("node2"));
         let delta = delta_writer.to_delta();
-        test_delta_serder_aux(&delta, 64);
+        test_serdeser_aux(&delta, 64);
     }
 
     #[test]
@@ -805,7 +837,7 @@ mod tests {
         ));
         assert!(!delta_writer.add_node("node2"));
         let delta = delta_writer.to_delta();
-        test_delta_serder_aux(&delta, 55);
+        test_serdeser_aux(&delta, 55);
     }
 
     #[test]
@@ -827,7 +859,7 @@ mod tests {
             }
         ));
         let delta = delta_writer.to_delta();
-        test_delta_serder_aux(&delta, 33);
+        test_serdeser_aux(&delta, 33);
     }
 
     #[test]

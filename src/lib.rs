@@ -3,6 +3,8 @@ pub mod server;
 mod model;
 pub(crate) mod serialize;
 
+use std::collections::BTreeMap;
+
 use crate::model::{ClusterState, Digest, NodeState, ScuttleButtMessage};
 
 // https://www.cs.cornell.edu/home/rvr/papers/flowgossip.pdf
@@ -11,19 +13,19 @@ use crate::model::{ClusterState, Digest, NodeState, ScuttleButtMessage};
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub struct ScuttleButt {
-    max_transmitted_key_values: usize, // mtu in the paper
+    mtu: usize,
     self_node_id: String,
     cluster_state_map: ClusterState,
     heartbeat: u64,
 }
 
 impl ScuttleButt {
-    pub fn with_node_id(self_node_id: String) -> Self {
+    pub fn with_node_id_and_seeds(self_node_id: String, seed_ids: Vec<String>) -> Self {
         let mut scuttlebutt = ScuttleButt {
-            max_transmitted_key_values: 10,
+            mtu: 60_000,
             heartbeat: 0,
             self_node_id,
-            cluster_state_map: ClusterState::default(),
+            cluster_state_map: ClusterState::with_seed_ids(seed_ids),
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -32,8 +34,8 @@ impl ScuttleButt {
         scuttlebutt
     }
 
-    pub fn set_max_num_key_values(&mut self, max_transmitted_key_values: usize) {
-        self.max_transmitted_key_values = max_transmitted_key_values;
+    pub fn set_mtu(&mut self, mtu: usize) {
+        self.mtu = mtu;
     }
 
     pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
@@ -44,17 +46,13 @@ impl ScuttleButt {
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
-                let delta = self
-                    .cluster_state_map
-                    .compute_delta(&digest, self.max_transmitted_key_values);
+                let delta = self.cluster_state_map.compute_delta(&digest, self.mtu);
                 let digest = self.compute_digest();
                 Some(ScuttleButtMessage::SynAck { delta, digest })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
                 self.cluster_state_map.apply_delta(delta);
-                let delta = self
-                    .cluster_state_map
-                    .compute_delta(&digest, self.max_transmitted_key_values);
+                let delta = self.cluster_state_map.compute_delta(&digest, self.mtu);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
@@ -89,6 +87,10 @@ impl ScuttleButt {
         self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
 
         self.cluster_state_map.compute_digest()
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.cluster_state_map).unwrap()
     }
 }
 

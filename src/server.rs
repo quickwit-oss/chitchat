@@ -9,6 +9,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
 
+use crate::model::ScuttleButtMessage;
+use crate::serialize::Serializable;
 use crate::ScuttleButt;
 
 /// Buffer size for UDP messages.
@@ -36,8 +38,9 @@ impl ScuttleServer {
     pub fn spawn(address: impl Into<String>, seed_nodes: &[String]) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let scuttlebutt = Arc::new(Mutex::new(ScuttleButt::with_node_id(address.into())));
-        let scuttlebutt_server = scuttlebutt.clone();
+        let scuttlebutt = ScuttleButt::with_node_id_and_seeds(address.into(), seed_nodes.to_vec());
+        let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
+        let scuttlebutt_server = scuttlebutt_arc.clone();
 
         let join_handle = tokio::spawn(async move {
             let mut server = UdpServer::new(rx, scuttlebutt_server).await?;
@@ -46,16 +49,20 @@ impl ScuttleServer {
 
         let scuttle_server = Self {
             channel: tx,
-            scuttlebutt,
+            scuttlebutt: scuttlebutt_arc,
             join_handle,
         };
 
-        // Advertise the new node to all seed nodes.
-        for node_id in seed_nodes {
-            let _ = scuttle_server.gossip(node_id);
-        }
+        // // Advertise the new node to all seed nodes.
+        // for node_id in seed_nodes {
+        //     let _ = scuttle_server.gossip(node_id);
+        // }
 
         scuttle_server
+    }
+
+    pub fn scuttlebutt(&self) -> Arc<Mutex<ScuttleButt>> {
+        self.scuttlebutt.clone()
     }
 
     /// Call a function with mutable access to the [`ScuttleButt`].
@@ -131,15 +138,16 @@ impl UdpServer {
     }
 
     /// Process a single UDP packet.
-    async fn process_package(&self, addr: SocketAddr, data: &[u8]) -> anyhow::Result<()> {
+    async fn process_package(&self, addr: SocketAddr, mut data: &[u8]) -> anyhow::Result<()> {
         // Handle gossip from other servers.
-        let message = bincode::deserialize(data)?;
+        let message = ScuttleButtMessage::deserialize(&mut data)?;
         let response = self.scuttlebutt.lock().await.process_message(message);
 
         // Send reply if necessary.
         if let Some(message) = response {
-            let message = bincode::serialize(&message)?;
-            self.socket.send_to(&message, addr).await?;
+            let mut buf = Vec::new();
+            message.serialize(&mut buf);
+            self.socket.send_to(&buf[..], addr).await?;
         }
 
         Ok(())
@@ -161,7 +169,6 @@ impl UdpServer {
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(scuttlebutt);
-
         for node in &rand_nodes[..count] {
             let _ = self.gossip(node).await;
         }
@@ -170,9 +177,9 @@ impl UdpServer {
     /// Gossip to one other UDP server.
     async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
         let syn = self.scuttlebutt.lock().await.create_syn_message();
-        let message = bincode::serialize(&syn)?;
-        let _ = self.socket.send_to(&message, addr.into()).await?;
-
+        let mut buf = Vec::new();
+        syn.serialize(&mut buf);
+        let _ = self.socket.send_to(&buf, addr.into()).await?;
         Ok(())
     }
 }
