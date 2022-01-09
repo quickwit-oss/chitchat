@@ -9,7 +9,7 @@ use std::io::BufRead;
 use std::time::{Duration, Instant};
 use std::{iter, mem};
 
-use crate::{read_str, read_u16, read_u64, write_str, write_u16, write_u64};
+use crate::serialize::{read_str, read_u16, read_u64, write_str, write_u16, write_u64};
 
 /// Maximum heartbeat age before a node is considered dead.
 const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);

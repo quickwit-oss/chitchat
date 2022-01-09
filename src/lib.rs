@@ -1,10 +1,7 @@
 pub mod server;
 
 mod model;
-
-use std::io::BufRead;
-
-use anyhow::bail;
+pub(crate) mod serialize;
 
 use crate::model::{ClusterState, Digest, NodeState, ScuttleButtMessage};
 
@@ -93,45 +90,6 @@ impl ScuttleButt {
 
         self.cluster_state_map.compute_digest()
     }
-}
-
-pub(crate) fn read_u64(buf: &mut &[u8]) -> anyhow::Result<u64> {
-    if buf.len() < 8 {
-        bail!("Buffer two short");
-    }
-    let val_bytes: [u8; 8] = buf[0..8].try_into()?;
-    let val = u64::from_le_bytes(val_bytes);
-    buf.consume(8);
-    Ok(val)
-}
-
-pub(crate) fn read_u16(buf: &mut &[u8]) -> anyhow::Result<u16> {
-    if buf.len() < 2 {
-        bail!("Buffer two short");
-    }
-    let val = u16::from_le_bytes([buf[0], buf[1]]);
-    buf.consume(2);
-    Ok(val)
-}
-
-pub(crate) fn read_str<'a>(buf: &mut &'a [u8]) -> anyhow::Result<&'a str> {
-    let len = read_u16(buf)? as usize;
-    let s = std::str::from_utf8(&buf[..len])?;
-    buf.consume(len as usize);
-    Ok(s)
-}
-
-pub(crate) fn write_u16(val: u16, buf: &mut Vec<u8>) {
-    buf.extend(&val.to_le_bytes());
-}
-
-pub(crate) fn write_u64(val: u64, buf: &mut Vec<u8>) {
-    buf.extend(&val.to_le_bytes());
-}
-
-pub(crate) fn write_str<'a>(s: &str, buf: &mut Vec<u8>) {
-    write_u16(s.len() as u16, buf);
-    buf.extend(s.as_bytes())
 }
 
 #[cfg(test)]
