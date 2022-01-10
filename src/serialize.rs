@@ -19,7 +19,6 @@
 //
 
 use anyhow::bail;
-use std::fmt::Debug;
 use std::io::BufRead;
 
 pub(crate) fn read_u64(buf: &mut &[u8]) -> anyhow::Result<u64> {

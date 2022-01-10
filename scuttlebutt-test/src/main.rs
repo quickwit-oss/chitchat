@@ -34,10 +34,11 @@ struct Api {
 
 #[OpenApi]
 impl Api {
-    /// Scuttlebutt
+    /// Scuttlebutt state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
-        Json(self.scuttlebutt.lock().await.to_json())
+        let cluster_state = self.scuttlebutt.lock().await.cluster_state();
+        Json(serde_json::to_value(&cluster_state).unwrap())
     }
 }
 
@@ -63,6 +64,6 @@ async fn main() -> Result<(), std::io::Error> {
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
     Server::new(TcpListener::bind(&opt.listen_addr))
         .run(app)
-        .await;
+        .await?;
     Ok(())
 }

@@ -3,8 +3,8 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
-use std::collections::hash_map::{Entry, Keys};
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 use std::{iter, mem};
@@ -295,7 +295,7 @@ impl Serializable for ScuttleButtMessage {
 
 #[derive(Clone, Serialize)]
 pub struct NodeState {
-    pub(crate) key_values: HashMap<String, VersionedValue>,
+    pub(crate) key_values: BTreeMap<String, VersionedValue>,
     #[serde(skip_serializing)]
     last_heartbeat: Instant,
     max_version: u64,
@@ -352,8 +352,8 @@ impl NodeState {
 }
 
 #[derive(Default, Serialize, Clone)]
-pub(crate) struct ClusterState {
-    pub(crate) node_states: HashMap<String, NodeState>,
+pub struct ClusterState {
+    pub(crate) node_states: BTreeMap<String, NodeState>,
 }
 
 impl ClusterState {
@@ -382,8 +382,9 @@ impl ClusterState {
         })
     }
 
-    pub fn nodes(&self) -> Keys<'_, String, NodeState> {
+    pub fn nodes(&self) -> impl Iterator<Item=&str> {
         self.node_states.keys()
+            .map(|k| k.as_str())
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {
@@ -462,7 +463,7 @@ impl ClusterState {
 
 #[derive(Default)]
 struct NodeSortedByStaleLength<'a> {
-    node_per_stale_length: HashMap<usize, Vec<&'a str>>,
+    node_per_stale_length: BTreeMap<usize, Vec<&'a str>>,
     stale_lengths: BinaryHeap<usize>,
 }
 

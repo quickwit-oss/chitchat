@@ -1074,8 +1074,6 @@ dependencies = [
  "bytes 1.1.0",
  "rand",
  "serde",
- "serde_json",
- "structopt",
  "tokio",
 ]
 

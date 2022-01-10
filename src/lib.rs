@@ -3,11 +3,8 @@ pub mod server;
 mod model;
 pub(crate) mod serialize;
 
-use std::collections::BTreeMap;
-
-use crate::model::{ClusterState, Digest, NodeState, ScuttleButtMessage};
-
-// https://www.cs.cornell.edu/home/rvr/papers/flowgossip.pdf
+use crate::model::{Digest, NodeState, ScuttleButtMessage};
+pub use crate::model::ClusterState;
 
 /// HashMap key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
@@ -15,7 +12,7 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 pub struct ScuttleButt {
     mtu: usize,
     self_node_id: String,
-    cluster_state_map: ClusterState,
+    cluster_state: ClusterState,
     heartbeat: u64,
 }
 
@@ -25,7 +22,7 @@ impl ScuttleButt {
             mtu: 60_000,
             heartbeat: 0,
             self_node_id,
-            cluster_state_map: ClusterState::with_seed_ids(seed_ids),
+            cluster_state: ClusterState::with_seed_ids(seed_ids),
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -46,33 +43,33 @@ impl ScuttleButt {
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
-                let delta = self.cluster_state_map.compute_delta(&digest, self.mtu);
+                let delta = self.cluster_state.compute_delta(&digest, self.mtu);
                 let digest = self.compute_digest();
                 Some(ScuttleButtMessage::SynAck { delta, digest })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
-                self.cluster_state_map.apply_delta(delta);
-                let delta = self.cluster_state_map.compute_delta(&digest, self.mtu);
+                self.cluster_state.apply_delta(delta);
+                let delta = self.cluster_state.compute_delta(&digest, self.mtu);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
-                self.cluster_state_map.apply_delta(delta);
+                self.cluster_state.apply_delta(delta);
                 None
             }
         }
     }
 
     pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
-        self.cluster_state_map.node_state(node_id)
+        self.cluster_state.node_state(node_id)
     }
 
     pub fn self_node_state(&mut self) -> &mut NodeState {
-        self.cluster_state_map.node_state_mut(&self.self_node_id)
+        self.cluster_state.node_state_mut(&self.self_node_id)
     }
 
     /// Retrieve a list of all living nodes.
     pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
-        self.cluster_state_map.living_nodes()
+        self.cluster_state.living_nodes()
     }
 
     /// Compute digest.
@@ -86,11 +83,11 @@ impl ScuttleButt {
         let heartbeat = self.heartbeat;
         self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
 
-        self.cluster_state_map.compute_digest()
+        self.cluster_state.compute_digest()
     }
 
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.cluster_state_map).unwrap()
+    pub fn cluster_state(&self) -> ClusterState {
+        self.cluster_state.clone()
     }
 }
 
@@ -121,9 +118,9 @@ mod tests {
     }
 
     fn assert_nodes_sync(nodes: &[&ScuttleButt]) {
-        let first_node_states = &nodes[0].cluster_state_map.node_states;
+        let first_node_states = &nodes[0].cluster_state.node_states;
         for other_node in nodes.iter().skip(1) {
-            let node_states = &other_node.cluster_state_map.node_states;
+            let node_states = &other_node.cluster_state.node_states;
 
             assert_eq!(first_node_states.len(), node_states.len());
             for (key, value) in first_node_states {

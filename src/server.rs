@@ -161,10 +161,10 @@ impl UdpServer {
         let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
 
         // Select up to [`GOSSIP_COUNT`] node IDs at random.
-        let nodes = scuttlebutt.cluster_state_map.nodes();
+        let nodes = scuttlebutt.cluster_state.nodes();
         let count = nodes
             .filter(|node_id| node_id != &self_node_id)
-            .cloned()
+            .map(ToString::to_string)
             .choose_multiple_fill(rng, &mut rand_nodes);
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
