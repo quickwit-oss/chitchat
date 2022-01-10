@@ -41,21 +41,30 @@ impl Digest {
 
 impl Serializable for Digest {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_max_version.len() as u16, buf);
+        (self.node_max_version.len() as u16).serialize(buf);
         for (node_id, version) in &self.node_max_version {
-            write_str(node_id, buf);
-            write_u64(*version, buf);
+            node_id.serialize(buf);
+            version.serialize(buf);
         }
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let num_nodes = read_u16(buf)?;
+        let num_nodes = u16::deserialize(buf)?;
         let mut node_max_version: BTreeMap<String, Version> = Default::default();
         for _ in 0..num_nodes {
-            let node_id = read_str(buf)?;
-            let version = read_u64(buf)?;
-            node_max_version.insert(node_id.to_string(), version);
+            let node_id = String::deserialize(buf)?;
+            let version = u64::deserialize(buf)?;
+            node_max_version.insert(node_id, version);
         }
         Ok(Digest { node_max_version })
+    }
+
+    fn serialized_len(&self) -> usize {
+        let mut len = (self.node_max_version.len() as u16).serialized_len();
+        for (node_id, version) in &self.node_max_version {
+            len += node_id.serialized_len();
+            len += version.serialized_len();
+        }
+        len
     }
 }

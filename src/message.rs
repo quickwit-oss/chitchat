@@ -107,4 +107,14 @@ impl Serializable for ScuttleButtMessage {
             }
         }
     }
+
+    fn serialized_len(&self) -> usize {
+        match self {
+            ScuttleButtMessage::Syn { digest } => 1 + digest.serialized_len(),
+            ScuttleButtMessage::SynAck { digest, delta } => {
+                1 + digest.serialized_len() + delta.serialized_len()
+            }
+            ScuttleButtMessage::Ack { delta } => 1 + delta.serialized_len(),
+        }
+    }
 }

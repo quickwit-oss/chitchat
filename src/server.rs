@@ -163,20 +163,20 @@ impl UdpServer {
 
     /// Gossip to multiple randomly chosen nodes.
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
-        let scuttlebutt = self.scuttlebutt.lock().await;
-        let self_node_id = &scuttlebutt.self_node_id;
+        let scuttlebutt_guard = self.scuttlebutt.lock().await;
+        let self_node_id = &scuttlebutt_guard.self_node_id;
         const EMPTY_STRING: String = String::new();
         let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
 
         // Select up to [`GOSSIP_COUNT`] node IDs at random.
-        let nodes = scuttlebutt.cluster_state.nodes();
+        let nodes = scuttlebutt_guard.cluster_state.nodes();
         let count = nodes
             .filter(|node_id| node_id != self_node_id)
             .map(ToString::to_string)
             .choose_multiple_fill(rng, &mut rand_nodes);
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
-        drop(scuttlebutt);
+        drop(scuttlebutt_guard);
         for node in &rand_nodes[..count] {
             let _ = self.gossip(node).await;
         }
@@ -348,8 +348,8 @@ mod tests {
             .await;
 
         // Wait for heartbeat.
-        let mut buf = [0; UDP_MTU];
-        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
+        let mut buf: Box<[u8]> = vec![0; UDP_MTU].into_boxed_slice();
+        let (len, _addr) = timeout(socket.recv_from(&mut buf[..])).await.unwrap();
 
         let message = match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
             message @ ScuttleButtMessage::Syn { .. } => message,

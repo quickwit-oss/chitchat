@@ -29,6 +29,7 @@ use serde::Serialize;
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
+use crate::serialize::Serializable;
 pub use crate::state::ClusterState;
 use crate::state::NodeState;
 
@@ -78,13 +79,18 @@ impl ScuttleButt {
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
-                let delta = self.cluster_state.compute_delta(&digest, self.mtu);
-                let digest = self.compute_digest();
-                Some(ScuttleButtMessage::SynAck { delta, digest })
+                let self_digest = self.compute_digest();
+                let delta = self
+                    .cluster_state
+                    .compute_delta(&digest, self.mtu - 1 - self_digest.serialized_len());
+                Some(ScuttleButtMessage::SynAck {
+                    delta,
+                    digest: self_digest,
+                })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
                 self.cluster_state.apply_delta(delta);
-                let delta = self.cluster_state.compute_delta(&digest, self.mtu);
+                let delta = self.cluster_state.compute_delta(&digest, self.mtu - 1);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
@@ -117,7 +123,6 @@ impl ScuttleButt {
         self.heartbeat += 1;
         let heartbeat = self.heartbeat;
         self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
-
         self.cluster_state.compute_digest()
     }
 
@@ -152,7 +157,6 @@ mod tests {
         let first_node_states = &nodes[0].cluster_state.node_states;
         for other_node in nodes.iter().skip(1) {
             let node_states = &other_node.cluster_state.node_states;
-
             assert_eq!(first_node_states.len(), node_states.len());
             for (key, value) in first_node_states {
                 assert_cluster_state_eq(&value, &node_states.get(key).unwrap());

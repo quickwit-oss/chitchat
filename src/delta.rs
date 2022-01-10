@@ -20,8 +20,6 @@
 use std::collections::BTreeMap;
 use std::mem;
 
-use serde::Serialize;
-
 use crate::serialize::*;
 #[cfg(test)]
 use crate::Version;
@@ -34,22 +32,31 @@ pub struct Delta {
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_deltas.len() as u16, buf);
+        (self.node_deltas.len() as u16).serialize(buf);
         for (node_id, node_delta) in &self.node_deltas {
-            write_str(node_id, buf);
+            node_id.serialize(buf);
             node_delta.serialize(buf);
         }
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let mut node_deltas: BTreeMap<String, NodeDelta> = Default::default();
-        let num_nodes = read_u16(buf)?;
+        let num_nodes = u16::deserialize(buf)?;
         for _ in 0..num_nodes {
-            let node_id = read_str(buf)?;
+            let node_id = String::deserialize(buf)?;
             let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(node_id.to_string(), node_delta);
+            node_deltas.insert(node_id, node_delta);
         }
         Ok(Delta { node_deltas })
+    }
+
+    fn serialized_len(&self) -> usize {
+        let mut len = 2;
+        for (node_id, node_delta) in &self.node_deltas {
+            len += node_id.serialized_len();
+            len += node_delta.serialized_len();
+        }
+        len
     }
 }
 
@@ -76,7 +83,7 @@ impl Delta {
     }
 }
 
-#[derive(Serialize, Default, Eq, PartialEq, Debug)]
+#[derive(serde::Serialize, Default, Eq, PartialEq, Debug)]
 pub(crate) struct NodeDelta {
     pub key_values: BTreeMap<String, VersionedValue>,
 }
@@ -157,6 +164,7 @@ impl From<DeltaWriter> for Delta {
         delta_writer.flush();
         if cfg!(debug_assertions) {
             let mut buf = Vec::new();
+            assert_eq!(delta_writer.num_bytes, delta_writer.delta.serialized_len());
             delta_writer.delta.serialize(&mut buf);
             assert_eq!(buf.len(), delta_writer.num_bytes);
         }
@@ -164,26 +172,36 @@ impl From<DeltaWriter> for Delta {
     }
 }
 
-impl NodeDelta {
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.key_values.len() as u16, buf);
+impl Serializable for NodeDelta {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        (self.key_values.len() as u16).serialize(buf);
         for (key, VersionedValue { value, version }) in &self.key_values {
-            write_str(key, buf);
-            write_str(value, buf);
-            write_u64(*version, buf);
+            key.serialize(buf);
+            value.serialize(buf);
+            version.serialize(buf);
         }
     }
 
-    pub fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let mut key_values: BTreeMap<String, VersionedValue> = Default::default();
-        let num_kvs = read_u16(buf)?;
+        let num_kvs = u16::deserialize(buf)?;
         for _ in 0..num_kvs {
-            let key = read_str(buf)?.to_string();
-            let value = read_str(buf)?.to_string();
-            let version = read_u64(buf)?;
+            let key = String::deserialize(buf)?;
+            let value = String::deserialize(buf)?;
+            let version = u64::deserialize(buf)?;
             key_values.insert(key, VersionedValue { value, version });
         }
         Ok(NodeDelta { key_values })
+    }
+
+    fn serialized_len(&self) -> usize {
+        let mut len = 2;
+        for (key, VersionedValue { value, version }) in &self.key_values {
+            len += key.serialized_len();
+            len += value.serialized_len();
+            len += version.serialized_len();
+        }
+        len
     }
 }
 
