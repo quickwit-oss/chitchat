@@ -1,0 +1,14 @@
+[package]
+name = "scuttlebutt-test"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+scuttlebutt = {path="../"}
+poem = "1"
+poem-openapi = {version="1.2", features = ["swagger-ui"] }
+structopt = "0.3"
+tokio = { version = "1.14.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
+serde_json = "1"
