@@ -1,299 +1,38 @@
-use anyhow::Context;
-use rand::prelude::SliceRandom;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
-use std::borrow::Borrow;
+// Copyright (C) 2021 Quickwit, Inc.
+//
+// Quickwit is offered under the AGPL v3.0 and as commercial software.
+// For commercial licensing, contact us at hello@quickwit.io.
+//
+// AGPL:
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::io::BufRead;
 use std::time::{Duration, Instant};
-use std::{iter, mem};
 
-use crate::serialize::{
-    read_str, read_u16, read_u64, write_str, write_u16, write_u64, Serializable,
-};
+use rand::prelude::SliceRandom;
+use rand::Rng;
+use serde::Serialize;
+
+use crate::delta::{Delta, DeltaWriter};
+use crate::digest::Digest;
+use crate::{Version, VersionedValue};
 
 /// Maximum heartbeat age before a node is considered dead.
 const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
 
-pub type Version = u64;
-
-/// A versioned value for a given Key-value pair.
-#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
-pub struct VersionedValue {
-    pub value: String,
-    pub version: Version,
-}
-
-#[derive(Serialize, Deserialize, Default, Eq, PartialEq, Debug)]
-pub(crate) struct NodeDelta {
-    pub key_values: BTreeMap<String, VersionedValue>,
-}
-
-pub struct DeltaWriter {
-    delta: Delta,
-    mtu: usize,
-    num_bytes: usize,
-    current_node_id: String,
-    current_node_delta: NodeDelta,
-    reached_capacity: bool,
-}
-
-impl DeltaWriter {
-    fn with_mtu(mtu: usize) -> Self {
-        DeltaWriter {
-            delta: Delta::default(),
-            mtu,
-            num_bytes: 2,
-            current_node_id: String::new(),
-            current_node_delta: NodeDelta::default(),
-            reached_capacity: false,
-        }
-    }
-
-    fn flush(&mut self) {
-        let node_id = mem::replace(&mut self.current_node_id, String::new());
-        let node_delta = mem::replace(&mut self.current_node_delta, NodeDelta::default());
-        if node_id.is_empty() {
-            return;
-        }
-        self.delta.node_deltas.insert(node_id, node_delta);
-    }
-
-    pub fn add_node(&mut self, node_id: &str) -> bool {
-        assert!(!node_id.is_empty());
-        assert!(node_id != &self.current_node_id);
-        assert!(!self.delta.node_deltas.contains_key(node_id));
-        self.flush();
-        if !self.attempt_add_bytes(2 + node_id.len() + 2) {
-            return false;
-        }
-        self.current_node_id = node_id.to_string();
-        true
-    }
-
-    fn attempt_add_bytes(&mut self, num_bytes: usize) -> bool {
-        assert!(!self.reached_capacity);
-        let new_num_bytes = self.num_bytes + num_bytes;
-        if new_num_bytes > self.mtu {
-            self.reached_capacity = true;
-            return false;
-        }
-        self.num_bytes = new_num_bytes;
-        true
-    }
-
-    pub fn add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
-        assert!(!self.current_node_delta.key_values.contains_key(key));
-        if !self.attempt_add_bytes(2 + key.len() + 2 + versioned_value.value.len() + 8) {
-            return false;
-        }
-        self.current_node_delta
-            .key_values
-            .insert(key.to_string(), versioned_value);
-        true
-    }
-
-    pub fn to_delta(mut self) -> Delta {
-        self.flush();
-        if cfg!(debug_assertions) {
-            let mut buf = Vec::new();
-            self.delta.serialize(&mut buf);
-            assert_eq!(buf.len(), self.num_bytes);
-        }
-        self.delta
-    }
-}
-
-impl NodeDelta {
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.key_values.len() as u16, buf);
-        for (key, VersionedValue { value, version }) in &self.key_values {
-            write_str(key, buf);
-            write_str(value, buf);
-            write_u64(*version, buf);
-        }
-    }
-
-    pub fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut key_values: BTreeMap<String, VersionedValue> = Default::default();
-        let num_kvs = read_u16(buf)?;
-        for _ in 0..num_kvs {
-            let key = read_str(buf)?.to_string();
-            let value = read_str(buf)?.to_string();
-            let version = read_u64(buf)?;
-            key_values.insert(key, VersionedValue { value, version });
-        }
-        Ok(NodeDelta { key_values })
-    }
-}
-
-#[derive(Default, Eq, PartialEq, Debug)]
-pub struct Delta {
-    pub(crate) node_deltas: BTreeMap<String, NodeDelta>,
-}
-
-impl Serializable for Delta {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_deltas.len() as u16, buf);
-        for (node_id, node_delta) in &self.node_deltas {
-            write_str(node_id, buf);
-            node_delta.serialize(buf);
-        }
-    }
-
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut node_deltas: BTreeMap<String, NodeDelta> = Default::default();
-        let num_nodes = read_u16(buf)?;
-        for _ in 0..num_nodes {
-            let node_id = read_str(buf)?;
-            let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(node_id.to_string(), node_delta);
-        }
-        Ok(Delta { node_deltas })
-    }
-}
-
-impl Delta {
-    #[cfg(test)]
-    pub fn add_node_delta(&mut self, node_id: &str, key: &str, value: &str, version: Version) {
-        self.node_deltas
-            .entry(node_id.to_string())
-            .or_default()
-            .key_values
-            .insert(
-                key.to_string(),
-                VersionedValue {
-                    value: value.to_string(),
-                    version,
-                },
-            );
-    }
-}
-
-/// A digest represents is a piece of information summarizing
-/// the staleness of one peer's data.
-///
-/// It is equivalent to a map
-/// peer -> max version.
-#[derive(Debug, Default)]
-pub struct Digest {
-    pub(crate) node_max_version: BTreeMap<String, Version>,
-}
-
-impl Digest {
-    #[cfg(test)]
-    pub fn add_node(&mut self, node: &str, max_version: Version) {
-        self.node_max_version.insert(node.to_string(), max_version);
-    }
-}
-
-impl Serializable for Digest {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        write_u16(self.node_max_version.len() as u16, buf);
-        for (node_id, version) in &self.node_max_version {
-            write_str(node_id, buf);
-            write_u64(*version, buf);
-        }
-    }
-
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let num_nodes = read_u16(buf)?;
-        let mut node_max_version: BTreeMap<String, Version> = Default::default();
-        for _ in 0..num_nodes {
-            let node_id = read_str(buf)?;
-            let version = read_u64(buf)?;
-            node_max_version.insert(node_id.to_string(), version);
-        }
-        Ok(Digest { node_max_version })
-    }
-}
-
-/// ScuttleButt message.
-///
-/// Each variant represents a step of the gossip "handshake"
-/// between node A and node B.
-/// The names {Syn, SynAck, Ack} of the different steps are borrowed from
-/// TCP Handshake.
-#[derive(Debug)]
-pub enum ScuttleButtMessage {
-    /// Node A initiates handshakes.
-    Syn { digest: Digest },
-    /// Node B returns a partial update as described
-    /// in the scuttlebutt reconcialiation algorithm,
-    /// and returns its own checksum.
-    SynAck { digest: Digest, delta: Delta },
-    /// Node A returns a partial update for B.
-    Ack { delta: Delta },
-}
-
-#[derive(Copy, Clone)]
-#[repr(u8)]
-enum MessageType {
-    Syn = 0,
-    SynAck = 1u8,
-    Ack = 2u8,
-}
-
-impl MessageType {
-    pub fn from_code(code: u8) -> Option<Self> {
-        match code {
-            0 => Some(Self::Syn),
-            1 => Some(Self::SynAck),
-            2 => Some(Self::Ack),
-            _ => None,
-        }
-    }
-    pub fn to_code(&self) -> u8 {
-        *self as u8
-    }
-}
-
-impl Serializable for ScuttleButtMessage {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        match self {
-            ScuttleButtMessage::Syn { digest } => {
-                buf.push(MessageType::Syn.to_code());
-                digest.serialize(buf);
-            }
-            ScuttleButtMessage::SynAck { digest, delta } => {
-                buf.push(MessageType::SynAck.to_code());
-                digest.serialize(buf);
-                delta.serialize(buf);
-            }
-            ScuttleButtMessage::Ack { delta } => {
-                buf.push(MessageType::Ack.to_code());
-                delta.serialize(buf);
-            }
-        }
-    }
-
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let code = buf
-            .get(0)
-            .cloned()
-            .and_then(MessageType::from_code)
-            .context("Invalid message type")?;
-        buf.consume(1);
-        match code {
-            MessageType::Syn => {
-                let digest = Digest::deserialize(buf)?;
-                Ok(Self::Syn { digest })
-            }
-            MessageType::SynAck => {
-                let digest = Digest::deserialize(buf)?;
-                let delta = Delta::deserialize(buf)?;
-                Ok(Self::SynAck { digest, delta })
-            }
-            MessageType::Ack => {
-                let delta = Delta::deserialize(buf)?;
-                Ok(Self::Ack { delta })
-            }
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
     #[serde(skip_serializing)]
@@ -325,7 +64,7 @@ impl NodeState {
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.get_versioned(key.borrow())
+        self.get_versioned(key)
             .map(|versioned_value| versioned_value.value.as_str())
     }
 
@@ -351,7 +90,7 @@ impl NodeState {
     }
 }
 
-#[derive(Default, Serialize, Clone)]
+#[derive(Default, Serialize, Clone, Debug)]
 pub struct ClusterState {
     pub(crate) node_states: BTreeMap<String, NodeState>,
 }
@@ -382,9 +121,8 @@ impl ClusterState {
         })
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item=&str> {
-        self.node_states.keys()
-            .map(|k| k.as_str())
+    pub fn nodes(&self) -> impl Iterator<Item = &str> {
+        self.node_states.keys().map(|k| k.as_str())
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {
@@ -453,11 +191,11 @@ impl ClusterState {
             stale_kvs.sort_unstable_by_key(|(_, record)| record.version);
             for (key, versioned_value) in stale_kvs {
                 if !delta_writer.add_kv(key, versioned_value.clone()) {
-                    return delta_writer.to_delta();
+                    return delta_writer.into();
                 }
             }
         }
-        delta_writer.to_delta()
+        delta_writer.into()
     }
 }
 
@@ -465,19 +203,6 @@ impl ClusterState {
 struct NodeSortedByStaleLength<'a> {
     node_per_stale_length: BTreeMap<usize, Vec<&'a str>>,
     stale_lengths: BinaryHeap<usize>,
-}
-
-#[cfg(not(test))]
-fn random_generator() -> impl Rng {
-    rand::thread_rng()
-}
-
-// We use a deterministic random generator in tests.
-#[cfg(test)]
-fn random_generator() -> impl Rng {
-    use rand::prelude::StdRng;
-    use rand::SeedableRng;
-    StdRng::seed_from_u64(9u64)
 }
 
 impl<'a> NodeSortedByStaleLength<'a> {
@@ -493,7 +218,7 @@ impl<'a> NodeSortedByStaleLength<'a> {
 
     fn into_iter(mut self) -> impl Iterator<Item = &'a str> {
         let mut rng = random_generator();
-        iter::from_fn(move || self.stale_lengths.pop()).flat_map(move |length| {
+        std::iter::from_fn(move || self.stale_lengths.pop()).flat_map(move |length| {
             let mut nodes = self.node_per_stale_length.remove(&length).unwrap();
             nodes.shuffle(&mut rng);
             nodes.into_iter()
@@ -501,17 +226,23 @@ impl<'a> NodeSortedByStaleLength<'a> {
     }
 }
 
+#[cfg(not(test))]
+fn random_generator() -> impl Rng {
+    rand::thread_rng()
+}
+
+// We use a deterministic random generator in tests.
+#[cfg(test)]
+fn random_generator() -> impl Rng {
+    use rand::prelude::StdRng;
+    use rand::SeedableRng;
+    StdRng::seed_from_u64(9u64)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::NodeSortedByStaleLength;
-    use crate::model::ClusterState;
-    use crate::model::Delta;
-    use crate::model::DeltaWriter;
-    use crate::model::Digest;
-    use crate::model::Version;
-    use crate::model::VersionedValue;
-    use crate::serialize::test_serdeser_aux;
-    use std::collections::BTreeMap;
+    use super::*;
+    use crate::serialize::Serializable;
 
     #[test]
     fn test_node_sorted_by_stale_length_empty() {
@@ -677,13 +408,32 @@ mod tests {
         expected_delta_atoms: &[(&str, &str, &str, Version)],
     ) {
         let max_delta = cluster_state.compute_delta(&digest, usize::MAX);
-        for max_transmitted_key_values in 1..=expected_delta_atoms.len() {
-            let delta = cluster_state.compute_delta(&digest, max_transmitted_key_values);
+        let mut buf = Vec::new();
+        max_delta.serialize(&mut buf);
+        let mut mtu_per_num_entries = Vec::new();
+        for mtu in 2..buf.len() {
+            let delta = cluster_state.compute_delta(&digest, mtu);
+            let num_tuples = delta.num_tuples();
+            if mtu_per_num_entries.len() == num_tuples + 1 {
+                continue;
+            }
+            buf.clear();
+            delta.serialize(&mut buf);
+            mtu_per_num_entries.push(buf.len());
+        }
+        for (num_entries, &mtu) in mtu_per_num_entries.iter().enumerate() {
             let mut expected_delta = Delta::default();
-            for &(node, key, val, version) in &expected_delta_atoms[..max_transmitted_key_values] {
+            for &(node, key, val, version) in &expected_delta_atoms[..num_entries] {
                 expected_delta.add_node_delta(node, key, val, version);
             }
-            assert_eq!(&delta, &expected_delta);
+            {
+                let delta = cluster_state.compute_delta(&digest, mtu);
+                assert_eq!(&delta, &expected_delta);
+            }
+            {
+                let delta = cluster_state.compute_delta(&digest, mtu + 1);
+                assert_eq!(&delta, &expected_delta);
+            }
         }
     }
 
@@ -750,144 +500,6 @@ mod tests {
                 ("node1", "key_b", "2", 2),
                 ("node2", "key_d", "4", 4),
             ],
-        );
-    }
-
-    #[test]
-    fn test_delta_serialization_default() {
-        test_serdeser_aux(&Delta::default(), 2);
-    }
-
-    #[test]
-    fn test_delta_serialization_simple() {
-        let mut delta_writer = DeltaWriter::with_mtu(108);
-        delta_writer.add_node("node1");
-        delta_writer.add_kv(
-            "key11",
-            VersionedValue {
-                value: "val11".to_string(),
-                version: 1,
-            },
-        );
-        delta_writer.add_kv(
-            "key12",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2,
-            },
-        );
-        delta_writer.add_node("node2");
-        delta_writer.add_kv(
-            "key21",
-            VersionedValue {
-                value: "val21".to_string(),
-                version: 2,
-            },
-        );
-        delta_writer.add_kv(
-            "key22",
-            VersionedValue {
-                value: "val22".to_string(),
-                version: 3,
-            },
-        );
-        let delta = delta_writer.to_delta();
-        test_serdeser_aux(&delta, 108);
-    }
-
-    #[test]
-    fn test_delta_serialization_simple_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(64);
-        assert!(delta_writer.add_node("node1"));
-        assert!(delta_writer.add_kv(
-            "key11",
-            VersionedValue {
-                value: "val11".to_string(),
-                version: 1
-            }
-        ));
-        assert!(delta_writer.add_kv(
-            "key12",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2
-            }
-        ));
-        assert!(delta_writer.add_node("node2"));
-        let delta = delta_writer.to_delta();
-        test_serdeser_aux(&delta, 64);
-    }
-
-    #[test]
-    fn test_delta_serialization_exceed_mtu_on_add_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(63);
-        assert!(delta_writer.add_node("node1"));
-        assert!(delta_writer.add_kv(
-            "key11",
-            VersionedValue {
-                value: "val11".to_string(),
-                version: 1
-            }
-        ));
-        assert!(delta_writer.add_kv(
-            "key12",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2
-            }
-        ));
-        assert!(!delta_writer.add_node("node2"));
-        let delta = delta_writer.to_delta();
-        test_serdeser_aux(&delta, 55);
-    }
-
-    #[test]
-    fn test_delta_serialization_exceed_mtu_on_add_kv() {
-        let mut delta_writer = DeltaWriter::with_mtu(54);
-        assert!(delta_writer.add_node("node1"));
-        assert!(delta_writer.add_kv(
-            "key11",
-            VersionedValue {
-                value: "val11".to_string(),
-                version: 1
-            }
-        ));
-        assert!(!delta_writer.add_kv(
-            "key12",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2
-            }
-        ));
-        let delta = delta_writer.to_delta();
-        test_serdeser_aux(&delta, 33);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_delta_serialization_panic_if_add_after_exceed() {
-        let mut delta_writer = DeltaWriter::with_mtu(54);
-        assert!(delta_writer.add_node("node1"));
-        assert!(delta_writer.add_kv(
-            "key11",
-            VersionedValue {
-                value: "val11".to_string(),
-                version: 1
-            }
-        ));
-        assert!(!delta_writer.add_kv(
-            "key12",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2
-            }
-        ));
-        delta_writer.add_kv(
-            "key13",
-            VersionedValue {
-                value: "val12".to_string(),
-                version: 2,
-            },
         );
     }
 }

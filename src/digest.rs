@@ -1,0 +1,61 @@
+// Copyright (C) 2022 Quickwit, Inc.
+//
+// Quickwit is offered under the AGPL v3.0 and as commercial software.
+// For commercial licensing, contact us at hello@quickwit.io.
+//
+// AGPL:
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+use std::collections::BTreeMap;
+
+use crate::serialize::*;
+use crate::Version;
+
+/// A digest represents is a piece of information summarizing
+/// the staleness of one peer's data.
+///
+/// It is equivalent to a map
+/// peer -> max version.
+#[derive(Debug, Default)]
+pub struct Digest {
+    pub(crate) node_max_version: BTreeMap<String, Version>,
+}
+
+impl Digest {
+    #[cfg(test)]
+    pub fn add_node(&mut self, node: &str, max_version: Version) {
+        self.node_max_version.insert(node.to_string(), max_version);
+    }
+}
+
+impl Serializable for Digest {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        write_u16(self.node_max_version.len() as u16, buf);
+        for (node_id, version) in &self.node_max_version {
+            write_str(node_id, buf);
+            write_u64(*version, buf);
+        }
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let num_nodes = read_u16(buf)?;
+        let mut node_max_version: BTreeMap<String, Version> = Default::default();
+        for _ in 0..num_nodes {
+            let node_id = read_str(buf)?;
+            let version = read_u64(buf)?;
+            node_max_version.insert(node_id.to_string(), version);
+        }
+        Ok(Digest { node_max_version })
+    }
+}
