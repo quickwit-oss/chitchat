@@ -180,6 +180,10 @@ impl UdpServer {
         for node in &rand_nodes[..count] {
             let _ = self.gossip(node).await;
         }
+
+        //TODO status check
+        let mut scuttlebutt_guard = self.scuttlebutt.lock().await;
+        scuttlebutt_guard.update_status();
     }
 
     /// Gossip to one other UDP server.

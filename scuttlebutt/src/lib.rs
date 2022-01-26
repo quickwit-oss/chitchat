@@ -24,8 +24,15 @@ mod digest;
 mod message;
 pub(crate) mod serialize;
 mod state;
+mod failure_detector;
+
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use delta::Delta;
+use failure_detector::FailureDetector;
+use serde::Serialize;
+
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -50,6 +57,7 @@ pub struct ScuttleButt {
     self_node_id: String,
     cluster_state: ClusterState,
     heartbeat: u64,
+    failure_detector: FailureDetector,
 }
 
 impl ScuttleButt {
@@ -59,6 +67,7 @@ impl ScuttleButt {
             heartbeat: 0,
             self_node_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
+            failure_detector: FailureDetector::new(1000, Duration::from_secs(10), Duration::from_secs(5))
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -89,15 +98,42 @@ impl ScuttleButt {
                 })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
+                self.notify_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let delta = self.cluster_state.compute_delta(&digest, self.mtu - 1);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
+                self.notify_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 None
             }
         }
+    }
+
+    fn notify_failure_detector(&mut self, delta: &Delta) {
+        for (node_id, node_delta) in &delta.node_deltas {
+            //TODO we need to clear existing state if we detect the node has restarted from a failure
+            // discuss generation?
+            let local_gen = self.cluster_state
+                .node_state(node_id)
+                .unwrap()
+                .get_versioned("generation").unwrap();
+            let node_gen = node_delta.key_values.get("generation").unwrap();
+            //TODO convert and comapare
+            if local_gen.value < node_gen.value {
+                
+                self.failure_detector.remove(node_id)
+            }
+
+            self.failure_detector.report_heartbeat(node_id);
+        }
+    }
+
+    pub fn update_status(&mut self) {
+        //request phi values and mark/unmark node as dead
+        // self.dead_nodes.remove(node_id)
+        // self.live_nodes.remove(node_id)
     }
 
     pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
@@ -110,6 +146,7 @@ impl ScuttleButt {
 
     /// Retrieve a list of all living nodes.
     pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
+        //TODO now this should use self.failure_detector.phi(node_id)
         self.cluster_state.living_nodes()
     }
 
