@@ -16,11 +16,11 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
-//
 
 use std::sync::Arc;
 
-use poem::{listener::TcpListener, Route, Server};
+use poem::listener::TcpListener;
+use poem::{Route, Server};
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use scuttlebutt::server::ScuttleServer;

@@ -1,16 +1,6 @@
-[package]
-name = "scuttlebutt"
-version = "0.1.0"
-edition = "2021"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-bytes = "1"
-rand = { version = "0.8", features = ["small_rng"] }
-serde = { version="1", features=["derive"] }
-tokio = { version = "1.14.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
-anyhow = "1.0.51"
-
-[dev-dependencies]
-assert-json-diff = "2"
+members = [
+  "scuttlebutt",
+  "scuttlebutt-test",
+]
