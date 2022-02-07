@@ -407,12 +407,12 @@ mod tests {
         digest: &Digest,
         expected_delta_atoms: &[(&str, &str, &str, Version)],
     ) {
-        let max_delta = cluster_state.compute_delta(&digest, usize::MAX);
+        let max_delta = cluster_state.compute_delta(digest, usize::MAX);
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
         for mtu in 2..buf.len() {
-            let delta = cluster_state.compute_delta(&digest, mtu);
+            let delta = cluster_state.compute_delta(digest, mtu);
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -427,11 +427,11 @@ mod tests {
                 expected_delta.add_node_delta(node, key, val, version);
             }
             {
-                let delta = cluster_state.compute_delta(&digest, mtu);
+                let delta = cluster_state.compute_delta(digest, mtu);
                 assert_eq!(&delta, &expected_delta);
             }
             {
-                let delta = cluster_state.compute_delta(&digest, mtu + 1);
+                let delta = cluster_state.compute_delta(digest, mtu + 1);
                 assert_eq!(&delta, &expected_delta);
             }
         }

@@ -159,7 +159,7 @@ mod tests {
             let node_states = &other_node.cluster_state.node_states;
             assert_eq!(first_node_states.len(), node_states.len());
             for (key, value) in first_node_states {
-                assert_cluster_state_eq(&value, &node_states.get(key).unwrap());
+                assert_cluster_state_eq(value, node_states.get(key).unwrap());
             }
         }
     }
