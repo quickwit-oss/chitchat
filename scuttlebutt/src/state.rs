@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use rand::prelude::SliceRandom;
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
@@ -32,10 +32,11 @@ use crate::{Version, VersionedValue};
 /// Maximum heartbeat age before a node is considered dead.
 const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
-    #[serde(skip_serializing)]
+    #[serde(skip)]
+    #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
     max_version: u64,
 }
@@ -90,7 +91,7 @@ impl NodeState {
     }
 }
 
-#[derive(Default, Serialize, Clone, Debug)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct ClusterState {
     pub(crate) node_states: BTreeMap<String, NodeState>,
 }
