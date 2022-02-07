@@ -21,6 +21,7 @@ jobs:
   check:
     name: Check (fmt, dependency check, clippy, test)
     runs-on: ubuntu-latest
+    container: public.ecr.aws/l6o9a3f9/quickwit-builder:latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions/cache@v2
@@ -35,11 +36,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --workspace --tests
-      - uses: actions-rs/cargo@v1
-        name: cargo deny
-        with:
-          command: deny
-          args: check Licenses # check that all of deps have an ok license.
       - uses: actions-rs/cargo@v1
         name: cargo test
         with:
