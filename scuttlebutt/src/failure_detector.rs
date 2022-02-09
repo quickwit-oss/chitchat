@@ -273,7 +273,7 @@ mod tests {
         }
 
         let mut living_nodes = failure_detector.living_nodes().collect::<Vec<_>>();
-        living_nodes.sort();
+        living_nodes.sort_unstable();
 
         assert_eq!(living_nodes, vec!["node-1", "node-2", "node-3"]);
     }
@@ -330,19 +330,18 @@ mod tests {
         let mean = (2.0 + 3.0) / 2.0;
 
         // 0s elapsed since last reported heartbeat.
-        assert_eq!(sampling_window.phi(), 0.0 / mean);
+        assert!((sampling_window.phi() - (0.0 / mean)).abs() < f64::EPSILON);
 
         // 1s elapsed since last reported heartbeat.
         MockClock::advance(Duration::from_secs(1));
-        assert_eq!(sampling_window.phi(), 1.0 / mean);
+        assert!((sampling_window.phi() - (1.0 / mean)).abs() < f64::EPSILON);
 
         // Check reported heartbeat later than max_interval is ignore.
         MockClock::advance(Duration::from_secs(5));
         sampling_window.report_heartbeat();
         MockClock::advance(Duration::from_secs(2));
-        assert_eq!(
-            sampling_window.phi(),
-            2.0 / mean,
+        assert!(
+            (sampling_window.phi() - (2.0 / mean)).abs() < f64::EPSILON,
             "Mean value should not change."
         );
     }
@@ -356,7 +355,7 @@ mod tests {
         assert_eq!(bounded_array.index, 9);
         assert_eq!(bounded_array.len(), 9);
         assert!(!bounded_array.is_filled);
-        assert_eq!(bounded_array.mean(), 5.0f64);
+        assert!((bounded_array.mean() - 5.0f64).abs() < f64::EPSILON);
 
         for i in 10..14 {
             bounded_array.append(i as f64);
@@ -364,6 +363,6 @@ mod tests {
         assert_eq!(bounded_array.index, 3);
         assert_eq!(bounded_array.len(), 10);
         assert!(bounded_array.is_filled);
-        assert_eq!(bounded_array.mean(), 8.5f64);
+        assert!((bounded_array.mean() - 8.5f64).abs() < f64::EPSILON);
     }
 }

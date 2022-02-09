@@ -29,14 +29,11 @@ mod state;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use delta::Delta;
 use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
-
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -137,13 +134,14 @@ impl ScuttleButt {
     fn filter_delta(&mut self, delta: Delta) -> Delta {
         let mut filtered_delta = Delta::default();
         for (node_id, node_delta) in delta.node_deltas {
-            if self
+            // Check if node is recently removed and the delay has expired.
+            let is_recently_removed_for_awhile = self
                 .recently_removed_nodes
                 .get(&node_id)
                 .map_or(false, |removed_at| {
                     removed_at.elapsed().as_millis() >= RECENTLY_REMOVED_DELAY.as_millis()
-                })
-            {
+                });
+            if is_recently_removed_for_awhile {
                 debug!(node_id = %node_id, "removed from recently removed nodes.");
                 self.recently_removed_nodes.remove(&node_id);
             }
