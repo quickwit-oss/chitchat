@@ -25,7 +25,7 @@ use crate::serialize::*;
 use crate::Version;
 use crate::VersionedValue;
 
-#[derive(Default, Eq, PartialEq, Debug)]
+#[derive(Default, Eq, PartialEq, Debug, Clone)]
 pub struct Delta {
     pub(crate) node_deltas: BTreeMap<String, NodeDelta>,
 }
@@ -83,7 +83,7 @@ impl Delta {
     }
 }
 
-#[derive(serde::Serialize, Default, Eq, PartialEq, Debug)]
+#[derive(serde::Serialize, Default, Eq, PartialEq, Debug, Clone)]
 pub(crate) struct NodeDelta {
     pub key_values: BTreeMap<String, VersionedValue>,
 }

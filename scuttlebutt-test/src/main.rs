@@ -24,7 +24,7 @@ use poem::{Route, Server};
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use scuttlebutt::server::ScuttleServer;
-use scuttlebutt::ScuttleButt;
+use scuttlebutt::{FailureDetectorConfig, ScuttleButt};
 use structopt::StructOpt;
 use tokio::sync::Mutex;
 
@@ -53,9 +53,14 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
+    tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
-    let scuttlebutt_server = ScuttleServer::spawn(&opt.listen_addr, &opt.seeds[..]);
+    let scuttlebutt_server = ScuttleServer::spawn(
+        &opt.listen_addr,
+        &opt.seeds[..],
+        FailureDetectorConfig::default(),
+    );
     let scuttlebutt = scuttlebutt_server.scuttlebutt();
     let api = Api { scuttlebutt };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")

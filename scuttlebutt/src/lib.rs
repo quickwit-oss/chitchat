@@ -21,17 +21,21 @@ pub mod server;
 
 mod delta;
 mod digest;
+mod failure_detector;
 mod message;
 pub(crate) mod serialize;
 mod state;
-mod failure_detector;
 
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use delta::Delta;
 use failure_detector::FailureDetector;
+pub use failure_detector::FailureDetectorConfig;
 use serde::Serialize;
+use tracing::debug;
 
 
 use crate::digest::Digest;
@@ -45,6 +49,10 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub type Version = u64;
 
+/// A node recently removed is excluded from gossiping up to this delay.
+/// TODO: Pass this as parameter, also cassandra default value is 60s?.
+const RECENTLY_REMOVED_DELAY: Duration = Duration::from_millis(30000);
+
 /// A versioned value for a given Key-value pair.
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct VersionedValue {
@@ -57,17 +65,26 @@ pub struct ScuttleButt {
     self_node_id: String,
     cluster_state: ClusterState,
     heartbeat: u64,
+    /// The failure detector instance.
     failure_detector: FailureDetector,
+    /// A list of recently removed nodes to exclude from gossiping for a certain delay.
+    /// This prevents the cluster node removal event propagation from resurrecting the node.
+    recently_removed_nodes: HashMap<String, Instant>,
 }
 
 impl ScuttleButt {
-    pub fn with_node_id_and_seeds(self_node_id: String, seed_ids: Vec<String>) -> Self {
+    pub fn with_node_id_and_seeds(
+        self_node_id: String,
+        seed_ids: Vec<String>,
+        failure_detector_config: FailureDetectorConfig,
+    ) -> Self {
         let mut scuttlebutt = ScuttleButt {
             mtu: 60_000,
             heartbeat: 0,
             self_node_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
-            failure_detector: FailureDetector::new(1000, Duration::from_secs(10), Duration::from_secs(5))
+            failure_detector: FailureDetector::new(failure_detector_config),
+            recently_removed_nodes: HashMap::default(),
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -92,48 +109,108 @@ impl ScuttleButt {
                 let delta = self
                     .cluster_state
                     .compute_delta(&digest, self.mtu - 1 - self_digest.serialized_len());
+
+                let filtered_delta = self.filter_delta(delta.clone());
+                self.report_to_failure_detector(&filtered_delta);
                 Some(ScuttleButtMessage::SynAck {
                     delta,
                     digest: self_digest,
                 })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
-                self.notify_failure_detector(&delta);
-                self.cluster_state.apply_delta(delta);
+                let filtered_delta = self.filter_delta(delta);
+                self.report_to_failure_detector(&filtered_delta);
+                self.cluster_state.apply_delta(filtered_delta);
                 let delta = self.cluster_state.compute_delta(&digest, self.mtu - 1);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
-                self.notify_failure_detector(&delta);
-                self.cluster_state.apply_delta(delta);
+                let filtered_delta = self.filter_delta(delta);
+                self.report_to_failure_detector(&filtered_delta);
+                self.cluster_state.apply_delta(filtered_delta);
                 None
             }
         }
     }
 
-    fn notify_failure_detector(&mut self, delta: &Delta) {
-        for (node_id, node_delta) in &delta.node_deltas {
-            //TODO we need to clear existing state if we detect the node has restarted from a failure
-            // discuss generation?
-            let local_gen = self.cluster_state
-                .node_state(node_id)
-                .unwrap()
-                .get_versioned("generation").unwrap();
-            let node_gen = node_delta.key_values.get("generation").unwrap();
-            //TODO convert and comapare
-            if local_gen.value < node_gen.value {
-                
-                self.failure_detector.remove(node_id)
+    /// Filters the delta while excluding recently removed nodes.
+    fn filter_delta(&mut self, delta: Delta) -> Delta {
+        let mut filtered_delta = Delta::default();
+        for (node_id, node_delta) in delta.node_deltas {
+            if self
+                .recently_removed_nodes
+                .get(&node_id)
+                .map_or(false, |removed_at| {
+                    removed_at.elapsed().as_millis() >= RECENTLY_REMOVED_DELAY.as_millis()
+                })
+            {
+                debug!(node_id = %node_id, "removed from recently removed nodes.");
+                self.recently_removed_nodes.remove(&node_id);
             }
 
-            self.failure_detector.report_heartbeat(node_id);
+            match self.recently_removed_nodes.get(&node_id) {
+                Some(removed_at) => {
+                    debug!(node_id = %node_id, elapsed_second= %removed_at.elapsed().as_secs(), "excluded from gossiping.")
+                }
+                None => {
+                    filtered_delta.node_deltas.insert(node_id, node_delta);
+                }
+            };
+        }
+        filtered_delta
+    }
+
+    fn report_to_failure_detector(&mut self, delta: &Delta) {
+        for (node_id, node_delta) in &delta.node_deltas {
+            let node_state_map_opt = self.cluster_state.node_states.get(node_id);
+            for (key, versioned_value) in &node_delta.key_values {
+                let local_versioned_value_opt = node_state_map_opt
+                    .and_then(|node_state_map| node_state_map.key_values.get(key));
+
+                match local_versioned_value_opt {
+                    Some(local_versioned_value) => {
+                        if local_versioned_value.version >= versioned_value.version {
+                            continue;
+                        }
+                        self.failure_detector.report_heartbeat(node_id);
+                        break;
+                    }
+                    None => {
+                        self.failure_detector.report_heartbeat(node_id);
+                        break;
+                    }
+                }
+            }
         }
     }
 
-    pub fn update_status(&mut self) {
-        //request phi values and mark/unmark node as dead
-        // self.dead_nodes.remove(node_id)
-        // self.live_nodes.remove(node_id)
+    /// Checks and marks nodes.
+    pub fn update_nodes_liveliness(&mut self) {
+        let cluster_nodes = self
+            .cluster_state
+            .nodes()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        for node_id in &cluster_nodes {
+            if node_id.as_str() == self.self_node_id {
+                continue;
+            }
+            self.failure_detector.update_node_liveliness(node_id);
+        }
+
+        let living_nodes = self
+            .living_nodes()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        debug!(current_node = ?self.self_node_id, living_nodes = ?living_nodes, "nodes status");
+        for node_id in &cluster_nodes {
+            if node_id.as_str() != self.self_node_id && !living_nodes.contains(node_id) {
+                debug!(node_id = %node_id, "marking node as down.");
+                self.recently_removed_nodes
+                    .insert(node_id.to_string(), Instant::now());
+                self.cluster_state.remove_node(node_id);
+            }
+        }
     }
 
     pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
@@ -144,13 +221,12 @@ impl ScuttleButt {
         self.cluster_state.node_state_mut(&self.self_node_id)
     }
 
-    /// Retrieve a list of all living nodes.
+    /// Retrieves the list of all live nodes.
     pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
-        //TODO now this should use self.failure_detector.phi(node_id)
-        self.cluster_state.living_nodes()
+        self.failure_detector.living_nodes()
     }
 
-    /// Compute digest.
+    /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
     /// of at least one update, and have the node liveliness propagated
@@ -203,13 +279,21 @@ mod tests {
 
     #[test]
     fn test_scuttlebutt_handshake() {
-        let mut node1 = ScuttleButt::with_node_id_and_seeds("node1".to_string(), Vec::new());
+        let mut node1 = ScuttleButt::with_node_id_and_seeds(
+            "node1".to_string(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
         {
             let state1 = node1.self_node_state();
             state1.set("key1a", "1");
             state1.set("key2a", "2");
         }
-        let mut node2 = ScuttleButt::with_node_id_and_seeds("node2".to_string(), Vec::new());
+        let mut node2 = ScuttleButt::with_node_id_and_seeds(
+            "node2".to_string(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
         {
             let state2 = node2.self_node_state();
             state2.set("key1b", "1");

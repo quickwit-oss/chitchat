@@ -19,7 +19,7 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rand::prelude::SliceRandom;
 use rand::Rng;
@@ -28,9 +28,6 @@ use serde::{Deserialize, Serialize};
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
 use crate::{Version, VersionedValue};
-
-/// Maximum heartbeat age before a node is considered dead.
-const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NodeState {
@@ -115,15 +112,12 @@ impl ClusterState {
         self.node_states.get(node_id)
     }
 
-    /// Retrieve a list of all living nodes.
-    pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
-        self.node_states.iter().filter_map(|(node_id, node_state)| {
-            (node_state.last_heartbeat.elapsed() <= MAX_HEARTBEAT_DELTA).then(|| node_id.as_str())
-        })
-    }
-
     pub fn nodes(&self) -> impl Iterator<Item = &str> {
         self.node_states.keys().map(|k| k.as_str())
+    }
+
+    pub fn remove_node(&mut self, node_id: &str) {
+        self.node_states.remove(node_id);
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {
