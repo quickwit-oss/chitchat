@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use rand::prelude::SliceRandom;
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
@@ -32,10 +32,11 @@ use crate::{Version, VersionedValue};
 /// Maximum heartbeat age before a node is considered dead.
 const MAX_HEARTBEAT_DELTA: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
-    #[serde(skip_serializing)]
+    #[serde(skip)]
+    #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
     max_version: u64,
 }
@@ -90,7 +91,7 @@ impl NodeState {
     }
 }
 
-#[derive(Default, Serialize, Clone, Debug)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct ClusterState {
     pub(crate) node_states: BTreeMap<String, NodeState>,
 }
@@ -407,12 +408,12 @@ mod tests {
         digest: &Digest,
         expected_delta_atoms: &[(&str, &str, &str, Version)],
     ) {
-        let max_delta = cluster_state.compute_delta(&digest, usize::MAX);
+        let max_delta = cluster_state.compute_delta(digest, usize::MAX);
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
         for mtu in 2..buf.len() {
-            let delta = cluster_state.compute_delta(&digest, mtu);
+            let delta = cluster_state.compute_delta(digest, mtu);
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -427,11 +428,11 @@ mod tests {
                 expected_delta.add_node_delta(node, key, val, version);
             }
             {
-                let delta = cluster_state.compute_delta(&digest, mtu);
+                let delta = cluster_state.compute_delta(digest, mtu);
                 assert_eq!(&delta, &expected_delta);
             }
             {
-                let delta = cluster_state.compute_delta(&digest, mtu + 1);
+                let delta = cluster_state.compute_delta(digest, mtu + 1);
                 assert_eq!(&delta, &expected_delta);
             }
         }

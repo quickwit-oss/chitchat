@@ -25,7 +25,7 @@ mod message;
 pub(crate) mod serialize;
 mod state;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -39,7 +39,7 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 pub type Version = u64;
 
 /// A versioned value for a given Key-value pair.
-#[derive(Serialize, Clone, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
@@ -159,7 +159,7 @@ mod tests {
             let node_states = &other_node.cluster_state.node_states;
             assert_eq!(first_node_states.len(), node_states.len());
             for (key, value) in first_node_states {
-                assert_cluster_state_eq(&value, &node_states.get(key).unwrap());
+                assert_cluster_state_eq(value, node_states.get(key).unwrap());
             }
         }
     }
