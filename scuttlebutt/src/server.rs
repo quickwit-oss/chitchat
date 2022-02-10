@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -172,28 +173,108 @@ impl UdpServer {
 
     /// Gossip to multiple randomly chosen nodes.
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
-        // TODO: Gossip with live nodes & randomly include dead node
+        // Gossip with live nodes & probabilistically include a random dead node
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
-        let self_node_id = &scuttlebutt_guard.self_node_id;
         const EMPTY_STRING: String = String::new();
         let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
 
-        // Select up to [`GOSSIP_COUNT`] node IDs at random.
-        let nodes = scuttlebutt_guard.cluster_state.nodes();
-        let count = nodes
-            .filter(|node_id| node_id != self_node_id)
+        let count = scuttlebutt_guard
+            .live_nodes()
             .map(ToString::to_string)
             .choose_multiple_fill(rng, &mut rand_nodes);
 
+        let live_nodes_count = scuttlebutt_guard.live_nodes().count();
+        let dead_nodes_count = scuttlebutt_guard.dead_nodes().count();
+
+        // Select a dead node for potential gossip.
+        let dead_nodes: HashSet<String> = scuttlebutt_guard
+            .dead_nodes()
+            .map(ToString::to_string)
+            .collect();
+        let random_dead_node_opt = self.select_dead_node_to_gossip_with(
+            rng,
+            &dead_nodes,
+            live_nodes_count,
+            dead_nodes_count,
+        );
+
+        // Select a seed node for potential gossip.
+        let seed_nodes: HashSet<String> = scuttlebutt_guard
+            .seed_nodes()
+            .map(ToString::to_string)
+            .collect();
+        let self_node_id = scuttlebutt_guard.self_node_id();
+        let random_seed_node_opt = self.select_seed_node_to_gossip_with(
+            self_node_id,
+            rng,
+            &seed_nodes,
+            live_nodes_count,
+            dead_nodes_count,
+        );
+
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(scuttlebutt_guard);
+        let mut has_gossiped_with_a_seed_node = false;
         for node in &rand_nodes[..count] {
+            has_gossiped_with_a_seed_node =
+                has_gossiped_with_a_seed_node || seed_nodes.contains(node);
             let _ = self.gossip(node).await;
+        }
+        if let Some(random_dead_node) = random_dead_node_opt {
+            let _ = self.gossip(random_dead_node).await;
+        }
+
+        if let Some(random_seed_node) = random_seed_node_opt {
+            if !has_gossiped_with_a_seed_node || live_nodes_count < seed_nodes.len() {
+                let _ = self.gossip(random_seed_node).await;
+            }
         }
 
         // Update nodes liveliness
         let mut scuttlebutt_guard = self.scuttlebutt.lock().await;
         scuttlebutt_guard.update_nodes_liveliness();
+    }
+
+    /// Selects a dead node to gossip with, with some probability.
+    fn select_dead_node_to_gossip_with(
+        &self,
+        rng: &mut SmallRng,
+        dead_nodes: &HashSet<String>,
+        live_nodes_count: usize,
+        dead_nodes_count: usize,
+    ) -> Option<String> {
+        let selection_probability = dead_nodes_count as f64 / (live_nodes_count + 1) as f64;
+        if selection_probability > rng.gen::<f64>() {
+            return dead_nodes.iter().choose(rng).map(ToString::to_string);
+        }
+        None
+    }
+
+    /// Selects a seed node to gossip with, with some probability.
+    fn select_seed_node_to_gossip_with(
+        &self,
+        self_node_id: &String,
+        rng: &mut SmallRng,
+        seed_nodes: &HashSet<String>,
+        live_nodes_count: usize,
+        dead_nodes_count: usize,
+    ) -> Option<String> {
+        if seed_nodes.len() == 1 && seed_nodes.contains(self_node_id) {
+            return None;
+        }
+
+        let random_seed_node = seed_nodes.iter().choose(rng).map(ToString::to_string);
+
+        if live_nodes_count == 0 {
+            return random_seed_node;
+        }
+
+        let selection_probability =
+            seed_nodes.len() as f64 / (live_nodes_count + dead_nodes_count) as f64;
+        if selection_probability >= rng.gen::<f64>() {
+            return random_seed_node;
+        }
+        None
     }
 
     /// Gossip to one other UDP server.

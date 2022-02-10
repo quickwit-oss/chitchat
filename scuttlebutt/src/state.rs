@@ -90,12 +90,14 @@ impl NodeState {
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct ClusterState {
+    seed_nodes: Vec<String>,
     pub(crate) node_states: BTreeMap<String, NodeState>,
 }
 
 impl ClusterState {
     pub fn with_seed_ids(node_ids: Vec<String>) -> ClusterState {
         ClusterState {
+            seed_nodes: node_ids.clone(),
             node_states: node_ids
                 .into_iter()
                 .map(|node_id| (node_id, NodeState::default()))
@@ -114,6 +116,10 @@ impl ClusterState {
 
     pub fn nodes(&self) -> impl Iterator<Item = &str> {
         self.node_states.keys().map(|k| k.as_str())
+    }
+
+    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
+        self.seed_nodes.iter().map(|node_id| node_id.as_str())
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {

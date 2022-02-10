@@ -161,6 +161,20 @@ impl ScuttleButt {
         self.failure_detector.live_nodes()
     }
 
+    /// Retrieve the list of all dead nodes.
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &str> {
+        self.failure_detector.dead_nodes()
+    }
+
+    /// Retrieve a list of seed nodes.
+    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
+        self.cluster_state.seed_nodes()
+    }
+
+    pub fn self_node_id(&self) -> &String {
+        &self.self_node_id
+    }
+
     /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
