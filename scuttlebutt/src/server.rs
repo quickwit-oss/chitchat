@@ -28,6 +28,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
 
+use crate::failure_detector::FailureDetectorConfig;
 use crate::message::ScuttleButtMessage;
 use crate::serialize::Serializable;
 use crate::ScuttleButt;
@@ -52,10 +53,18 @@ impl ScuttleServer {
     /// Launch a new server.
     ///
     /// This will start the ScuttleButt server as a new Tokio background task.
-    pub fn spawn(address: impl Into<String>, seed_nodes: &[String]) -> Self {
+    pub fn spawn(
+        address: impl Into<String>,
+        seed_nodes: &[String],
+        failure_detector_config: FailureDetectorConfig,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let scuttlebutt = ScuttleButt::with_node_id_and_seeds(address.into(), seed_nodes.to_vec());
+        let scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+            address.into(),
+            seed_nodes.to_vec(),
+            failure_detector_config,
+        );
         let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
         let scuttlebutt_server = scuttlebutt_arc.clone();
 
@@ -163,6 +172,7 @@ impl UdpServer {
 
     /// Gossip to multiple randomly chosen nodes.
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
+        // TODO: Gossip with live nodes & randomly include dead node
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
         let self_node_id = &scuttlebutt_guard.self_node_id;
         const EMPTY_STRING: String = String::new();
@@ -180,6 +190,10 @@ impl UdpServer {
         for node in &rand_nodes[..count] {
             let _ = self.gossip(node).await;
         }
+
+        // Update nodes liveliness
+        let mut scuttlebutt_guard = self.scuttlebutt.lock().await;
+        scuttlebutt_guard.update_nodes_liveliness();
     }
 
     /// Gossip to one other UDP server.
@@ -204,6 +218,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::failure_detector::FailureDetectorConfig;
     use crate::message::ScuttleButtMessage;
     use crate::HEARTBEAT_KEY;
 
@@ -218,7 +233,7 @@ mod tests {
         let test_addr = "0.0.0.0:1111";
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn("0.0.0.0:1112", &[]);
+        let server = ScuttleServer::spawn("0.0.0.0:1112", &[], FailureDetectorConfig::default());
         server.gossip(test_addr).unwrap();
 
         let mut buf = [0; UDP_MTU];
@@ -237,9 +252,13 @@ mod tests {
     async fn syn_ack() {
         let server_addr = "0.0.0.0:2221";
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds("offline".into(), Vec::new());
+        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+            "offline".into(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
 
-        let server = ScuttleServer::spawn(server_addr, &[]);
+        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
 
         let mut buf = Vec::new();
         let syn = scuttlebutt.create_syn_message();
@@ -261,9 +280,13 @@ mod tests {
     #[tokio::test]
     async fn ignore_broken_payload() {
         let server_addr = "0.0.0.0:3331";
-        let server = ScuttleServer::spawn(server_addr, &[]);
+        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds("offline".into(), Vec::new());
+        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+            "offline".into(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
 
         // Send broken payload.
         socket.send_to(b"broken", server_addr).await.unwrap();
@@ -288,9 +311,13 @@ mod tests {
     #[tokio::test]
     async fn ignore_oversized_payload() {
         let server_addr = "0.0.0.0:4441";
-        let server = ScuttleServer::spawn(server_addr, &[]);
+        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds("offline".into(), Vec::new());
+        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+            "offline".into(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
 
         // Send broken payload.
         socket.send_to(&[0; UDP_MTU], server_addr).await.unwrap();
@@ -316,7 +343,11 @@ mod tests {
         let server_addr = "0.0.0.0:5551";
         let socket = UdpSocket::bind(server_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn("0.0.0.0:5552", &[server_addr.into()]);
+        let server = ScuttleServer::spawn(
+            "0.0.0.0:5552",
+            &[server_addr.into()],
+            FailureDetectorConfig::default(),
+        );
 
         let mut buf = [0; UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
@@ -332,11 +363,15 @@ mod tests {
     #[tokio::test]
     async fn heartbeat() {
         let test_addr = "0.0.0.0:6661";
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(test_addr.into(), Vec::new());
+        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+            test_addr.into(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
         let server_addr = "0.0.0.0:6662";
-        let server = ScuttleServer::spawn(server_addr, &[]);
+        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
 
         // Add our test socket to the server's nodes.
         server

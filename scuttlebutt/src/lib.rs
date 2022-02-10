@@ -21,11 +21,16 @@ pub mod server;
 
 mod delta;
 mod digest;
+mod failure_detector;
 mod message;
 pub(crate) mod serialize;
 mod state;
 
+use delta::Delta;
+use failure_detector::FailureDetector;
+pub use failure_detector::FailureDetectorConfig;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -38,6 +43,8 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub type Version = u64;
 
+pub type NodeId = String;
+
 /// A versioned value for a given Key-value pair.
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct VersionedValue {
@@ -47,18 +54,25 @@ pub struct VersionedValue {
 
 pub struct ScuttleButt {
     mtu: usize,
-    self_node_id: String,
+    self_node_id: NodeId,
     cluster_state: ClusterState,
     heartbeat: u64,
+    /// The failure detector instance.
+    failure_detector: FailureDetector,
 }
 
 impl ScuttleButt {
-    pub fn with_node_id_and_seeds(self_node_id: String, seed_ids: Vec<String>) -> Self {
+    pub fn with_node_id_and_seeds(
+        self_node_id: NodeId,
+        seed_ids: Vec<String>,
+        failure_detector_config: FailureDetectorConfig,
+    ) -> Self {
         let mut scuttlebutt = ScuttleButt {
             mtu: 60_000,
             heartbeat: 0,
             self_node_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
+            failure_detector: FailureDetector::new(failure_detector_config),
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -83,21 +97,55 @@ impl ScuttleButt {
                 let delta = self
                     .cluster_state
                     .compute_delta(&digest, self.mtu - 1 - self_digest.serialized_len());
+                self.report_to_failure_detector(&delta);
                 Some(ScuttleButtMessage::SynAck {
                     delta,
                     digest: self_digest,
                 })
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
+                self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let delta = self.cluster_state.compute_delta(&digest, self.mtu - 1);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
+                self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 None
             }
         }
+    }
+
+    fn report_to_failure_detector(&mut self, delta: &Delta) {
+        for (node_id, node_delta) in &delta.node_deltas {
+            let local_max_version = self
+                .cluster_state
+                .node_states
+                .get(node_id)
+                .map(|node_state| node_state.max_version)
+                .unwrap_or(0);
+
+            let delta_max_version = node_delta.max_version();
+            if local_max_version < delta_max_version {
+                self.failure_detector.report_heartbeat(node_id);
+            }
+        }
+    }
+
+    /// Checks and marks nodes as dead or live.
+    pub fn update_nodes_liveliness(&mut self) {
+        let cluster_nodes = self
+            .cluster_state
+            .nodes()
+            .map(str::to_string)
+            .filter(|node_id| node_id != &self.self_node_id)
+            .collect::<Vec<_>>();
+        for node_id in &cluster_nodes {
+            self.failure_detector.update_node_liveliness(node_id);
+        }
+
+        debug!(current_node = ?self.self_node_id, live_nodes = ?self.live_nodes().collect::<Vec<_>>(), "nodes status");
     }
 
     pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
@@ -108,12 +156,12 @@ impl ScuttleButt {
         self.cluster_state.node_state_mut(&self.self_node_id)
     }
 
-    /// Retrieve a list of all living nodes.
-    pub fn living_nodes(&self) -> impl Iterator<Item = &str> {
-        self.cluster_state.living_nodes()
+    /// Retrieves the list of all live nodes.
+    pub fn live_nodes(&self) -> impl Iterator<Item = &str> {
+        self.failure_detector.live_nodes()
     }
 
-    /// Compute digest.
+    /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
     /// of at least one update, and have the node liveliness propagated
@@ -166,13 +214,21 @@ mod tests {
 
     #[test]
     fn test_scuttlebutt_handshake() {
-        let mut node1 = ScuttleButt::with_node_id_and_seeds("node1".to_string(), Vec::new());
+        let mut node1 = ScuttleButt::with_node_id_and_seeds(
+            "node1".to_string(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
         {
             let state1 = node1.self_node_state();
             state1.set("key1a", "1");
             state1.set("key2a", "2");
         }
-        let mut node2 = ScuttleButt::with_node_id_and_seeds("node2".to_string(), Vec::new());
+        let mut node2 = ScuttleButt::with_node_id_and_seeds(
+            "node2".to_string(),
+            Vec::new(),
+            FailureDetectorConfig::default(),
+        );
         {
             let state2 = node2.self_node_state();
             state2.set("key1b", "1");
