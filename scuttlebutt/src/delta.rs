@@ -21,11 +21,9 @@ use std::collections::BTreeMap;
 use std::mem;
 
 use crate::serialize::*;
-#[cfg(test)]
-use crate::Version;
-use crate::VersionedValue;
+use crate::{Version, VersionedValue};
 
-#[derive(Default, Eq, PartialEq, Debug, Clone)]
+#[derive(Default, Eq, PartialEq, Debug)]
 pub struct Delta {
     pub(crate) node_deltas: BTreeMap<String, NodeDelta>,
 }
@@ -83,9 +81,19 @@ impl Delta {
     }
 }
 
-#[derive(serde::Serialize, Default, Eq, PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, Default, Eq, PartialEq, Debug)]
 pub(crate) struct NodeDelta {
     pub key_values: BTreeMap<String, VersionedValue>,
+}
+
+impl NodeDelta {
+    pub fn max_version(&self) -> Version {
+        self.key_values
+            .values()
+            .map(|value| value.version)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

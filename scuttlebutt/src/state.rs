@@ -70,6 +70,11 @@ impl NodeState {
         self.key_values.get(key)
     }
 
+    /// Returns the maximum version.
+    pub fn get_max_version(&self) -> u64 {
+        self.max_version
+    }
+
     /// Sets a new value for a given key.
     ///
     /// Setting a new value automatically increments the
@@ -114,10 +119,6 @@ impl ClusterState {
 
     pub fn nodes(&self) -> impl Iterator<Item = &str> {
         self.node_states.keys().map(|k| k.as_str())
-    }
-
-    pub fn remove_node(&mut self, node_id: &str) {
-        self.node_states.remove(node_id);
     }
 
     pub fn apply_delta(&mut self, delta: Delta) {
