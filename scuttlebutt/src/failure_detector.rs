@@ -28,14 +28,16 @@ use mock_instant::Instant;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use crate::NodeId;
+
 /// A phi accrual failure detector implementation.
 pub struct FailureDetector {
     /// Heartbeat samples for each node.
-    node_samples: RwLock<HashMap<String, SamplingWindow>>,
+    node_samples: RwLock<HashMap<NodeId, SamplingWindow>>,
     /// Failure detector configuration.
     config: FailureDetectorConfig,
     /// Denotes live nodes.
-    live_nodes: HashSet<String>,
+    live_nodes: HashSet<NodeId>,
 }
 
 impl FailureDetector {

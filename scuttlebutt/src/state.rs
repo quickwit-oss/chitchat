@@ -35,7 +35,7 @@ pub struct NodeState {
     #[serde(skip)]
     #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
-    max_version: u64,
+    pub(crate) max_version: u64,
 }
 
 impl Default for NodeState {
@@ -68,11 +68,6 @@ impl NodeState {
 
     pub fn get_versioned(&self, key: &str) -> Option<&VersionedValue> {
         self.key_values.get(key)
-    }
-
-    /// Returns the maximum version.
-    pub fn get_max_version(&self) -> u64 {
-        self.max_version
     }
 
     /// Sets a new value for a given key.

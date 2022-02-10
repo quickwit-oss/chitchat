@@ -123,7 +123,7 @@ impl ScuttleButt {
                 .cluster_state
                 .node_states
                 .get(node_id)
-                .map(|node_state| node_state.get_max_version())
+                .map(|node_state| node_state.max_version)
                 .unwrap_or(0);
 
             let delta_max_version = node_delta.max_version();
@@ -139,11 +139,9 @@ impl ScuttleButt {
             .cluster_state
             .nodes()
             .map(str::to_string)
+            .filter(|node_id| node_id != &self.self_node_id)
             .collect::<Vec<_>>();
         for node_id in &cluster_nodes {
-            if node_id.as_str() == self.self_node_id {
-                continue;
-            }
             self.failure_detector.update_node_liveliness(node_id);
         }
 
