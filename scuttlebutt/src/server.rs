@@ -28,6 +28,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time;
+use tracing::error;
 
 use crate::failure_detector::FailureDetectorConfig;
 use crate::message::ScuttleButtMessage;
@@ -175,109 +176,45 @@ impl UdpServer {
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
         // Gossip with live nodes & probabilistically include a random dead node
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
-        let live_nodes_count = scuttlebutt_guard.live_nodes().count();
-        let dead_nodes_count = scuttlebutt_guard.dead_nodes().count();
-        const EMPTY_STRING: String = String::new();
-        let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
+        let cluster_state = scuttlebutt_guard.cluster_state();
 
-        // Select `GOSSIP_COUNT` number of live nodes.
-        // On startup, select from cluster nodes since we don't know any live node yet.
-        let count = if live_nodes_count == 0 {
-            scuttlebutt_guard
-                .cluster_state()
-                .nodes()
-                .filter(|node_id| node_id != scuttlebutt_guard.self_node_id())
-                .map(ToString::to_string)
-                .choose_multiple_fill(rng, &mut rand_nodes)
-        } else {
-            scuttlebutt_guard
-                .live_nodes()
-                .map(ToString::to_string)
-                .choose_multiple_fill(rng, &mut rand_nodes)
-        };
-
-        // Select a dead node for potential gossip.
-        let dead_nodes: HashSet<String> = scuttlebutt_guard
-            .dead_nodes()
-            .map(ToString::to_string)
-            .collect();
-        let random_dead_node_opt = self.select_dead_node_to_gossip_with(
-            rng,
-            &dead_nodes,
-            live_nodes_count,
-            dead_nodes_count,
-        );
-
-        // Select a seed node for potential gossip.
-        // It prevents network partition caused by the number of seeds.
-        let seed_nodes: HashSet<String> = scuttlebutt_guard
-            .seed_nodes()
-            .map(ToString::to_string)
-            .collect();
-        let random_seed_node_opt = self.select_seed_node_to_gossip_with(
-            rng,
-            &seed_nodes,
-            live_nodes_count,
-            dead_nodes_count,
-        );
+        let all_nodes = cluster_state
+            .nodes()
+            .filter(|node_id| node_id != scuttlebutt_guard.self_node_id())
+            .collect::<HashSet<_>>();
+        let live_nodes = scuttlebutt_guard.live_nodes().collect::<HashSet<_>>();
+        let dead_nodes = scuttlebutt_guard.dead_nodes().collect::<HashSet<_>>();
+        let seed_nodes = scuttlebutt_guard.seed_nodes().collect::<HashSet<_>>();
+        let (selected_nodes, random_dead_node_opt, random_seed_node_opt) =
+            select_nodes_for_gossip(rng, all_nodes, live_nodes, dead_nodes, seed_nodes);
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(scuttlebutt_guard);
-        let mut has_gossiped_with_a_seed_node = false;
-        for node in &rand_nodes[..count] {
-            has_gossiped_with_a_seed_node =
-                has_gossiped_with_a_seed_node || seed_nodes.contains(node);
-            let _ = self.gossip(node).await;
-        }
-        if let Some(random_dead_node) = random_dead_node_opt {
-            let _ = self.gossip(random_dead_node).await;
+
+        for node in selected_nodes {
+            let result = self.gossip(&node).await;
+            if result.is_err() {
+                error!(node = %node, "Gossip error with a live node.");
+            }
         }
 
-        if !has_gossiped_with_a_seed_node || live_nodes_count < seed_nodes.len() {
-            if let Some(random_seed_node) = random_seed_node_opt {
-                let _ = self.gossip(random_seed_node).await;
+        if let Some(random_dead_node) = random_dead_node_opt {
+            let result = self.gossip(&random_dead_node).await;
+            if result.is_err() {
+                error!(node = %random_dead_node, "Gossip error with a dead node.")
+            }
+        }
+
+        if let Some(random_seed_node) = random_seed_node_opt {
+            let result = self.gossip(&random_seed_node).await;
+            if result.is_err() {
+                error!(node = %random_seed_node, "Gossip error with a seed node.")
             }
         }
 
         // Update nodes liveliness
         let mut scuttlebutt_guard = self.scuttlebutt.lock().await;
         scuttlebutt_guard.update_nodes_liveliness();
-    }
-
-    /// Selects a dead node to gossip with, with some probability.
-    fn select_dead_node_to_gossip_with(
-        &self,
-        rng: &mut SmallRng,
-        dead_nodes: &HashSet<String>,
-        live_nodes_count: usize,
-        dead_nodes_count: usize,
-    ) -> Option<String> {
-        let selection_probability = dead_nodes_count as f64 / (live_nodes_count + 1) as f64;
-        if selection_probability > rng.gen::<f64>() {
-            return dead_nodes.iter().choose(rng).map(ToString::to_string);
-        }
-        None
-    }
-
-    /// Selects a seed node to gossip with, with some probability.
-    fn select_seed_node_to_gossip_with(
-        &self,
-        rng: &mut SmallRng,
-        seed_nodes: &HashSet<String>,
-        live_nodes_count: usize,
-        dead_nodes_count: usize,
-    ) -> Option<String> {
-        let random_seed_node = seed_nodes.iter().choose(rng).map(ToString::to_string);
-        if live_nodes_count == 0 {
-            return random_seed_node;
-        }
-
-        let selection_probability =
-            seed_nodes.len() as f64 / (live_nodes_count + dead_nodes_count) as f64;
-        if selection_probability >= rng.gen::<f64>() {
-            return random_seed_node;
-        }
-        None
     }
 
     /// Gossip to one other UDP server.
@@ -296,6 +233,98 @@ enum ChannelMessage {
     Shutdown,
 }
 
+fn select_nodes_for_gossip<R>(
+    rng: &mut R,
+    all_nodes: HashSet<&str>,
+    live_nodes: HashSet<&str>,
+    dead_nodes: HashSet<&str>,
+    seed_nodes: HashSet<&str>,
+) -> (Vec<String>, Option<String>, Option<String>)
+where
+    R: Rng + ?Sized,
+{
+    let live_nodes_count = live_nodes.len();
+    let dead_nodes_count = dead_nodes.len();
+    const EMPTY_STRING: String = String::new();
+    let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
+
+    // Select `GOSSIP_COUNT` number of live nodes.
+    // On startup, select from cluster nodes since we don't know any live node yet.
+    let count = if live_nodes_count == 0 {
+        all_nodes
+            .iter()
+            .map(ToString::to_string)
+            .choose_multiple_fill(rng, &mut rand_nodes)
+    } else {
+        live_nodes
+            .iter()
+            .map(ToString::to_string)
+            .choose_multiple_fill(rng, &mut rand_nodes)
+    };
+    let mut nodes = Vec::new();
+    let mut has_gossiped_with_a_seed_node = false;
+    for node in &rand_nodes[..count] {
+        has_gossiped_with_a_seed_node =
+            has_gossiped_with_a_seed_node || seed_nodes.contains(node.as_str());
+        nodes.push(node.into());
+    }
+
+    // Select a dead node for potential gossip.
+    let random_dead_node_opt =
+        select_dead_node_to_gossip_with(rng, &dead_nodes, live_nodes_count, dead_nodes_count);
+
+    // Select a seed node for potential gossip.
+    // It prevents network partition caused by the number of seeds.
+    let random_seed_node_opt =
+        if !has_gossiped_with_a_seed_node || live_nodes_count < seed_nodes.len() {
+            select_seed_node_to_gossip_with(rng, &seed_nodes, live_nodes_count, dead_nodes_count)
+        } else {
+            None
+        };
+
+    (nodes, random_dead_node_opt, random_seed_node_opt)
+}
+
+/// Selects a dead node to gossip with, with some probability.
+fn select_dead_node_to_gossip_with<R>(
+    rng: &mut R,
+    dead_nodes: &HashSet<&str>,
+    live_nodes_count: usize,
+    dead_nodes_count: usize,
+) -> Option<String>
+where
+    R: Rng + ?Sized,
+{
+    let selection_probability = dead_nodes_count as f64 / (live_nodes_count + 1) as f64;
+    if selection_probability > rng.gen::<f64>() {
+        return dead_nodes.iter().choose(rng).map(ToString::to_string);
+    }
+    None
+}
+
+/// Selects a seed node to gossip with, with some probability.
+fn select_seed_node_to_gossip_with<R>(
+    rng: &mut R,
+    seed_nodes: &HashSet<&str>,
+    live_nodes_count: usize,
+    dead_nodes_count: usize,
+) -> Option<String>
+where
+    R: Rng + ?Sized,
+{
+    let random_seed_node = seed_nodes.iter().choose(rng).map(ToString::to_string);
+    if live_nodes_count == 0 {
+        return random_seed_node;
+    }
+
+    let selection_probability =
+        seed_nodes.len() as f64 / (live_nodes_count + dead_nodes_count) as f64;
+    if selection_probability >= rng.gen::<f64>() {
+        return random_seed_node;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -305,6 +334,37 @@ mod tests {
     use crate::failure_detector::FailureDetectorConfig;
     use crate::message::ScuttleButtMessage;
     use crate::HEARTBEAT_KEY;
+
+    #[derive(Debug, Default)]
+    struct RngForTest {
+        value: u32,
+    }
+
+    impl RngForTest {
+        fn reset(&mut self) {
+            self.value = 0;
+        }
+    }
+
+    impl RngCore for RngForTest {
+        fn next_u32(&mut self) -> u32 {
+            self.value += 1;
+            self.value - 1
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.value += 1;
+            (self.value - 1) as u64
+        }
+
+        fn fill_bytes(&mut self, _dest: &mut [u8]) {
+            todo!()
+        }
+
+        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), rand::Error> {
+            todo!()
+        }
+    }
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
         tokio::time::timeout(Duration::from_millis(100), future)
@@ -492,5 +552,13 @@ mod tests {
         assert_eq!(heartbeat, "2");
 
         server.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn test_select_nodes_for_gossip() {
+        let mut rng = RngForTest::default();
+        rng.reset();
+
+        // let b = select_nodes_for_gossip(&mut rng);
     }
 }
