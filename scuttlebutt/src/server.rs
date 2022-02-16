@@ -358,12 +358,16 @@ mod tests {
         }
 
         fn fill_bytes(&mut self, _dest: &mut [u8]) {
-            todo!()
+            unimplemented!();
         }
 
         fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), rand::Error> {
-            todo!()
+            unimplemented!();
         }
+    }
+
+    fn to_hash_set<'a>(node_ids: &[&'a str]) -> std::collections::HashSet<&'a str> {
+        node_ids.iter().copied().collect()
     }
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
@@ -557,8 +561,44 @@ mod tests {
     #[test]
     fn test_select_nodes_for_gossip() {
         let mut rng = RngForTest::default();
-        rng.reset();
 
-        // let b = select_nodes_for_gossip(&mut rng);
+        // from perspective of node-0
+        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            to_hash_set(&["node-1", "node-2", "node-3"]),
+            to_hash_set(&["node-1", "node-2"]),
+            to_hash_set(&["node-3"]),
+            to_hash_set(&["node-2"]),
+        );
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(dead_node, Some("node-3".to_string()));
+        assert_eq!(
+            seed_node, None,
+            "Should have already gossiped with a seed node."
+        );
+
+        rng.reset();
+        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+            to_hash_set(&[]),
+            to_hash_set(&[]),
+        );
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(dead_node, None);
+        assert_eq!(seed_node, None);
+
+        rng.reset();
+        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+            to_hash_set(&["node-1"]),
+            to_hash_set(&["node-2", "node-3", "node-4", "node-5"]),
+            to_hash_set(&["node-4", "node-5"]),
+        );
+        assert_eq!(nodes, ["node-1".to_string()]);
+        assert!(dead_node.is_some());
+        assert!(seed_node.is_some());
     }
 }
