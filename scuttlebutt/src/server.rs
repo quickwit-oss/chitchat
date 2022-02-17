@@ -33,7 +33,7 @@ use tracing::error;
 use crate::failure_detector::FailureDetectorConfig;
 use crate::message::ScuttleButtMessage;
 use crate::serialize::Serializable;
-use crate::ScuttleButt;
+use crate::{NodeId, ScuttleButt};
 
 /// Maximum payload size (in bytes) for UDP.
 const UDP_MTU: usize = 65_507;
@@ -239,7 +239,7 @@ fn select_nodes_for_gossip<R>(
     live_nodes: HashSet<&str>,
     dead_nodes: HashSet<&str>,
     seed_nodes: HashSet<&str>,
-) -> (Vec<String>, Option<String>, Option<String>)
+) -> (Vec<NodeId>, Option<NodeId>, Option<NodeId>)
 where
     R: Rng + ?Sized,
 {
@@ -275,6 +275,7 @@ where
 
     // Select a seed node for potential gossip.
     // It prevents network partition caused by the number of seeds.
+    // See https://issues.apache.org/jira/browse/CASSANDRA-150
     let random_seed_node_opt =
         if !has_gossiped_with_a_seed_node || live_nodes_count < seed_nodes.len() {
             select_seed_node_to_gossip_with(rng, &seed_nodes, live_nodes_count, dead_nodes_count)
@@ -291,7 +292,7 @@ fn select_dead_node_to_gossip_with<R>(
     dead_nodes: &HashSet<&str>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<String>
+) -> Option<NodeId>
 where
     R: Rng + ?Sized,
 {
@@ -308,7 +309,7 @@ fn select_seed_node_to_gossip_with<R>(
     seed_nodes: &HashSet<&str>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<String>
+) -> Option<NodeId>
 where
     R: Rng + ?Sized,
 {

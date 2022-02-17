@@ -79,8 +79,6 @@ fn test_multiple_nodes() -> anyhow::Result<()> {
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 
-    // TODO: add more checks
-
     shutdown_nodes();
     Ok(())
 }
