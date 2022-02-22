@@ -217,6 +217,8 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
 
+    use tokio_stream::StreamExt;
+
     use super::*;
     use crate::failure_detector::FailureDetectorConfig;
     use crate::message::ScuttleButtMessage;
@@ -408,5 +410,30 @@ mod tests {
         assert_eq!(heartbeat, "2");
 
         server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_member_change_event_is_broadcasted() {
+        let node1 = ScuttleServer::spawn("0.0.0.0:6663", &[], FailureDetectorConfig::default());
+        let node2 = ScuttleServer::spawn(
+            "0.0.0.0:6664",
+            &["0.0.0.0:6663".to_string()],
+            FailureDetectorConfig::default(),
+        );
+        let mut event_receiver = node1.scuttlebutt().lock().await.nodes_change_watcher();
+
+        // wait for nodes to exchange and try to get latest cluster change event.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        timeout(async move {
+            let members_opt = event_receiver.next().await;
+            assert!(members_opt.is_some());
+            let members = members_opt.unwrap();
+            assert_eq!(members.len(), 1);
+            assert!(members.contains("0.0.0.0:6664"));
+        })
+        .await;
+
+        node1.shutdown().await.unwrap();
+        node2.shutdown().await.unwrap();
     }
 }
