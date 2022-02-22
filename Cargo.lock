@@ -1256,6 +1256,7 @@ dependencies = [
  "rand",
  "serde",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
@@ -1578,6 +1579,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
