@@ -420,18 +420,20 @@ mod tests {
             &["0.0.0.0:6663".to_string()],
             FailureDetectorConfig::default(),
         );
-        let mut event_receiver = node1.scuttlebutt().lock().await.nodes_change_watcher();
+        let mut live_nodes_watcher = node1
+            .scuttlebutt()
+            .lock()
+            .await
+            .live_nodes_watcher()
+            .skip_while(|live_nodes| live_nodes.is_empty());
 
-        // wait for nodes to exchange and try to get latest cluster change event.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        timeout(async move {
-            let members_opt = event_receiver.next().await;
-            assert!(members_opt.is_some());
-            let members = members_opt.unwrap();
-            assert_eq!(members.len(), 1);
-            assert!(members.contains("0.0.0.0:6664"));
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            assert_eq!(live_nodes.len(), 1);
+            assert!(live_nodes.contains("0.0.0.0:6664"));
         })
-        .await;
+        .await
+        .unwrap();
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();

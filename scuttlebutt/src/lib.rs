@@ -63,10 +63,10 @@ pub struct ScuttleButt {
     heartbeat: u64,
     /// The failure detector instance.
     failure_detector: FailureDetector,
-    /// A notification channel (sender) for exchanging members change in the cluster.
-    members_change_sender: watch::Sender<HashSet<NodeId>>,
-    /// A notification channel (receiver) for exchanging members change in the cluster.
-    members_change_receiver: watch::Receiver<HashSet<NodeId>>,
+    /// A notification channel (sender) for sending live nodes change feed.
+    live_nodes_watcher_tx: watch::Sender<HashSet<NodeId>>,
+    /// A notification channel (receiver) for receiving live nodes change feed.
+    live_nodes_watcher_rx: watch::Receiver<HashSet<NodeId>>,
 }
 
 impl ScuttleButt {
@@ -75,15 +75,15 @@ impl ScuttleButt {
         seed_ids: Vec<String>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
-        let (members_change_sender, members_change_receiver) = watch::channel(HashSet::new());
+        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
         let mut scuttlebutt = ScuttleButt {
             mtu: 60_000,
             heartbeat: 0,
             self_node_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
             failure_detector: FailureDetector::new(failure_detector_config),
-            members_change_sender,
-            members_change_receiver,
+            live_nodes_watcher_tx,
+            live_nodes_watcher_rx,
         };
 
         // Immediately mark node as alive to ensure it responds to SYNs.
@@ -146,7 +146,7 @@ impl ScuttleButt {
 
     /// Checks and marks nodes as dead or live.
     pub fn update_nodes_liveliness(&mut self) {
-        let members_before = self
+        let live_nodes_before = self
             .live_nodes()
             .map(str::to_string)
             .collect::<HashSet<_>>();
@@ -160,13 +160,13 @@ impl ScuttleButt {
             self.failure_detector.update_node_liveliness(node_id);
         }
 
-        let members_after = self
+        let live_nodes_after = self
             .live_nodes()
             .map(str::to_string)
             .collect::<HashSet<_>>();
-        if members_before != members_after {
-            debug!(current_node = ?self.self_node_id, live_nodes = ?members_after, "nodes status changed");
-            if self.members_change_sender.send(members_after).is_err() {
+        if live_nodes_before != live_nodes_after {
+            debug!(current_node = ?self.self_node_id, live_nodes = ?live_nodes_after, "nodes status changed");
+            if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
                 error!(current_node = ?self.self_node_id, "error while reporting membership change event.")
             }
         }
@@ -203,8 +203,8 @@ impl ScuttleButt {
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.
-    pub fn nodes_change_watcher(&self) -> WatchStream<HashSet<NodeId>> {
-        WatchStream::new(self.members_change_receiver.clone())
+    pub fn live_nodes_watcher(&self) -> WatchStream<HashSet<NodeId>> {
+        WatchStream::new(self.live_nodes_watcher_rx.clone())
     }
 }
 
