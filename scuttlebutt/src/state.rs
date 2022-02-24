@@ -29,6 +29,9 @@ use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
 use crate::{Version, VersionedValue};
 
+/// Maximum value size (in bytes) for a key-value item.
+const MAX_KV_VALUE_SIZE: usize = 500;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
@@ -82,6 +85,14 @@ impl NodeState {
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
         assert!(version > self.max_version);
+        let value_size = value.bytes().len();
+        assert!(
+            value_size <= MAX_KV_VALUE_SIZE,
+            "Value for key `{}` is too large (actual: {}, maximum: {})",
+            key,
+            value_size,
+            MAX_KV_VALUE_SIZE
+        );
         self.max_version = version;
         self.key_values
             .insert(key, VersionedValue { version, value });
@@ -156,7 +167,7 @@ impl ClusterState {
         }
     }
 
-    /// Implements the scuttlebutt reconcialiation with the scuttle-depth ordering.
+    /// Implements the scuttlebutt reconciliation with the scuttle-depth ordering.
     pub fn compute_delta(&self, digest: &Digest, mtu: usize) -> Delta {
         let mut delta_writer = DeltaWriter::with_mtu(mtu);
 
@@ -318,6 +329,15 @@ mod tests {
                 version: 3
             }
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Value for key `text` is too large (actual: 528, maximum: 500)")]
+    fn test_cluster_state_set_with_large_value() {
+        let mut cluster_state = ClusterState::default();
+        let node_state = cluster_state.node_state_mut("node");
+        let large_value = "The quick brown fox jumps over the lazy dog.".repeat(12);
+        node_state.set("text", large_value);
     }
 
     #[test]
