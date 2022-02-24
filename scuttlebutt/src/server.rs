@@ -331,6 +331,8 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
 
+    use tokio_stream::StreamExt;
+
     use super::*;
     use crate::failure_detector::FailureDetectorConfig;
     use crate::message::ScuttleButtMessage;
@@ -557,6 +559,33 @@ mod tests {
         assert_eq!(heartbeat, "2");
 
         server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_member_change_event_is_broadcasted() {
+        let node1 = ScuttleServer::spawn("0.0.0.0:6663", &[], FailureDetectorConfig::default());
+        let node2 = ScuttleServer::spawn(
+            "0.0.0.0:6664",
+            &["0.0.0.0:6663".to_string()],
+            FailureDetectorConfig::default(),
+        );
+        let mut live_nodes_watcher = node1
+            .scuttlebutt()
+            .lock()
+            .await
+            .live_nodes_watcher()
+            .skip_while(|live_nodes| live_nodes.is_empty());
+
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            assert_eq!(live_nodes.len(), 1);
+            assert!(live_nodes.contains("0.0.0.0:6664"));
+        })
+        .await
+        .unwrap();
+
+        node1.shutdown().await.unwrap();
+        node2.shutdown().await.unwrap();
     }
 
     #[test]
