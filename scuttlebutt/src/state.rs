@@ -85,7 +85,14 @@ impl NodeState {
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
         assert!(version > self.max_version);
-        assert!(value.bytes().len() <= MAX_KV_VALUE_SIZE, "Value too large.");
+        let value_size = value.bytes().len();
+        assert!(
+            value_size <= MAX_KV_VALUE_SIZE,
+            "Value for key `{}` is too large (actual: {}, maximum: {})",
+            key,
+            value_size,
+            MAX_KV_VALUE_SIZE
+        );
         self.max_version = version;
         self.key_values
             .insert(key, VersionedValue { version, value });
@@ -325,12 +332,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Value too large.")]
+    #[should_panic(expected = "Value for key `text` is too large (actual: 528, maximum: 500)")]
     fn test_cluster_state_set_with_large_value() {
         let mut cluster_state = ClusterState::default();
         let node_state = cluster_state.node_state_mut("node");
         let large_value = "The quick brown fox jumps over the lazy dog.".repeat(12);
-        node_state.set("key", large_value);
+        node_state.set("text", large_value);
     }
 
     #[test]
