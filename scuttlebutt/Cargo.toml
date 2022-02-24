@@ -10,6 +10,7 @@ bytes = "1"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version="1", features=["derive"] }
 tokio = { version = "1.14.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
+tokio-stream = { version = "0.1", features = [ "sync" ] }
 anyhow = "1.0.51"
 tracing = "0.1"
 
