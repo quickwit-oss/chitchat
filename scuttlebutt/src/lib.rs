@@ -72,7 +72,7 @@ pub struct ScuttleButt {
 impl ScuttleButt {
     pub fn with_node_id_and_seeds(
         self_node_id: NodeId,
-        seed_ids: Vec<String>,
+        seed_ids: HashSet<String>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
@@ -185,6 +185,20 @@ impl ScuttleButt {
         self.failure_detector.live_nodes()
     }
 
+    /// Retrieve the list of all dead nodes.
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &str> {
+        self.failure_detector.dead_nodes()
+    }
+
+    /// Retrieve a list of seed nodes.
+    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
+        self.cluster_state.seed_nodes()
+    }
+
+    pub fn self_node_id(&self) -> &String {
+        &self.self_node_id
+    }
+
     /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
@@ -210,7 +224,18 @@ impl ScuttleButt {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::RangeInclusive;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use mock_instant::MockClock;
+    use tokio::sync::Mutex;
+    use tokio::time;
+    use tokio_stream::wrappers::IntervalStream;
+    use tokio_stream::StreamExt;
+
     use super::*;
+    use crate::server::ScuttleServer;
 
     fn run_scuttlebutt_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
         let syn_message = initiating_node.create_syn_message();
@@ -241,11 +266,74 @@ mod tests {
         }
     }
 
+    fn start_node(port: u32, seeds: &[String]) -> ScuttleServer {
+        ScuttleServer::spawn(
+            format!("localhost:{}", port),
+            seeds,
+            FailureDetectorConfig::default(),
+        )
+    }
+
+    async fn setup_nodes(port_range: RangeInclusive<u32>) -> Vec<(String, ScuttleServer)> {
+        let mut tasks = Vec::new();
+        let mut ports = port_range.clone();
+        let seed_port = ports.next().unwrap();
+        tasks.push((seed_port.to_string(), start_node(seed_port, &[])));
+        for port in ports {
+            let seeds = port_range
+                .clone()
+                .filter(|peer_port| peer_port != &port)
+                .map(|peer_port| format!("localhost:{}", peer_port))
+                .collect::<Vec<_>>();
+
+            tasks.push((port.to_string(), start_node(port, &seeds)));
+        }
+        // Make sure the failure detector's fake clock moves forward.
+        tokio::spawn(async {
+            let mut ticker = IntervalStream::new(time::interval(Duration::from_millis(50)));
+            while ticker.next().await.is_some() {
+                MockClock::advance(Duration::from_millis(50));
+            }
+        });
+        tasks
+    }
+
+    async fn shutdown_nodes(nodes: Vec<(String, ScuttleServer)>) -> anyhow::Result<()> {
+        for (_, node) in nodes {
+            node.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    async fn wait_for_scuttlebutt_state(
+        scuttlebutt: Arc<Mutex<ScuttleButt>>,
+        expected_node_count: usize,
+        expected_nodes: &[&str],
+    ) {
+        let mut live_nodes_watcher = scuttlebutt
+            .lock()
+            .await
+            .live_nodes_watcher()
+            .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
+        tokio::time::timeout(Duration::from_secs(20), async move {
+            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            assert_eq!(
+                live_nodes,
+                expected_nodes
+                    .iter()
+                    .map(|node_id| node_id.to_string())
+                    .collect()
+            );
+        })
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn test_scuttlebutt_handshake() {
         let mut node1 = ScuttleButt::with_node_id_and_seeds(
             "node1".to_string(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
         {
@@ -255,7 +343,7 @@ mod tests {
         }
         let mut node2 = ScuttleButt::with_node_id_and_seeds(
             "node2".to_string(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
         {
@@ -277,5 +365,114 @@ mod tests {
         }
         run_scuttlebutt_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_nodes() -> anyhow::Result<()> {
+        let nodes = setup_nodes(20001..=20005).await;
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "20002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            4,
+            &[
+                "localhost:20001",
+                "localhost:20003",
+                "localhost:20004",
+                "localhost:20005",
+            ],
+        )
+        .await;
+
+        shutdown_nodes(nodes).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
+        let mut nodes = setup_nodes(30001..=30006).await;
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "30002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            5,
+            &[
+                "localhost:30001",
+                "localhost:30003",
+                "localhost:30004",
+                "localhost:30005",
+                "localhost:30006",
+            ],
+        )
+        .await;
+
+        // Take down node at localhost:10003
+        let (id, node) = nodes.remove(2);
+        assert_eq!(id, "30003");
+        node.shutdown().await.unwrap();
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "30002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            4,
+            &[
+                "localhost:30001",
+                "localhost:30004",
+                "localhost:30005",
+                "localhost:30006",
+            ],
+        )
+        .await;
+
+        // Restart node at localhost:10003
+        let port = 30003;
+        nodes.push((
+            port.to_string(),
+            start_node(port, &["localhost:30001".to_string()]),
+        ));
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "30002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            5,
+            &[
+                "localhost:30001",
+                "localhost:30003",
+                "localhost:30004",
+                "localhost:30005",
+                "localhost:30006",
+            ],
+        )
+        .await;
+
+        shutdown_nodes(nodes).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_network_partition_nodes() -> anyhow::Result<()> {
+        let nodes = setup_nodes(11001..=11006).await;
+
+        // Check nodes know each other.
+        for (id, node) in nodes.iter() {
+            let peers = (11001u32..=11006)
+                .filter(|peer_port| peer_port.to_string() != *id)
+                .map(|peer_port| format!("localhost:{}", peer_port))
+                .collect::<Vec<_>>();
+
+            wait_for_scuttlebutt_state(
+                node.scuttlebutt(),
+                5,
+                &peers.iter().map(|peer| peer.as_str()).collect::<Vec<_>>(),
+            )
+            .await;
+        }
+
+        shutdown_nodes(nodes).await?;
+        Ok(())
     }
 }

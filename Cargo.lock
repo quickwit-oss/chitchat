@@ -1272,6 +1272,7 @@ dependencies = [
  "predicates",
  "reqwest",
  "scuttlebutt",
+ "serde",
  "serde_json",
  "structopt",
  "tokio",

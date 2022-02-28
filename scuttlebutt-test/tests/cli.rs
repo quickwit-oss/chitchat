@@ -22,23 +22,24 @@
 mod helpers;
 
 use std::process::Child;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{panic, thread};
 
 use helpers::spawn_command;
 use once_cell::sync::Lazy;
-use scuttlebutt::ClusterState;
+use scuttlebutt_test::ApiResponse;
 
-static PEERS: Lazy<Mutex<Vec<(Child, String)>>> =
-    Lazy::new(|| Mutex::new(Vec::<(Child, String)>::new()));
+type PeersList = Arc<Mutex<Vec<(Child, String)>>>;
+
+static PEERS: Lazy<PeersList> = Lazy::new(|| Arc::new(Mutex::new(Vec::<(Child, String)>::new())));
 
 fn setup_nodes(size: usize, wait_stabilization_secs: u64) {
     let mut peers_guard = PEERS.lock().unwrap();
     let seed_port = 10000;
     let seed_node = spawn_command(format!("-h localhost:{}", seed_port).as_str()).unwrap();
     peers_guard.push((seed_node, format!("http://localhost:{}", seed_port)));
-    for i in 1..=size {
+    for i in 1..size {
         let node_port = seed_port + i;
         let node = spawn_command(
             format!("-h localhost:{} --seed localhost:{}", node_port, seed_port).as_str(),
@@ -54,23 +55,27 @@ fn shutdown_nodes() {
     for (node, _) in peers_guard.iter_mut() {
         let _ = node.kill();
     }
+    peers_guard.clear();
 }
 
-fn get_node_state(node_api_endpoint: &str) -> anyhow::Result<ClusterState> {
-    let state = reqwest::blocking::get(node_api_endpoint)?.json::<ClusterState>()?;
-    Ok(state)
+fn get_node_info(node_api_endpoint: &str) -> anyhow::Result<ApiResponse> {
+    let response = reqwest::blocking::get(node_api_endpoint)?.json::<ApiResponse>()?;
+    Ok(response)
 }
 
 #[test]
 fn test_multiple_nodes() -> anyhow::Result<()> {
-    panic::set_hook(Box::new(|_| shutdown_nodes()));
-    setup_nodes(3, 5);
+    panic::set_hook(Box::new(|error| {
+        println!("{}", error);
+        shutdown_nodes();
+    }));
+    setup_nodes(5, 3);
 
     // Check node states through api.
-    let state = get_node_state("http://localhost:10001")?;
-    assert!(state.node_state("localhost:10003").is_some());
-
-    // TODO: add more checks
+    let info = get_node_info("http://localhost:10001")?;
+    assert!(info.cluster_state.node_state("localhost:10003").is_some());
+    assert_eq!(info.live_nodes.len(), 4);
+    assert_eq!(info.dead_nodes.len(), 0);
 
     shutdown_nodes();
     Ok(())

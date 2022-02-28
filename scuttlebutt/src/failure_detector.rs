@@ -38,6 +38,8 @@ pub struct FailureDetector {
     config: FailureDetectorConfig,
     /// Denotes live nodes.
     live_nodes: HashSet<NodeId>,
+    /// Denotes dead nodes.
+    dead_nodes: HashSet<NodeId>,
 }
 
 impl FailureDetector {
@@ -46,6 +48,7 @@ impl FailureDetector {
             node_samples: RwLock::new(HashMap::new()),
             config,
             live_nodes: HashSet::new(),
+            dead_nodes: HashSet::new(),
         }
     }
 
@@ -69,18 +72,25 @@ impl FailureDetector {
             debug!(node_id = node_id, phi = phi, "updating node liveliness");
             if phi > self.config.phi_threshold {
                 self.live_nodes.remove(node_id);
+                self.dead_nodes.insert(node_id.to_string());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
                 self.node_samples.write().unwrap().remove(node_id);
             } else {
                 self.live_nodes.insert(node_id.to_string());
+                self.dead_nodes.remove(node_id);
             }
         }
     }
 
-    /// Returns a list of living nodes.
+    /// Returns a list of live nodes.
     pub fn live_nodes(&self) -> impl Iterator<Item = &str> {
         self.live_nodes.iter().map(|node_id| node_id.as_str())
+    }
+
+    /// Returns a list of dead nodes.
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &str> {
+        self.dead_nodes.iter().map(|node_id| node_id.as_str())
     }
 
     /// Returns the current phi value of a node.

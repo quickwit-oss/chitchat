@@ -25,6 +25,7 @@ use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use scuttlebutt::server::ScuttleServer;
 use scuttlebutt::{FailureDetectorConfig, ScuttleButt};
+use scuttlebutt_test::ApiResponse;
 use structopt::StructOpt;
 use tokio::sync::Mutex;
 
@@ -37,8 +38,19 @@ impl Api {
     /// Scuttlebutt state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
-        let cluster_state = self.scuttlebutt.lock().await.cluster_state();
-        Json(serde_json::to_value(&cluster_state).unwrap())
+        let scuttlebutt_guard = self.scuttlebutt.lock().await;
+        let response = ApiResponse {
+            cluster_state: scuttlebutt_guard.cluster_state(),
+            live_nodes: scuttlebutt_guard
+                .live_nodes()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            dead_nodes: scuttlebutt_guard
+                .dead_nodes()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        };
+        Json(serde_json::to_value(&response).unwrap())
     }
 }
 
