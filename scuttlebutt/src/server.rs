@@ -39,7 +39,11 @@ use crate::{NodeId, ScuttleButt};
 const UDP_MTU: usize = 65_507;
 
 /// Interval between random gossip.
-const GOSSIP_INTERVAL: Duration = Duration::from_secs(1);
+const GOSSIP_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(1)
+};
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
@@ -64,7 +68,7 @@ impl ScuttleServer {
 
         let scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             address.into(),
-            seed_nodes.to_vec(),
+            seed_nodes.iter().cloned().collect(),
             failure_detector_config,
         );
         let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
@@ -178,7 +182,7 @@ impl UdpServer {
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
         let cluster_state = scuttlebutt_guard.cluster_state();
 
-        let all_nodes = cluster_state
+        let peer_nodes = cluster_state
             .nodes()
             .filter(|node_id| node_id != scuttlebutt_guard.self_node_id())
             .collect::<HashSet<_>>();
@@ -186,7 +190,7 @@ impl UdpServer {
         let dead_nodes = scuttlebutt_guard.dead_nodes().collect::<HashSet<_>>();
         let seed_nodes = scuttlebutt_guard.seed_nodes().collect::<HashSet<_>>();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) =
-            select_nodes_for_gossip(rng, all_nodes, live_nodes, dead_nodes, seed_nodes);
+            select_nodes_for_gossip(rng, peer_nodes, live_nodes, dead_nodes, seed_nodes);
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(scuttlebutt_guard);
@@ -235,7 +239,7 @@ enum ChannelMessage {
 
 fn select_nodes_for_gossip<R>(
     rng: &mut R,
-    all_nodes: HashSet<&str>,
+    peer_nodes: HashSet<&str>,
     live_nodes: HashSet<&str>,
     dead_nodes: HashSet<&str>,
     seed_nodes: HashSet<&str>,
@@ -251,7 +255,7 @@ where
     // Select `GOSSIP_COUNT` number of live nodes.
     // On startup, select from cluster nodes since we don't know any live node yet.
     let count = if live_nodes_count == 0 {
-        all_nodes
+        peer_nodes
             .iter()
             .map(ToString::to_string)
             .choose_multiple_fill(rng, &mut rand_nodes)
@@ -405,7 +409,7 @@ mod tests {
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -435,7 +439,7 @@ mod tests {
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -466,7 +470,7 @@ mod tests {
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -516,7 +520,7 @@ mod tests {
         let test_addr = "0.0.0.0:6661";
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             test_addr.into(),
-            Vec::new(),
+            HashSet::new(),
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind(test_addr).await.unwrap();

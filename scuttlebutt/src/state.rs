@@ -18,7 +18,7 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, HashSet};
 use std::time::Instant;
 
 use rand::prelude::SliceRandom;
@@ -90,12 +90,12 @@ impl NodeState {
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct ClusterState {
-    seed_nodes: Vec<String>,
+    pub(crate) seed_nodes: HashSet<String>,
     pub(crate) node_states: BTreeMap<String, NodeState>,
 }
 
 impl ClusterState {
-    pub fn with_seed_ids(node_ids: Vec<String>) -> ClusterState {
+    pub fn with_seed_ids(node_ids: HashSet<String>) -> ClusterState {
         ClusterState {
             seed_nodes: node_ids.clone(),
             node_states: node_ids

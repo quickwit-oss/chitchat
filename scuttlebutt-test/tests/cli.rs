@@ -29,7 +29,6 @@ use std::{panic, thread};
 use helpers::spawn_command;
 use once_cell::sync::Lazy;
 use scuttlebutt_test::ApiResponse;
-use serial_test::serial;
 
 type PeersList = Arc<Mutex<Vec<(Child, String)>>>;
 
@@ -65,7 +64,6 @@ fn get_node_info(node_api_endpoint: &str) -> anyhow::Result<ApiResponse> {
 }
 
 #[test]
-#[serial]
 fn test_multiple_nodes() -> anyhow::Result<()> {
     panic::set_hook(Box::new(|error| {
         println!("{}", error);
@@ -78,88 +76,6 @@ fn test_multiple_nodes() -> anyhow::Result<()> {
     assert!(info.cluster_state.node_state("localhost:10003").is_some());
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
-
-    shutdown_nodes();
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
-    panic::set_hook(Box::new(|error| {
-        println!("{}", error);
-        shutdown_nodes();
-    }));
-    setup_nodes(7, 3);
-
-    // Check node states through api.
-    let info = get_node_info("http://localhost:10001")?;
-    assert!(info.cluster_state.node_state("localhost:10003").is_some());
-    assert_eq!(info.live_nodes.len(), 6);
-    assert_eq!(info.dead_nodes.len(), 0);
-
-    // take down node at http://localhost:10003
-    let mut peers_guard = PEERS.lock().unwrap();
-    let (mut process, node_id) = peers_guard.remove(3);
-    assert_eq!(node_id, "http://localhost:10003");
-    process.kill().unwrap();
-    drop(peers_guard);
-
-    thread::sleep(Duration::from_secs(20));
-    let info = get_node_info("http://localhost:10001")?;
-    assert!(info.cluster_state.node_state("localhost:10003").is_some());
-    assert_eq!(info.live_nodes.len(), 5);
-    assert_eq!(info.dead_nodes, ["localhost:10003"]);
-
-    // restart node at http://localhost:10003
-    let mut node_process = spawn_command("-h localhost:10003 --seed localhost:10000").unwrap();
-    thread::sleep(Duration::from_secs(6));
-    let info = get_node_info("http://localhost:10001")?;
-    assert!(info.cluster_state.node_state("localhost:10003").is_some());
-    assert_eq!(info.live_nodes.len(), 6);
-    assert_eq!(info.dead_nodes.len(), 0);
-
-    let _ = node_process.kill();
-    shutdown_nodes();
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_network_partition_nodes() -> anyhow::Result<()> {
-    panic::set_hook(Box::new(|error| {
-        println!("{}", error);
-        shutdown_nodes();
-    }));
-
-    for node_id in 10000..=10006 {
-        let seeds = (10000..=10006)
-            .filter(|peer_id| peer_id != &node_id)
-            .map(|peer_id| format!("localhost:{}", peer_id))
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let moved_peers = PEERS.clone();
-        thread::spawn(move || {
-            let cmd_arguments = format!("-h localhost:{} --seed {}", node_id, seeds);
-            let node = spawn_command(cmd_arguments.as_str()).unwrap();
-
-            let mut peers_guard = moved_peers.lock().unwrap();
-            peers_guard.push((node, format!("http://localhost:{}", node_id)))
-        });
-    }
-    thread::sleep(Duration::from_secs(3));
-
-    // Check nodes know each other.
-    for node_id in 10000..=10006 {
-        let info = get_node_info(format!("http://localhost:{}", node_id).as_str())?;
-        for peer_id in (10000..=10006).filter(|peer_id| peer_id != &node_id) {
-            assert!(info
-                .cluster_state
-                .node_state(format!("localhost:{}", peer_id).as_str())
-                .is_some());
-        }
-    }
 
     shutdown_nodes();
     Ok(())
