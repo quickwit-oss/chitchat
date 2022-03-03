@@ -21,6 +21,8 @@ use std::io::BufRead;
 
 use anyhow::bail;
 
+use crate::NodeId;
+
 fn read_str<'a>(buf: &mut &'a [u8]) -> anyhow::Result<&'a str> {
     let len: usize = u16::deserialize(buf)? as usize;
     let s = std::str::from_utf8(&buf[..len])?;
@@ -78,6 +80,26 @@ impl Serializable for String {
 
     fn serialized_len(&self) -> usize {
         2 + self.len()
+    }
+}
+
+impl Serializable for NodeId {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        self.id.serialize(buf);
+        self.gossip_public_address.serialize(buf)
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let id = String::deserialize(buf)?;
+        let gossip_public_address = String::deserialize(buf)?;
+        Ok(NodeId {
+            id,
+            gossip_public_address,
+        })
+    }
+
+    fn serialized_len(&self) -> usize {
+        self.id.serialized_len() + self.gossip_public_address.serialized_len()
     }
 }
 

@@ -73,7 +73,7 @@ fn test_multiple_nodes() -> anyhow::Result<()> {
 
     // Check node states through api.
     let info = get_node_info("http://localhost:10001")?;
-    assert!(info.cluster_state.node_state("localhost:10003").is_some());
+    assert!(info.cluster_state.node_states.get("localhost:10003").is_some());
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 

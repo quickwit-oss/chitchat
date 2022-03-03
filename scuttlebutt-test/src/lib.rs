@@ -17,12 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-use scuttlebutt::ClusterState;
+use scuttlebutt::{NodeId, SerializableClusterState};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ApiResponse {
-    pub cluster_state: ClusterState,
-    pub live_nodes: Vec<String>,
-    pub dead_nodes: Vec<String>,
+    pub cluster_state: SerializableClusterState,
+    pub live_nodes: Vec<NodeId>,
+    pub dead_nodes: Vec<NodeId>,
 }

@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use crate::serialize::*;
-use crate::Version;
+use crate::{NodeId, Version};
 
 /// A digest represents is a piece of information summarizing
 /// the staleness of one peer's data.
@@ -29,13 +29,13 @@ use crate::Version;
 /// peer -> max version.
 #[derive(Debug, Default)]
 pub struct Digest {
-    pub(crate) node_max_version: BTreeMap<String, Version>,
+    pub(crate) node_max_version: BTreeMap<NodeId, Version>,
 }
 
 impl Digest {
     #[cfg(test)]
-    pub fn add_node(&mut self, node: &str, max_version: Version) {
-        self.node_max_version.insert(node.to_string(), max_version);
+    pub fn add_node(&mut self, node: NodeId, max_version: Version) {
+        self.node_max_version.insert(node, max_version);
     }
 }
 
@@ -50,9 +50,9 @@ impl Serializable for Digest {
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let num_nodes = u16::deserialize(buf)?;
-        let mut node_max_version: BTreeMap<String, Version> = Default::default();
+        let mut node_max_version: BTreeMap<NodeId, Version> = Default::default();
         for _ in 0..num_nodes {
-            let node_id = String::deserialize(buf)?;
+            let node_id = NodeId::deserialize(buf)?; // TODO: was String
             let version = u64::deserialize(buf)?;
             node_max_version.insert(node_id, version);
         }

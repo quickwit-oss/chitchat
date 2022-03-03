@@ -39,7 +39,7 @@ use tracing::{debug, error};
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
 use crate::serialize::Serializable;
-pub use crate::state::ClusterState;
+pub use crate::state::{ClusterState, SerializableClusterState};
 use crate::state::NodeState;
 
 /// Map key for the heartbeat node value.
@@ -47,7 +47,45 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub type Version = u64;
 
-pub type NodeId = String;
+// pub type NodeId = String;
+
+#[derive(Default, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+pub struct NodeId {
+    id: String,
+    gossip_public_address: String,
+}
+
+impl NodeId {
+    fn new(id: &str, gossip_public_address: &str) -> Self {
+        Self {
+            id: id.into(),
+            gossip_public_address: gossip_public_address.into(),
+        }
+    }
+
+    // fn with_id(id: &str) -> Self {
+    //     Self::new(id, id)
+    // }
+}
+
+impl From<&str> for NodeId {
+    fn from(id: &str) -> Self {
+        Self::new(id, id)
+    }
+}
+
+impl From<String> for NodeId {
+    fn from(id: String) -> Self {
+        Self::new(&id, &id)
+    }
+}
+
+// impl Display for NodeId {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         todo!()
+//         write!(f, "({}, {})", self.x, self.y)
+//     }
+// }
 
 /// A versioned value for a given Key-value pair.
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
@@ -58,6 +96,7 @@ pub struct VersionedValue {
 
 pub struct ScuttleButt {
     mtu: usize,
+    address: String,
     self_node_id: NodeId,
     cluster_state: ClusterState,
     heartbeat: u64,
@@ -72,15 +111,17 @@ pub struct ScuttleButt {
 impl ScuttleButt {
     pub fn with_node_id_and_seeds(
         self_node_id: NodeId,
-        seed_ids: HashSet<String>,
+        seed_ids: HashSet<NodeId>,
+        address: String,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
         let mut scuttlebutt = ScuttleButt {
             mtu: 60_000,
-            heartbeat: 0,
+            address,
             self_node_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
+            heartbeat: 0,
             failure_detector: FailureDetector::new(failure_detector_config),
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
@@ -146,24 +187,17 @@ impl ScuttleButt {
 
     /// Checks and marks nodes as dead or live.
     pub fn update_nodes_liveliness(&mut self) {
-        let live_nodes_before = self
-            .live_nodes()
-            .map(str::to_string)
-            .collect::<HashSet<_>>();
+        let live_nodes_before = self.live_nodes().cloned().collect::<HashSet<_>>();
         let cluster_nodes = self
             .cluster_state
             .nodes()
-            .map(str::to_string)
-            .filter(|node_id| node_id != &self.self_node_id)
+            .filter(|node_id| *node_id != &self.self_node_id)
             .collect::<Vec<_>>();
         for node_id in &cluster_nodes {
             self.failure_detector.update_node_liveliness(node_id);
         }
 
-        let live_nodes_after = self
-            .live_nodes()
-            .map(str::to_string)
-            .collect::<HashSet<_>>();
+        let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
         if live_nodes_before != live_nodes_after {
             debug!(current_node = ?self.self_node_id, live_nodes = ?live_nodes_after, "nodes status changed");
             if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
@@ -172,7 +206,7 @@ impl ScuttleButt {
         }
     }
 
-    pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
+    pub fn node_state(&self, node_id: &NodeId) -> Option<&NodeState> {
         self.cluster_state.node_state(node_id)
     }
 
@@ -181,21 +215,21 @@ impl ScuttleButt {
     }
 
     /// Retrieves the list of all live nodes.
-    pub fn live_nodes(&self) -> impl Iterator<Item = &str> {
+    pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.failure_detector.live_nodes()
     }
 
     /// Retrieve the list of all dead nodes.
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &str> {
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.failure_detector.dead_nodes()
     }
 
     /// Retrieve a list of seed nodes.
-    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
+    pub fn seed_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.cluster_state.seed_nodes()
     }
 
-    pub fn self_node_id(&self) -> &String {
+    pub fn self_node_id(&self) -> &NodeId {
         &self.self_node_id
     }
 
@@ -266,10 +300,12 @@ mod tests {
         }
     }
 
-    fn start_node(port: u32, seeds: &[String]) -> ScuttleServer {
+    fn start_node(port: u32, seeds: &[NodeId]) -> ScuttleServer {
+        let address = format!("localhost:{}", port);
         ScuttleServer::spawn(
-            format!("localhost:{}", port),
+            NodeId::from(address.as_str()),
             seeds,
+            address,
             FailureDetectorConfig::default(),
         )
     }
@@ -283,7 +319,7 @@ mod tests {
             let seeds = port_range
                 .clone()
                 .filter(|peer_port| peer_port != &port)
-                .map(|peer_port| format!("localhost:{}", peer_port))
+                .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
                 .collect::<Vec<_>>();
 
             tasks.push((port.to_string(), start_node(port, &seeds)));
@@ -308,7 +344,7 @@ mod tests {
     async fn wait_for_scuttlebutt_state(
         scuttlebutt: Arc<Mutex<ScuttleButt>>,
         expected_node_count: usize,
-        expected_nodes: &[&str],
+        expected_nodes: &[NodeId],
     ) {
         let mut live_nodes_watcher = scuttlebutt
             .lock()
@@ -319,10 +355,7 @@ mod tests {
             let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(
                 live_nodes,
-                expected_nodes
-                    .iter()
-                    .map(|node_id| node_id.to_string())
-                    .collect()
+                expected_nodes.iter().cloned().collect::<HashSet<_>>()
             );
         })
         .await
@@ -332,8 +365,9 @@ mod tests {
     #[test]
     fn test_scuttlebutt_handshake() {
         let mut node1 = ScuttleButt::with_node_id_and_seeds(
-            "node1".to_string(),
+            "node1".into(),
             HashSet::new(),
+            "node1".to_string(),
             FailureDetectorConfig::default(),
         );
         {
@@ -342,8 +376,9 @@ mod tests {
             state1.set("key2a", "2");
         }
         let mut node2 = ScuttleButt::with_node_id_and_seeds(
-            "node2".to_string(),
+            "node2".into(),
             HashSet::new(),
+            "node2".to_string(),
             FailureDetectorConfig::default(),
         );
         {
@@ -377,10 +412,10 @@ mod tests {
             node.scuttlebutt(),
             4,
             &[
-                "localhost:20001",
-                "localhost:20003",
-                "localhost:20004",
-                "localhost:20005",
+                NodeId::from("localhost:20001"),
+                NodeId::from("localhost:20003"),
+                NodeId::from("localhost:20004"),
+                NodeId::from("localhost:20005"),
             ],
         )
         .await;
@@ -399,11 +434,11 @@ mod tests {
             node.scuttlebutt(),
             5,
             &[
-                "localhost:30001",
-                "localhost:30003",
-                "localhost:30004",
-                "localhost:30005",
-                "localhost:30006",
+                NodeId::from("localhost:30001"),
+                NodeId::from("localhost:30003"),
+                NodeId::from("localhost:30004"),
+                NodeId::from("localhost:30005"),
+                NodeId::from("localhost:30006"),
             ],
         )
         .await;
@@ -419,10 +454,10 @@ mod tests {
             node.scuttlebutt(),
             4,
             &[
-                "localhost:30001",
-                "localhost:30004",
-                "localhost:30005",
-                "localhost:30006",
+                NodeId::from("localhost:30001"),
+                NodeId::from("localhost:30004"),
+                NodeId::from("localhost:30005"),
+                NodeId::from("localhost:30006"),
             ],
         )
         .await;
@@ -431,7 +466,7 @@ mod tests {
         let port = 30003;
         nodes.push((
             port.to_string(),
-            start_node(port, &["localhost:30001".to_string()]),
+            start_node(port, &["localhost:30001".into()]),
         ));
 
         let (id, node) = nodes.get(1).unwrap();
@@ -440,11 +475,11 @@ mod tests {
             node.scuttlebutt(),
             5,
             &[
-                "localhost:30001",
-                "localhost:30003",
-                "localhost:30004",
-                "localhost:30005",
-                "localhost:30006",
+                NodeId::from("localhost:30001"),
+                NodeId::from("localhost:30003"),
+                NodeId::from("localhost:30004"),
+                NodeId::from("localhost:30005"),
+                NodeId::from("localhost:30006"),
             ],
         )
         .await;
@@ -461,13 +496,13 @@ mod tests {
         for (id, node) in nodes.iter() {
             let peers = (11001u32..=11006)
                 .filter(|peer_port| peer_port.to_string() != *id)
-                .map(|peer_port| format!("localhost:{}", peer_port))
+                .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
                 .collect::<Vec<_>>();
 
             wait_for_scuttlebutt_state(
                 node.scuttlebutt(),
                 5,
-                &peers.iter().map(|peer| peer.as_str()).collect::<Vec<_>>(),
+                &peers.to_vec(),
             )
             .await;
         }
