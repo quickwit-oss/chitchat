@@ -52,7 +52,7 @@ impl Serializable for Digest {
         let num_nodes = u16::deserialize(buf)?;
         let mut node_max_version: BTreeMap<NodeId, Version> = Default::default();
         for _ in 0..num_nodes {
-            let node_id = NodeId::deserialize(buf)?; // TODO: was String
+            let node_id = NodeId::deserialize(buf)?;
             let version = u64::deserialize(buf)?;
             node_max_version.insert(node_id, version);
         }

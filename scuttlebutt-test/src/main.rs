@@ -24,7 +24,7 @@ use poem::{Route, Server};
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use scuttlebutt::server::ScuttleServer;
-use scuttlebutt::{FailureDetectorConfig, ScuttleButt, NodeId, SerializableClusterState};
+use scuttlebutt::{FailureDetectorConfig, NodeId, ScuttleButt, SerializableClusterState};
 use scuttlebutt_test::ApiResponse;
 use structopt::StructOpt;
 use tokio::sync::Mutex;
@@ -41,14 +41,8 @@ impl Api {
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
         let response = ApiResponse {
             cluster_state: SerializableClusterState::from(scuttlebutt_guard.cluster_state()),
-            live_nodes: scuttlebutt_guard
-                .live_nodes()
-                .cloned()
-                .collect::<Vec<_>>(),
-            dead_nodes: scuttlebutt_guard
-                .dead_nodes()
-                .cloned()
-                .collect::<Vec<_>>(),
+            live_nodes: scuttlebutt_guard.live_nodes().cloned().collect::<Vec<_>>(),
+            dead_nodes: scuttlebutt_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -68,7 +62,10 @@ async fn main() -> Result<(), std::io::Error> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
-    let seed_nodes = opt.seeds[..].iter().map(|v| NodeId::from(v.as_str())).collect::<Vec<_>>();
+    let seed_nodes = opt.seeds[..]
+        .iter()
+        .map(|v| NodeId::from(v.as_str()))
+        .collect::<Vec<_>>();
     let scuttlebutt_server = ScuttleServer::spawn(
         NodeId::from(opt.listen_addr.as_str()),
         &seed_nodes,

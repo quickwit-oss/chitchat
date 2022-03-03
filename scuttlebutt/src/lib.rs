@@ -39,53 +39,76 @@ use tracing::{debug, error};
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
 use crate::serialize::Serializable;
-pub use crate::state::{ClusterState, SerializableClusterState};
 use crate::state::NodeState;
+pub use crate::state::{ClusterState, SerializableClusterState};
 
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub type Version = u64;
 
-// pub type NodeId = String;
-
+/// [`NodeId`] represents a ScuttleButt Node identifier.
+///
+/// For the lifetime of a cluster, nodes can go down and back up, they may
+/// permanently die. These are couple of issues we want to solve with [`NodeId`] struct:
+/// - We want a fresh local scuttlebutt state for every run of a node.
+/// - We don’t want other nodes to override a newly started node state with an obsolete state.
+/// - We want other running nodes to detect that a newly started node’s state prevails all its
+///   previous state.
+/// - We want a node to advertise its own gossip address.
+/// - We want a node to have an id that is the same across subsequent runs for keeping cache data
+///   around as long as possible.
+///
+/// Our solution to this is:
+/// - The `id` attribute which represents the node's unique identifier in the cluster should be
+///   dynamic on every run. This easily solves our first three requirements. The tradeoff is that
+///   starting node need to always propagate their fresh state and old states are never reclaimed.
+/// - Having `gossip_public_address` attribute fulfils our fourth requirements, its value is
+///   expected to be from a config item or an environnement variable.
+/// - Making part of the `id` attribute static and related to the node solves the last requirement.
+///
+/// Because ScuttleButt instance is not concerned about caching strategy and what needs to be
+/// cached, We let the client decide what makes up the `id` attribute and how to extract its
+/// components.
+///
+/// One such client is Quickwit where the `id` is made of
+/// `{node_unique_id}/{gossip_public_address}/{node_generation}/`.
+/// - node_unique_id: a static unique name for the node.
+/// - gossip_public_address: the string representation of the node's public address.
+/// - node_generation: a monotonically increasing value (timestamp on every run)
+/// More details on : [transfer-notion-doc-on-issue-and-link-here]
+///
+/// Note: using timestamp to make the `id` dynamic has the potential of reusing
+/// a previously used `id` in cases where the clock is reset in the past. We believe this
+/// very rare and things should just work fine.
 #[derive(Default, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct NodeId {
-    id: String,
-    gossip_public_address: String,
+    // The unique identifier of this node in the cluster.
+    pub id: String,
+    // The SocketAddr other peers should use to communicate.
+    pub gossip_public_address: String,
 }
 
 impl NodeId {
-    fn new(id: &str, gossip_public_address: &str) -> Self {
+    pub fn new(id: String, gossip_public_address: String) -> Self {
         Self {
-            id: id.into(),
-            gossip_public_address: gossip_public_address.into(),
+            id,
+            gossip_public_address,
         }
     }
-
-    // fn with_id(id: &str) -> Self {
-    //     Self::new(id, id)
-    // }
 }
 
 impl From<&str> for NodeId {
     fn from(id: &str) -> Self {
-        Self::new(id, id)
+        Self::new(id.to_string(), id.to_string())
     }
 }
 
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
-        Self::new(&id, &id)
+        Self::new(id.clone(), id)
     }
 }
-
-// impl Display for NodeId {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//         write!(f, "({}, {})", self.x, self.y)
-//     }
-// }
 
 /// A versioned value for a given Key-value pair.
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
@@ -365,7 +388,7 @@ mod tests {
     #[test]
     fn test_scuttlebutt_handshake() {
         let mut node1 = ScuttleButt::with_node_id_and_seeds(
-            "node1".into(),
+            NodeId::from("node1"),
             HashSet::new(),
             "node1".to_string(),
             FailureDetectorConfig::default(),
@@ -376,7 +399,7 @@ mod tests {
             state1.set("key2a", "2");
         }
         let mut node2 = ScuttleButt::with_node_id_and_seeds(
-            "node2".into(),
+            NodeId::from("node2"),
             HashSet::new(),
             "node2".to_string(),
             FailureDetectorConfig::default(),
@@ -466,7 +489,7 @@ mod tests {
         let port = 30003;
         nodes.push((
             port.to_string(),
-            start_node(port, &["localhost:30001".into()]),
+            start_node(port, &[NodeId::from("localhost:30001")]),
         ));
 
         let (id, node) = nodes.get(1).unwrap();
@@ -499,12 +522,7 @@ mod tests {
                 .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
                 .collect::<Vec<_>>();
 
-            wait_for_scuttlebutt_state(
-                node.scuttlebutt(),
-                5,
-                &peers.to_vec(),
-            )
-            .await;
+            wait_for_scuttlebutt_state(node.scuttlebutt(), 5, &peers.to_vec()).await;
         }
 
         shutdown_nodes(nodes).await?;

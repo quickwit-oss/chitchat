@@ -268,7 +268,8 @@ where
     let mut nodes = Vec::new();
     let mut has_gossiped_with_a_seed_node = false;
     for node_id in &rand_nodes[..count] {
-        has_gossiped_with_a_seed_node = has_gossiped_with_a_seed_node || seed_nodes.contains(*node_id);
+        has_gossiped_with_a_seed_node =
+            has_gossiped_with_a_seed_node || seed_nodes.contains(*node_id);
         nodes.push((*node_id).clone());
     }
 
@@ -546,9 +547,9 @@ mod tests {
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
         let server_addr = "0.0.0.0:6662";
-        let server_node_id = NodeId::from(server_addr); // TODO: clean
+        let server_node_id = NodeId::from(server_addr);
         let server = ScuttleServer::spawn(
-            server_addr.into(),
+            NodeId::from(server_addr),
             &[],
             server_addr,
             FailureDetectorConfig::default(),
@@ -597,7 +598,8 @@ mod tests {
             NodeId::from("0.0.0.0:6663"),
             &[],
             "0.0.0.0:6663",
-            FailureDetectorConfig::default());
+            FailureDetectorConfig::default(),
+        );
         let node2 = ScuttleServer::spawn(
             NodeId::from("0.0.0.0:6664"),
             &[NodeId::from("0.0.0.0:6663")],
@@ -645,7 +647,7 @@ mod tests {
                 "Should have already gossiped with a seed node."
             );
         }
-        
+
         {
             let mut rng = RngForTest::default();
             let peer_nodes = &["node-1", "node-2", "node-3", "node-4", "node-5"].map(NodeId::from);
@@ -680,6 +682,6 @@ mod tests {
             assert_eq!(nodes, [NodeId::from("node-1")]);
             assert!(dead_node.is_some());
             assert!(seed_node.is_some());
-        }        
+        }
     }
 }

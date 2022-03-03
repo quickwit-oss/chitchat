@@ -217,15 +217,14 @@ impl From<ClusterState> for SerializableClusterState {
     fn from(state: ClusterState) -> Self {
         SerializableClusterState {
             seed_nodes: state.seed_nodes,
-            node_states: state.node_states
+            node_states: state
+                .node_states
                 .into_iter()
                 .map(|(node_id, node_state)| (node_id.id, node_state))
                 .collect(),
         }
     }
 }
-
-
 
 #[derive(Default)]
 struct NodeSortedByStaleLength<'a> {

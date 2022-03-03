@@ -32,7 +32,7 @@ impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
         (self.node_deltas.len() as u16).serialize(buf);
         for (node_id, node_delta) in &self.node_deltas {
-            node_id.serialize(buf); // TODO serialize
+            node_id.serialize(buf);
             node_delta.serialize(buf);
         }
     }
@@ -137,7 +137,9 @@ impl DeltaWriter {
         assert!(node_id != self.current_node_id);
         assert!(!self.delta.node_deltas.contains_key(&node_id));
         self.flush();
-        if !self.attempt_add_bytes(2 + node_id.id.len() + 2 + node_id.gossip_public_address.len() + 2) {
+        if !self
+            .attempt_add_bytes(2 + node_id.id.len() + 2 + node_id.gossip_public_address.len() + 2)
+        {
             return false;
         }
         self.current_node_id = node_id;
@@ -225,7 +227,7 @@ mod tests {
     #[test]
     fn test_delta_serialization_simple() {
         let mut delta_writer = DeltaWriter::with_mtu(122);
-        delta_writer.add_node("node1".into());
+        delta_writer.add_node(NodeId::from("node1"));
         delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -240,7 +242,7 @@ mod tests {
                 version: 2,
             },
         );
-        delta_writer.add_node("node2".into());
+        delta_writer.add_node(NodeId::from("node2"));
         delta_writer.add_kv(
             "key21",
             VersionedValue {
@@ -262,7 +264,7 @@ mod tests {
     #[test]
     fn test_delta_serialization_simple_node() {
         let mut delta_writer = DeltaWriter::with_mtu(78);
-        assert!(delta_writer.add_node("node1".into()));
+        assert!(delta_writer.add_node(NodeId::from("node1")));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -277,7 +279,7 @@ mod tests {
                 version: 2
             }
         ));
-        assert!(delta_writer.add_node("node2".into()));
+        assert!(delta_writer.add_node(NodeId::from("node2")));
         let delta: Delta = delta_writer.into();
         test_serdeser_aux(&delta, 78);
     }
