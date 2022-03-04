@@ -62,13 +62,13 @@ async fn main() -> Result<(), std::io::Error> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
-    let seed_nodes = opt.seeds[..]
-        .iter()
-        .map(|v| NodeId::from(v.as_str()))
-        .collect::<Vec<_>>();
+    // let seed_nodes =
+    //     .iter()
+    //     .map(|v| NodeId::from(v.as_str()))
+    //     .collect::<Vec<_>>();
     let scuttlebutt_server = ScuttleServer::spawn(
         NodeId::from(opt.listen_addr.as_str()),
-        &seed_nodes,
+        &opt.seeds[..],
         &opt.listen_addr,
         FailureDetectorConfig::default(),
     );

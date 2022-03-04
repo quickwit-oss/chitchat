@@ -72,11 +72,10 @@ pub type Version = u64;
 /// components.
 ///
 /// One such client is Quickwit where the `id` is made of
-/// `{node_unique_id}/{gossip_public_address}/{node_generation}/`.
+/// `{node_unique_id}/{node_generation}/`.
 /// - node_unique_id: a static unique name for the node.
-/// - gossip_public_address: the string representation of the node's public address.
 /// - node_generation: a monotonically increasing value (timestamp on every run)
-/// More details on : [transfer-notion-doc-on-issue-and-link-here]
+/// More details at https://github.com/quickwit-oss/scuttlebutt/issues/1#issuecomment-1059029051
 ///
 /// Note: using timestamp to make the `id` dynamic has the potential of reusing
 /// a previously used `id` in cases where the clock is reset in the past. We believe this
@@ -134,7 +133,7 @@ pub struct ScuttleButt {
 impl ScuttleButt {
     pub fn with_node_id_and_seeds(
         self_node_id: NodeId,
-        seed_ids: HashSet<NodeId>,
+        seed_ids: HashSet<String>,
         address: String,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
@@ -248,7 +247,7 @@ impl ScuttleButt {
     }
 
     /// Retrieve a list of seed nodes.
-    pub fn seed_nodes(&self) -> impl Iterator<Item = &NodeId> {
+    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
         self.cluster_state.seed_nodes()
     }
 
@@ -323,7 +322,7 @@ mod tests {
         }
     }
 
-    fn start_node(port: u32, seeds: &[NodeId]) -> ScuttleServer {
+    fn start_node(port: u32, seeds: &[String]) -> ScuttleServer {
         let address = format!("localhost:{}", port);
         ScuttleServer::spawn(
             NodeId::from(address.as_str()),
@@ -342,7 +341,7 @@ mod tests {
             let seeds = port_range
                 .clone()
                 .filter(|peer_port| peer_port != &port)
-                .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
+                .map(|peer_port| format!("localhost:{}", peer_port))
                 .collect::<Vec<_>>();
 
             tasks.push((port.to_string(), start_node(port, &seeds)));
@@ -489,7 +488,7 @@ mod tests {
         let port = 30003;
         nodes.push((
             port.to_string(),
-            start_node(port, &[NodeId::from("localhost:30001")]),
+            start_node(port, &["localhost:30001".to_string()]),
         ));
 
         let (id, node) = nodes.get(1).unwrap();
