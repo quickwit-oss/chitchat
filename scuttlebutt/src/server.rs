@@ -40,7 +40,7 @@ const UDP_MTU: usize = 65_507;
 
 /// Interval between random gossip.
 const GOSSIP_INTERVAL: Duration = if cfg!(test) {
-    Duration::from_millis(300)
+    Duration::from_millis(200)
 } else {
     Duration::from_secs(1)
 };

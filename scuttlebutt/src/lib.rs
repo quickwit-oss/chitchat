@@ -168,9 +168,12 @@ impl ScuttleButt {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
                 let self_digest = self.compute_digest();
-                let delta = self
-                    .cluster_state
-                    .compute_delta(&digest, self.mtu - 1 - self_digest.serialized_len());
+                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+                let delta = self.cluster_state.compute_delta(
+                    &digest,
+                    self.mtu - 1 - self_digest.serialized_len(),
+                    dead_nodes,
+                );
                 self.report_to_failure_detector(&delta);
                 Some(ScuttleButtMessage::SynAck {
                     delta,
@@ -180,7 +183,10 @@ impl ScuttleButt {
             ScuttleButtMessage::SynAck { digest, delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
-                let delta = self.cluster_state.compute_delta(&digest, self.mtu - 1);
+                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+                let delta = self
+                    .cluster_state
+                    .compute_delta(&digest, self.mtu - 1, dead_nodes);
                 Some(ScuttleButtMessage::Ack { delta })
             }
             ScuttleButtMessage::Ack { delta } => {
@@ -265,7 +271,8 @@ impl ScuttleButt {
         self.heartbeat += 1;
         let heartbeat = self.heartbeat;
         self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
-        self.cluster_state.compute_digest()
+        let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+        self.cluster_state.compute_digest(dead_nodes)
     }
 
     pub fn cluster_state(&self) -> ClusterState {
@@ -373,7 +380,7 @@ mod tests {
             .await
             .live_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
-        tokio::time::timeout(Duration::from_secs(20), async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
             let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(
                 live_nodes,
@@ -465,7 +472,7 @@ mod tests {
         )
         .await;
 
-        // Take down node at localhost:10003
+        // Take down node at localhost:30003
         let (id, node) = nodes.remove(2);
         assert_eq!(id, "30003");
         node.shutdown().await.unwrap();
@@ -502,6 +509,68 @@ mod tests {
                 NodeId::from("localhost:30004"),
                 NodeId::from("localhost:30005"),
                 NodeId::from("localhost:30006"),
+            ],
+        )
+        .await;
+
+        shutdown_nodes(nodes).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_dead_node_should_not_be_gossiped_when_node_joins() -> anyhow::Result<()> {
+        let mut nodes = setup_nodes(40001..=40004).await;
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "40002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            3,
+            &[
+                NodeId::from("localhost:40001"),
+                NodeId::from("localhost:40003"),
+                NodeId::from("localhost:40004"),
+            ],
+        )
+        .await;
+
+        // Take down node at localhost:40003
+        let (id, node) = nodes.remove(2);
+        assert_eq!(id, "40003");
+        node.shutdown().await.unwrap();
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "40002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            2,
+            &[
+                NodeId::from("localhost:40001"),
+                NodeId::from("localhost:40004"),
+            ],
+        )
+        .await;
+
+        // Restart node at localhost:40003 with new name
+        let port = 40003;
+        let address = format!("localhost:{}", port);
+        let new_node_scuttlebutt = ScuttleServer::spawn(
+            NodeId::from("new_node"),
+            &["localhost:30001".to_string()],
+            address,
+            FailureDetectorConfig::default(),
+        );
+        nodes.push((port.to_string(), new_node_scuttlebutt));
+
+        let (id, node) = nodes.get(3).unwrap();
+        assert_eq!(id, "40003");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            3,
+            &[
+                NodeId::from("localhost:40001"),
+                NodeId::from("localhost:40002"),
+                NodeId::from("localhost:40004"),
             ],
         )
         .await;
