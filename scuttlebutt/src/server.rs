@@ -60,15 +60,17 @@ impl ScuttleServer {
     ///
     /// This will start the ScuttleButt server as a new Tokio background task.
     pub fn spawn(
-        address: impl Into<String>,
+        node_id: NodeId,
         seed_nodes: &[String],
+        address: impl Into<String>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let scuttlebutt = ScuttleButt::with_node_id_and_seeds(
-            address.into(),
+            node_id,
             seed_nodes.iter().cloned().collect(),
+            address.into(),
             failure_detector_config,
         );
         let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
@@ -123,8 +125,8 @@ impl UdpServer {
         scuttlebutt: Arc<Mutex<ScuttleButt>>,
     ) -> anyhow::Result<Self> {
         let socket = {
-            let address = &scuttlebutt.lock().await.self_node_id;
-            Arc::new(UdpSocket::bind(address).await?)
+            let bind_address = &scuttlebutt.lock().await.address;
+            Arc::new(UdpSocket::bind(bind_address).await?)
         };
 
         Ok(Self {
@@ -184,10 +186,17 @@ impl UdpServer {
 
         let peer_nodes = cluster_state
             .nodes()
-            .filter(|node_id| node_id != scuttlebutt_guard.self_node_id())
+            .filter(|node_id| *node_id != scuttlebutt_guard.self_node_id())
+            .map(|node_id| node_id.gossip_public_address.as_str())
             .collect::<HashSet<_>>();
-        let live_nodes = scuttlebutt_guard.live_nodes().collect::<HashSet<_>>();
-        let dead_nodes = scuttlebutt_guard.dead_nodes().collect::<HashSet<_>>();
+        let live_nodes = scuttlebutt_guard
+            .live_nodes()
+            .map(|node_id| node_id.gossip_public_address.as_str())
+            .collect::<HashSet<_>>();
+        let dead_nodes = scuttlebutt_guard
+            .dead_nodes()
+            .map(|node_id| node_id.gossip_public_address.as_str())
+            .collect::<HashSet<_>>();
         let seed_nodes = scuttlebutt_guard.seed_nodes().collect::<HashSet<_>>();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) =
             select_nodes_for_gossip(rng, peer_nodes, live_nodes, dead_nodes, seed_nodes);
@@ -198,21 +207,21 @@ impl UdpServer {
         for node in selected_nodes {
             let result = self.gossip(&node).await;
             if result.is_err() {
-                error!(node = %node, "Gossip error with a live node.");
+                error!(node = ?node, "Gossip error with a live node.");
             }
         }
 
         if let Some(random_dead_node) = random_dead_node_opt {
             let result = self.gossip(&random_dead_node).await;
             if result.is_err() {
-                error!(node = %random_dead_node, "Gossip error with a dead node.")
+                error!(node = ?random_dead_node, "Gossip error with a dead node.")
             }
         }
 
         if let Some(random_seed_node) = random_seed_node_opt {
             let result = self.gossip(&random_seed_node).await;
             if result.is_err() {
-                error!(node = %random_seed_node, "Gossip error with a seed node.")
+                error!(node = ?random_seed_node, "Gossip error with a seed node.")
             }
         }
 
@@ -243,7 +252,7 @@ fn select_nodes_for_gossip<R>(
     live_nodes: HashSet<&str>,
     dead_nodes: HashSet<&str>,
     seed_nodes: HashSet<&str>,
-) -> (Vec<NodeId>, Option<NodeId>, Option<NodeId>)
+) -> (Vec<String>, Option<String>, Option<String>)
 where
     R: Rng + ?Sized,
 {
@@ -267,10 +276,10 @@ where
     };
     let mut nodes = Vec::new();
     let mut has_gossiped_with_a_seed_node = false;
-    for node in &rand_nodes[..count] {
+    for node_id in &rand_nodes[..count] {
         has_gossiped_with_a_seed_node =
-            has_gossiped_with_a_seed_node || seed_nodes.contains(node.as_str());
-        nodes.push(node.into());
+            has_gossiped_with_a_seed_node || seed_nodes.contains(node_id.as_str());
+        nodes.push((*node_id).clone());
     }
 
     // Select a dead node for potential gossip.
@@ -296,7 +305,7 @@ fn select_dead_node_to_gossip_with<R>(
     dead_nodes: &HashSet<&str>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<NodeId>
+) -> Option<String>
 where
     R: Rng + ?Sized,
 {
@@ -313,7 +322,7 @@ fn select_seed_node_to_gossip_with<R>(
     seed_nodes: &HashSet<&str>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<NodeId>
+) -> Option<String>
 where
     R: Rng + ?Sized,
 {
@@ -345,12 +354,6 @@ mod tests {
     #[derive(Debug, Default)]
     struct RngForTest {
         value: u32,
-    }
-
-    impl RngForTest {
-        fn reset(&mut self) {
-            self.value = 0;
-        }
     }
 
     impl RngCore for RngForTest {
@@ -388,7 +391,12 @@ mod tests {
         let test_addr = "0.0.0.0:1111";
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn("0.0.0.0:1112", &[], FailureDetectorConfig::default());
+        let server = ScuttleServer::spawn(
+            "0.0.0.0:1112".into(),
+            &[],
+            "0.0.0.0:1112",
+            FailureDetectorConfig::default(),
+        );
         server.gossip(test_addr).unwrap();
 
         let mut buf = [0; UDP_MTU];
@@ -410,10 +418,16 @@ mod tests {
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
+            "offline".to_string(),
             FailureDetectorConfig::default(),
         );
 
-        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
+        let server = ScuttleServer::spawn(
+            server_addr.into(),
+            &[],
+            server_addr,
+            FailureDetectorConfig::default(),
+        );
 
         let mut buf = Vec::new();
         let syn = scuttlebutt.create_syn_message();
@@ -435,11 +449,17 @@ mod tests {
     #[tokio::test]
     async fn ignore_broken_payload() {
         let server_addr = "0.0.0.0:3331";
-        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
+        let server = ScuttleServer::spawn(
+            server_addr.into(),
+            &[],
+            server_addr,
+            FailureDetectorConfig::default(),
+        );
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
+            "offline".to_string(),
             FailureDetectorConfig::default(),
         );
 
@@ -466,11 +486,17 @@ mod tests {
     #[tokio::test]
     async fn ignore_oversized_payload() {
         let server_addr = "0.0.0.0:4441";
-        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
+        let server = ScuttleServer::spawn(
+            server_addr.into(),
+            &[],
+            server_addr,
+            FailureDetectorConfig::default(),
+        );
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
+            "offline".to_string(),
             FailureDetectorConfig::default(),
         );
 
@@ -499,8 +525,9 @@ mod tests {
         let socket = UdpSocket::bind(server_addr).await.unwrap();
 
         let server = ScuttleServer::spawn(
-            "0.0.0.0:5552",
+            "0.0.0.0:5552".into(),
             &[server_addr.into()],
+            "0.0.0.0:5552",
             FailureDetectorConfig::default(),
         );
 
@@ -521,12 +548,19 @@ mod tests {
         let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
             test_addr.into(),
             HashSet::new(),
+            test_addr.to_string(),
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
         let server_addr = "0.0.0.0:6662";
-        let server = ScuttleServer::spawn(server_addr, &[], FailureDetectorConfig::default());
+        let server_node_id = NodeId::from(server_addr);
+        let server = ScuttleServer::spawn(
+            NodeId::from(server_addr),
+            &[],
+            server_addr,
+            FailureDetectorConfig::default(),
+        );
 
         // Add our test socket to the server's nodes.
         server
@@ -558,7 +592,7 @@ mod tests {
             message => panic!("unexpected message: {:?}", message),
         };
 
-        let node_delta = &delta.node_deltas.get(server_addr).unwrap().key_values;
+        let node_delta = &delta.node_deltas.get(&server_node_id).unwrap().key_values;
         let heartbeat = &node_delta.get(HEARTBEAT_KEY).unwrap().value;
         assert_eq!(heartbeat, "2");
 
@@ -567,10 +601,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_member_change_event_is_broadcasted() {
-        let node1 = ScuttleServer::spawn("0.0.0.0:6663", &[], FailureDetectorConfig::default());
+        let node1 = ScuttleServer::spawn(
+            NodeId::from("0.0.0.0:6663"),
+            &[],
+            "0.0.0.0:6663",
+            FailureDetectorConfig::default(),
+        );
         let node2 = ScuttleServer::spawn(
-            "0.0.0.0:6664",
+            NodeId::from("0.0.0.0:6664"),
             &["0.0.0.0:6663".to_string()],
+            "0.0.0.0:6664",
             FailureDetectorConfig::default(),
         );
         let mut live_nodes_watcher = node1
@@ -583,7 +623,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), async move {
             let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains("0.0.0.0:6664"));
+            assert!(live_nodes.contains(&NodeId::from("0.0.0.0:6664")));
         })
         .await
         .unwrap();
@@ -594,45 +634,49 @@ mod tests {
 
     #[test]
     fn test_select_nodes_for_gossip() {
-        let mut rng = RngForTest::default();
+        {
+            let mut rng = RngForTest::default();
+            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+                &mut rng,
+                to_hash_set(&["node-1", "node-2", "node-3"]),
+                to_hash_set(&["node-1", "node-2"]),
+                to_hash_set(&["node-3"]),
+                to_hash_set(&["node-2"]),
+            );
+            assert_eq!(nodes.len(), 2);
+            assert_eq!(dead_node, Some("node-3".to_string()));
+            assert_eq!(
+                seed_node, None,
+                "Should have already gossiped with a seed node."
+            );
+        }
 
-        // from perspective of node-0
-        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-            &mut rng,
-            to_hash_set(&["node-1", "node-2", "node-3"]),
-            to_hash_set(&["node-1", "node-2"]),
-            to_hash_set(&["node-3"]),
-            to_hash_set(&["node-2"]),
-        );
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(dead_node, Some("node-3".to_string()));
-        assert_eq!(
-            seed_node, None,
-            "Should have already gossiped with a seed node."
-        );
+        {
+            let mut rng = RngForTest::default();
+            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+                &mut rng,
+                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+                to_hash_set(&[]),
+                to_hash_set(&[]),
+            );
+            assert_eq!(nodes.len(), 3);
+            assert_eq!(dead_node, None);
+            assert_eq!(seed_node, None);
+        }
 
-        rng.reset();
-        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-            &mut rng,
-            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-            to_hash_set(&[]),
-            to_hash_set(&[]),
-        );
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(dead_node, None);
-        assert_eq!(seed_node, None);
-
-        rng.reset();
-        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-            &mut rng,
-            to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-            to_hash_set(&["node-1"]),
-            to_hash_set(&["node-2", "node-3", "node-4", "node-5"]),
-            to_hash_set(&["node-4", "node-5"]),
-        );
-        assert_eq!(nodes, ["node-1".to_string()]);
-        assert!(dead_node.is_some());
-        assert!(seed_node.is_some());
+        {
+            let mut rng = RngForTest::default();
+            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+                &mut rng,
+                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
+                to_hash_set(&["node-1"]),
+                to_hash_set(&["node-2", "node-3", "node-4", "node-5"]),
+                to_hash_set(&["node-4", "node-5"]),
+            );
+            assert_eq!(nodes, ["node-1".to_string()]);
+            assert!(dead_node.is_some());
+            assert!(seed_node.is_some());
+        }
     }
 }

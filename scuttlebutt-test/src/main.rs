@@ -24,7 +24,7 @@ use poem::{Route, Server};
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use scuttlebutt::server::ScuttleServer;
-use scuttlebutt::{FailureDetectorConfig, ScuttleButt};
+use scuttlebutt::{FailureDetectorConfig, NodeId, ScuttleButt, SerializableClusterState};
 use scuttlebutt_test::ApiResponse;
 use structopt::StructOpt;
 use tokio::sync::Mutex;
@@ -40,15 +40,9 @@ impl Api {
     async fn index(&self) -> Json<serde_json::Value> {
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
         let response = ApiResponse {
-            cluster_state: scuttlebutt_guard.cluster_state(),
-            live_nodes: scuttlebutt_guard
-                .live_nodes()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            dead_nodes: scuttlebutt_guard
-                .dead_nodes()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
+            cluster_state: SerializableClusterState::from(scuttlebutt_guard.cluster_state()),
+            live_nodes: scuttlebutt_guard.live_nodes().cloned().collect::<Vec<_>>(),
+            dead_nodes: scuttlebutt_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -68,9 +62,14 @@ async fn main() -> Result<(), std::io::Error> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
+    // let seed_nodes =
+    //     .iter()
+    //     .map(|v| NodeId::from(v.as_str()))
+    //     .collect::<Vec<_>>();
     let scuttlebutt_server = ScuttleServer::spawn(
-        &opt.listen_addr,
+        NodeId::from(opt.listen_addr.as_str()),
         &opt.seeds[..],
+        &opt.listen_addr,
         FailureDetectorConfig::default(),
     );
     let scuttlebutt = scuttlebutt_server.scuttlebutt();

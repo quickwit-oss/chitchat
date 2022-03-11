@@ -53,10 +53,10 @@ impl FailureDetector {
     }
 
     /// Reports node heartbeat.
-    pub fn report_heartbeat(&mut self, node_id: &str) {
-        debug!(node_id = node_id, "reporting node heartbeat.");
+    pub fn report_heartbeat(&mut self, node_id: &NodeId) {
+        debug!(node_id = ?node_id, "reporting node heartbeat.");
         let mut node_samples = self.node_samples.write().unwrap();
-        let heartbeat_window = node_samples.entry(node_id.to_string()).or_insert_with(|| {
+        let heartbeat_window = node_samples.entry(node_id.clone()).or_insert_with(|| {
             SamplingWindow::new(
                 self.config.sampling_window_size,
                 self.config.max_interval,
@@ -67,34 +67,34 @@ impl FailureDetector {
     }
 
     /// Marks a node as dead or live.
-    pub fn update_node_liveliness(&mut self, node_id: &str) {
+    pub fn update_node_liveliness(&mut self, node_id: &NodeId) {
         if let Some(phi) = self.phi(node_id) {
-            debug!(node_id = node_id, phi = phi, "updating node liveliness");
+            debug!(node_id = ?node_id, phi = phi, "updating node liveliness");
             if phi > self.config.phi_threshold {
                 self.live_nodes.remove(node_id);
-                self.dead_nodes.insert(node_id.to_string());
+                self.dead_nodes.insert(node_id.clone());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
                 self.node_samples.write().unwrap().remove(node_id);
             } else {
-                self.live_nodes.insert(node_id.to_string());
+                self.live_nodes.insert(node_id.clone());
                 self.dead_nodes.remove(node_id);
             }
         }
     }
 
     /// Returns a list of live nodes.
-    pub fn live_nodes(&self) -> impl Iterator<Item = &str> {
-        self.live_nodes.iter().map(|node_id| node_id.as_str())
+    pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
+        self.live_nodes.iter() //.map(|node_id| node_id.as_str())
     }
 
     /// Returns a list of dead nodes.
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &str> {
-        self.dead_nodes.iter().map(|node_id| node_id.as_str())
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &NodeId> {
+        self.dead_nodes.iter() //.map(|node_id| node_id.as_str())
     }
 
     /// Returns the current phi value of a node.
-    fn phi(&mut self, node_id: &str) -> Option<f64> {
+    fn phi(&mut self, node_id: &NodeId) -> Option<f64> {
         self.node_samples
             .read()
             .unwrap()
@@ -259,6 +259,7 @@ mod tests {
 
     use super::{BoundedArrayStats, SamplingWindow};
     use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
+    use crate::NodeId;
 
     #[test]
     fn test_failure_detector() {
@@ -266,7 +267,11 @@ mod tests {
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
         let intervals_choices = vec![1u64, 2];
-        let node_ids_choices = vec!["node-1", "node-2", "node-3"];
+        let node_ids_choices = vec![
+            NodeId::from("node-1"),
+            NodeId::from("node-2"),
+            NodeId::from("node-3"),
+        ];
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
             let node_id = node_ids_choices.choose(&mut rng).unwrap();
@@ -278,7 +283,10 @@ mod tests {
             failure_detector.update_node_liveliness(node_id);
         }
 
-        let mut live_nodes = failure_detector.live_nodes().collect::<Vec<_>>();
+        let mut live_nodes = failure_detector
+            .live_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
         live_nodes.sort_unstable();
 
         assert_eq!(live_nodes, vec!["node-1", "node-2", "node-3"]);
@@ -289,24 +297,31 @@ mod tests {
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
         let intervals_choices = vec![1u64, 2];
+        let node_1 = NodeId::from("node-1");
 
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
             MockClock::advance(Duration::from_secs(*time_offset));
-            failure_detector.report_heartbeat("node-1");
+            failure_detector.report_heartbeat(&node_1);
         }
 
-        failure_detector.update_node_liveliness("node-1");
+        failure_detector.update_node_liveliness(&node_1);
         assert_eq!(
-            failure_detector.live_nodes().collect::<Vec<&str>>(),
+            failure_detector
+                .live_nodes()
+                .map(|node_id| node_id.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["node-1"]
         );
 
         // Check node-1 is down (stop reporting heartbeat).
         MockClock::advance(Duration::from_secs(20));
-        failure_detector.update_node_liveliness("node-1");
+        failure_detector.update_node_liveliness(&node_1);
         assert_eq!(
-            failure_detector.live_nodes().collect::<Vec<&str>>(),
+            failure_detector
+                .live_nodes()
+                .map(|node_id| node_id.id.as_str())
+                .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
 
@@ -314,13 +329,41 @@ mod tests {
         for _ in 0..=500 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
             MockClock::advance(Duration::from_secs(*time_offset));
-            failure_detector.report_heartbeat("node-1");
+            failure_detector.report_heartbeat(&node_1);
         }
-        failure_detector.update_node_liveliness("node-1");
+        failure_detector.update_node_liveliness(&node_1);
         assert_eq!(
-            failure_detector.live_nodes().collect::<Vec<&str>>(),
+            failure_detector
+                .live_nodes()
+                .map(|node_id| node_id.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["node-1"]
         );
+    }
+
+    #[test]
+    fn test_failure_detector_node_state_after_initial_interval() {
+        let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
+
+        let node_id = NodeId::from("node-1");
+        failure_detector.report_heartbeat(&node_id);
+
+        MockClock::advance(Duration::from_secs(1));
+        failure_detector.update_node_liveliness(&node_id);
+
+        let live_nodes = failure_detector
+            .live_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(live_nodes, vec!["node-1"]);
+        MockClock::advance(Duration::from_secs(40));
+        failure_detector.update_node_liveliness(&node_id);
+
+        let live_nodes = failure_detector
+            .live_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(live_nodes, Vec::<&str>::new());
     }
 
     #[test]

@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
-use crate::{Version, VersionedValue};
+use crate::{NodeId, Version, VersionedValue};
 
 /// Maximum value size (in bytes) for a key-value item.
 const MAX_KV_VALUE_SIZE: usize = 500;
@@ -102,31 +102,28 @@ impl NodeState {
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct ClusterState {
     pub(crate) seed_nodes: HashSet<String>,
-    pub(crate) node_states: BTreeMap<String, NodeState>,
+    pub(crate) node_states: BTreeMap<NodeId, NodeState>,
 }
 
 impl ClusterState {
     pub fn with_seed_ids(node_ids: HashSet<String>) -> ClusterState {
         ClusterState {
-            seed_nodes: node_ids.clone(),
-            node_states: node_ids
-                .into_iter()
-                .map(|node_id| (node_id, NodeState::default()))
-                .collect(),
+            seed_nodes: node_ids,
+            node_states: BTreeMap::new(),
         }
     }
 
-    pub fn node_state_mut(&mut self, node_id: &str) -> &mut NodeState {
+    pub fn node_state_mut(&mut self, node_id: &NodeId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
-        self.node_states.entry(node_id.to_string()).or_default()
+        self.node_states.entry(node_id.clone()).or_default()
     }
 
-    pub fn node_state(&self, node_id: &str) -> Option<&NodeState> {
+    pub fn node_state(&self, node_id: &NodeId) -> Option<&NodeState> {
         self.node_states.get(node_id)
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &str> {
-        self.node_states.keys().map(|k| k.as_str())
+    pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
+        self.node_states.keys()
     }
 
     pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
@@ -187,7 +184,7 @@ impl ClusterState {
         }
 
         for node_id in node_sorted_by_stale_length.into_iter() {
-            if !delta_writer.add_node(node_id) {
+            if !delta_writer.add_node(node_id.clone()) {
                 break;
             }
             let node_state_map = self.node_states.get(node_id).unwrap();
@@ -207,14 +204,33 @@ impl ClusterState {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SerializableClusterState {
+    pub seed_nodes: HashSet<String>,
+    pub node_states: BTreeMap<String, NodeState>,
+}
+
+impl From<ClusterState> for SerializableClusterState {
+    fn from(state: ClusterState) -> Self {
+        SerializableClusterState {
+            seed_nodes: state.seed_nodes,
+            node_states: state
+                .node_states
+                .into_iter()
+                .map(|(node_id, node_state)| (node_id.id, node_state))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct NodeSortedByStaleLength<'a> {
-    node_per_stale_length: BTreeMap<usize, Vec<&'a str>>,
+    node_per_stale_length: BTreeMap<usize, Vec<&'a NodeId>>,
     stale_lengths: BinaryHeap<usize>,
 }
 
 impl<'a> NodeSortedByStaleLength<'a> {
-    fn insert(&mut self, node_id: &'a str, stale_length: usize) {
+    fn insert(&mut self, node_id: &'a NodeId, stale_length: usize) {
         self.node_per_stale_length
             .entry(stale_length)
             .or_insert_with(|| {
@@ -224,7 +240,7 @@ impl<'a> NodeSortedByStaleLength<'a> {
             .push(node_id);
     }
 
-    fn into_iter(mut self) -> impl Iterator<Item = &'a str> {
+    fn into_iter(mut self) -> impl Iterator<Item = &'a NodeId> {
         let mut rng = random_generator();
         std::iter::from_fn(move || self.stale_lengths.pop()).flat_map(move |length| {
             let mut nodes = self.node_per_stale_length.remove(&length).unwrap();
@@ -261,35 +277,51 @@ mod tests {
     #[test]
     fn test_node_sorted_by_stale_length_simple() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        node_sorted_by_stale_length.insert("node1", 1);
-        node_sorted_by_stale_length.insert("node2", 2);
-        node_sorted_by_stale_length.insert("node3", 3);
-        let nodes: Vec<&str> = node_sorted_by_stale_length.into_iter().collect();
-        assert_eq!(&nodes, &["node3", "node2", "node1"]);
+        let node_ids = vec![("node1", 1), ("node2", 2), ("node3", 3)]
+            .into_iter()
+            .map(|(node_id, state_length)| (NodeId::from(node_id), state_length))
+            .collect::<Vec<_>>();
+        for (node_id, state_length) in node_ids.iter() {
+            node_sorted_by_stale_length.insert(node_id, *state_length);
+        }
+        let nodes: Vec<&NodeId> = node_sorted_by_stale_length.into_iter().collect();
+        let expected_nodes: Vec<NodeId> = vec!["node3", "node2", "node1"]
+            .into_iter()
+            .map(NodeId::from)
+            .collect();
+        assert_eq!(nodes, expected_nodes.iter().collect::<Vec<_>>());
     }
 
     #[test]
     fn test_node_sorted_by_stale_length_doubles() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        node_sorted_by_stale_length.insert("node1", 1);
-        node_sorted_by_stale_length.insert("node2a", 2);
-        node_sorted_by_stale_length.insert("node2b", 2);
-        node_sorted_by_stale_length.insert("node2c", 2);
-        let nodes: Vec<&str> = node_sorted_by_stale_length.into_iter().collect();
-        assert_eq!(&nodes, &["node2b", "node2a", "node2c", "node1"]);
+        let node_ids = vec![("node1", 1), ("node2a", 2), ("node2b", 2), ("node2c", 2)]
+            .into_iter()
+            .map(|(node_id, state_length)| (NodeId::from(node_id), state_length))
+            .collect::<Vec<_>>();
+        for (node_id, state_length) in node_ids.iter() {
+            node_sorted_by_stale_length.insert(node_id, *state_length);
+        }
+
+        let nodes: Vec<&NodeId> = node_sorted_by_stale_length.into_iter().collect();
+        let expected_nodes: Vec<NodeId> = vec!["node2b", "node2a", "node2c", "node1"]
+            .into_iter()
+            .map(NodeId::from)
+            .collect();
+        assert_eq!(nodes, expected_nodes.iter().collect::<Vec<_>>());
     }
 
     #[test]
     fn test_cluster_state_missing_node() {
         let cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state("node");
+        let node_state = cluster_state.node_state(&"node".into());
         assert!(node_state.is_none());
     }
 
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut("node");
+        let node_state = cluster_state.node_state_mut(&"node".into());
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -303,7 +335,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut("node");
+        let node_state = cluster_state.node_state_mut(&"node".into());
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -341,7 +373,7 @@ mod tests {
     #[should_panic(expected = "Value for key `text` is too large (actual: 528, maximum: 500)")]
     fn test_cluster_state_set_with_large_value() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut("node");
+        let node_state = cluster_state.node_state_mut(&"node".into());
         let large_value = "The quick brown fox jumps over the lazy dog.".repeat(12);
         node_state.set("text", large_value);
     }
@@ -349,7 +381,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut("node");
+        let node_state = cluster_state.node_state_mut(&"node".into());
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
@@ -372,17 +404,17 @@ mod tests {
     fn test_cluster_state_compute_digest() {
         let mut cluster_state = ClusterState::default();
 
-        let node1_state = cluster_state.node_state_mut("node1");
+        let node1_state = cluster_state.node_state_mut(&"node1".into());
         node1_state.set("key_a", "");
         node1_state.set("key_b", "");
 
-        let node2_state = cluster_state.node_state_mut("node2");
+        let node2_state = cluster_state.node_state_mut(&"node2".into());
         node2_state.set("key_a", "");
 
         let digest = cluster_state.compute_digest();
         let mut node_max_version_map = BTreeMap::default();
-        node_max_version_map.insert("node1".to_string(), 2);
-        node_max_version_map.insert("node2".to_string(), 1);
+        node_max_version_map.insert("node1".into(), 2);
+        node_max_version_map.insert("node2".into(), 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
     }
 
@@ -390,16 +422,16 @@ mod tests {
     fn test_cluster_state_apply_delta() {
         let mut cluster_state = ClusterState::default();
 
-        let node1_state = cluster_state.node_state_mut("node1");
+        let node1_state = cluster_state.node_state_mut(&"node1".into());
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 3); // 3
 
         let mut delta = Delta::default();
-        delta.add_node_delta("node1", "key_a", "4", 4);
-        delta.add_node_delta("node1", "key_b", "2", 2);
+        delta.add_node_delta("node1".into(), "key_a", "4", 4);
+        delta.add_node_delta("node1".into(), "key_b", "2", 2);
         cluster_state.apply_delta(delta);
 
-        let node1_state = cluster_state.node_state("node1").unwrap();
+        let node1_state = cluster_state.node_state(&"node1".into()).unwrap();
         assert_eq!(
             node1_state.get_versioned("key_a").unwrap(),
             &VersionedValue {
@@ -422,7 +454,7 @@ mod tests {
     fn test_with_varying_max_transmitted_kv_helper(
         cluster_state: &ClusterState,
         digest: &Digest,
-        expected_delta_atoms: &[(&str, &str, &str, Version)],
+        expected_delta_atoms: &[(&NodeId, &str, &str, Version)],
     ) {
         let max_delta = cluster_state.compute_delta(digest, usize::MAX);
         let mut buf = Vec::new();
@@ -441,7 +473,7 @@ mod tests {
         for (num_entries, &mtu) in mtu_per_num_entries.iter().enumerate() {
             let mut expected_delta = Delta::default();
             for &(node, key, val, version) in &expected_delta_atoms[..num_entries] {
-                expected_delta.add_node_delta(node, key, val, version);
+                expected_delta.add_node_delta(node.clone(), key, val, version);
             }
             {
                 let delta = cluster_state.compute_delta(digest, mtu);
@@ -457,11 +489,11 @@ mod tests {
     fn test_cluster_state() -> ClusterState {
         let mut cluster_state = ClusterState::default();
 
-        let node1_state = cluster_state.node_state_mut("node1");
+        let node1_state = cluster_state.node_state_mut(&"node1".into());
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 3
 
-        let node2_state = cluster_state.node_state_mut("node2");
+        let node2_state = cluster_state.node_state_mut(&"node2".into());
         node2_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
@@ -474,15 +506,15 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_single_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node1", 1);
-        digest.add_node("node2", 2);
+        digest.add_node("node1".into(), 1);
+        digest.add_node("node2".into(), 2);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             &[
-                ("node2", "key_c", "3", 3),
-                ("node2", "key_d", "4", 4),
-                ("node1", "key_b", "2", 2),
+                (&"node2".into(), "key_c", "3", 3),
+                (&"node2".into(), "key_d", "4", 4),
+                (&"node1".into(), "key_b", "2", 2),
             ],
         );
     }
@@ -491,15 +523,15 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_scuttlebutt() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node1", 1);
-        digest.add_node("node2", 2);
+        digest.add_node("node1".into(), 1);
+        digest.add_node("node2".into(), 2);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             &[
-                ("node2", "key_c", "3", 3),
-                ("node2", "key_d", "4", 4),
-                ("node1", "key_b", "2", 2),
+                (&"node2".into(), "key_c", "3", 3),
+                (&"node2".into(), "key_d", "4", 4),
+                (&"node1".into(), "key_b", "2", 2),
             ],
         );
     }
@@ -508,14 +540,14 @@ mod tests {
     fn test_cluster_state_compute_delta_missing_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node2", 3);
+        digest.add_node("node2".into(), 3);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             &[
-                ("node1", "key_a", "1", 1),
-                ("node1", "key_b", "2", 2),
-                ("node2", "key_d", "4", 4),
+                (&"node1".into(), "key_a", "1", 1),
+                (&"node1".into(), "key_b", "2", 2),
+                (&"node2".into(), "key_d", "4", 4),
             ],
         );
     }
