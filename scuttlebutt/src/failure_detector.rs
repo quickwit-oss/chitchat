@@ -342,6 +342,31 @@ mod tests {
     }
 
     #[test]
+    fn test_failure_detector_node_state_after_initial_interval() {
+        let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
+
+        let node_id = NodeId::from("node-1");
+        failure_detector.report_heartbeat(&node_id);
+
+        MockClock::advance(Duration::from_secs(1));
+        failure_detector.update_node_liveliness(&node_id);
+
+        let live_nodes = failure_detector
+            .live_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(live_nodes, vec!["node-1"]);
+        MockClock::advance(Duration::from_secs(40));
+        failure_detector.update_node_liveliness(&node_id);
+
+        let live_nodes = failure_detector
+            .live_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(live_nodes, Vec::<&str>::new());
+    }
+
+    #[test]
     fn test_sampling_window() {
         let mut sampling_window =
             SamplingWindow::new(10, Duration::from_secs(5), Duration::from_secs(2));
