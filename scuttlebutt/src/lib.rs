@@ -168,7 +168,7 @@ impl ScuttleButt {
         match msg {
             ScuttleButtMessage::Syn { digest } => {
                 let self_digest = self.compute_digest();
-                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+                let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
                     &digest,
                     self.mtu - 1 - self_digest.serialized_len(),
@@ -183,7 +183,7 @@ impl ScuttleButt {
             ScuttleButtMessage::SynAck { digest, delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
-                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+                let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self
                     .cluster_state
                     .compute_delta(&digest, self.mtu - 1, dead_nodes);
@@ -380,7 +380,7 @@ mod tests {
             .await
             .live_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
-        tokio::time::timeout(Duration::from_secs(30), async move {
+        tokio::time::timeout(Duration::from_secs(50), async move {
             let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(
                 live_nodes,
@@ -555,8 +555,8 @@ mod tests {
         let port = 40003;
         let address = format!("localhost:{}", port);
         let new_node_scuttlebutt = ScuttleServer::spawn(
-            NodeId::from("new_node"),
-            &["localhost:30001".to_string()],
+            NodeId::new("new_node".to_string(), address.clone()),
+            &["localhost:40001".to_string()],
             address,
             FailureDetectorConfig::default(),
         );
