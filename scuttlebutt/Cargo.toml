@@ -2,6 +2,10 @@
 name = "scuttlebutt"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
+authors = ["Quickwit, Inc. <hello@quickwit.io>"]
+description = "Cluster membershipe management library implemented using Scuttlebutt."
+repository = "https://github.com/quickwit-oss/scuttlebutt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
