@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 authors = ["Quickwit, Inc. <hello@quickwit.io>"]
 description = "Cluster membershipe management library implemented using Scuttlebutt."
+repository = "https://github.com/quickwit-oss/scuttlebutt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
