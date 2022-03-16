@@ -160,22 +160,31 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self) -> Digest {
+    pub fn compute_digest(&self, dead_nodes: HashSet<&NodeId>) -> Digest {
         Digest {
             node_max_version: self
                 .node_states
                 .iter()
+                .filter(|(node_id, _)| !dead_nodes.contains(node_id))
                 .map(|(node_id, node_state)| (node_id.clone(), node_state.max_version))
                 .collect(),
         }
     }
 
     /// Implements the scuttlebutt reconciliation with the scuttle-depth ordering.
-    pub fn compute_delta(&self, digest: &Digest, mtu: usize) -> Delta {
+    pub fn compute_delta(
+        &self,
+        digest: &Digest,
+        mtu: usize,
+        dead_nodes: HashSet<&NodeId>,
+    ) -> Delta {
         let mut delta_writer = DeltaWriter::with_mtu(mtu);
 
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
         for (node_id, node_state_map) in &self.node_states {
+            if dead_nodes.contains(node_id) {
+                continue;
+            }
             let floor_version = digest.node_max_version.get(node_id).cloned().unwrap_or(0);
             let stale_kv_count = node_state_map.iter_stale_key_values(floor_version).count();
             if stale_kv_count > 0 {
@@ -411,9 +420,16 @@ mod tests {
         let node2_state = cluster_state.node_state_mut(&"node2".into());
         node2_state.set("key_a", "");
 
-        let digest = cluster_state.compute_digest();
+        let digest = cluster_state.compute_digest(HashSet::new());
         let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert("node1".into(), 2);
+        node_max_version_map.insert("node2".into(), 1);
+        assert_eq!(&digest.node_max_version, &node_max_version_map);
+
+        // exclude node1
+        let dead_nodes = vec![NodeId::from("node1")];
+        let digest = cluster_state.compute_digest(dead_nodes.iter().collect());
+        let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert("node2".into(), 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
     }
@@ -454,14 +470,15 @@ mod tests {
     fn test_with_varying_max_transmitted_kv_helper(
         cluster_state: &ClusterState,
         digest: &Digest,
+        exclude_node_ids: HashSet<&NodeId>,
         expected_delta_atoms: &[(&NodeId, &str, &str, Version)],
     ) {
-        let max_delta = cluster_state.compute_delta(digest, usize::MAX);
+        let max_delta = cluster_state.compute_delta(digest, usize::MAX, exclude_node_ids.clone());
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
         for mtu in 2..buf.len() {
-            let delta = cluster_state.compute_delta(digest, mtu);
+            let delta = cluster_state.compute_delta(digest, mtu, exclude_node_ids.clone());
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -476,11 +493,11 @@ mod tests {
                 expected_delta.add_node_delta(node.clone(), key, val, version);
             }
             {
-                let delta = cluster_state.compute_delta(digest, mtu);
+                let delta = cluster_state.compute_delta(digest, mtu, exclude_node_ids.clone());
                 assert_eq!(&delta, &expected_delta);
             }
             {
-                let delta = cluster_state.compute_delta(digest, mtu + 1);
+                let delta = cluster_state.compute_delta(digest, mtu + 1, exclude_node_ids.clone());
                 assert_eq!(&delta, &expected_delta);
             }
         }
@@ -511,6 +528,7 @@ mod tests {
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
+            HashSet::new(),
             &[
                 (&"node2".into(), "key_c", "3", 3),
                 (&"node2".into(), "key_d", "4", 4),
@@ -528,6 +546,7 @@ mod tests {
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
+            HashSet::new(),
             &[
                 (&"node2".into(), "key_c", "3", 3),
                 (&"node2".into(), "key_d", "4", 4),
@@ -544,10 +563,29 @@ mod tests {
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
+            HashSet::new(),
             &[
                 (&"node1".into(), "key_a", "1", 1),
                 (&"node1".into(), "key_b", "2", 2),
                 (&"node2".into(), "key_d", "4", 4),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_cluster_state_compute_delta_should_ignore_dead_nodes() {
+        let cluster_state = test_cluster_state();
+        let digest = Digest::default();
+
+        let dead_nodes = vec![NodeId::from("node2")];
+
+        test_with_varying_max_transmitted_kv_helper(
+            &cluster_state,
+            &digest,
+            dead_nodes.iter().collect(),
+            &[
+                (&"node1".into(), "key_a", "1", 1),
+                (&"node1".into(), "key_b", "2", 2),
             ],
         );
     }
