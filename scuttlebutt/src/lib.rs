@@ -135,6 +135,7 @@ impl ScuttleButt {
         self_node_id: NodeId,
         seed_ids: HashSet<String>,
         address: String,
+        initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
@@ -149,8 +150,15 @@ impl ScuttleButt {
             live_nodes_watcher_rx,
         };
 
+        let self_node_state = scuttlebutt.self_node_state();
+
         // Immediately mark node as alive to ensure it responds to SYNs.
-        scuttlebutt.self_node_state().set(HEARTBEAT_KEY, 0);
+        self_node_state.set(HEARTBEAT_KEY, 0);
+
+        // Set initial key/value pairs.
+        for (key, value) in initial_key_values {
+            self_node_state.set(key, value);
+        }
 
         scuttlebutt
     }
@@ -335,6 +343,7 @@ mod tests {
             NodeId::from(address.as_str()),
             seeds,
             address,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         )
     }
@@ -397,24 +406,16 @@ mod tests {
             NodeId::from("node1"),
             HashSet::new(),
             "node1".to_string(),
+            vec![("key1a", "1"), ("key2a", "2")],
             FailureDetectorConfig::default(),
         );
-        {
-            let state1 = node1.self_node_state();
-            state1.set("key1a", "1");
-            state1.set("key2a", "2");
-        }
         let mut node2 = ScuttleButt::with_node_id_and_seeds(
             NodeId::from("node2"),
             HashSet::new(),
             "node2".to_string(),
+            vec![("key1b", "1"), ("key2b", "2")],
             FailureDetectorConfig::default(),
         );
-        {
-            let state2 = node2.self_node_state();
-            state2.set("key1b", "1");
-            state2.set("key2b", "2");
-        }
         run_scuttlebutt_handshake(&mut node1, &mut node2);
         dbg!(&node1.cluster_state());
         dbg!(&node2.cluster_state());
@@ -558,6 +559,7 @@ mod tests {
             NodeId::new("new_node".to_string(), address.clone()),
             &["localhost:40001".to_string()],
             address,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         nodes.push((port.to_string(), new_node_scuttlebutt));

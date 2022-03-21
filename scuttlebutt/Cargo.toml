@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["Quickwit, Inc. <hello@quickwit.io>"]
-description = "Cluster membership management library using gossip with Scuttlebutt reconcialiation."
+description = "Cluster membership management library using gossip with Scuttlebutt reconciliation."
 repository = "https://github.com/quickwit-oss/scuttlebutt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

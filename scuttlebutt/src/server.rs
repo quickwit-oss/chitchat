@@ -63,6 +63,7 @@ impl ScuttleServer {
         node_id: NodeId,
         seed_nodes: &[String],
         address: impl Into<String>,
+        initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -71,6 +72,7 @@ impl ScuttleServer {
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
+            initial_key_values,
             failure_detector_config,
         );
         let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
@@ -395,6 +397,7 @@ mod tests {
             "0.0.0.0:1112".into(),
             &[],
             "0.0.0.0:1112",
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         server.gossip(test_addr).unwrap();
@@ -419,6 +422,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -426,6 +430,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -453,6 +458,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
@@ -460,6 +466,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -490,6 +497,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
@@ -497,6 +505,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -528,6 +537,7 @@ mod tests {
             "0.0.0.0:5552".into(),
             &[server_addr.into()],
             "0.0.0.0:5552",
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -549,6 +559,7 @@ mod tests {
             test_addr.into(),
             HashSet::new(),
             test_addr.to_string(),
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind(test_addr).await.unwrap();
@@ -559,6 +570,7 @@ mod tests {
             NodeId::from(server_addr),
             &[],
             server_addr,
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
@@ -605,12 +617,14 @@ mod tests {
             NodeId::from("0.0.0.0:6663"),
             &[],
             "0.0.0.0:6663",
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         let node2 = ScuttleServer::spawn(
             NodeId::from("0.0.0.0:6664"),
             &["0.0.0.0:6663".to_string()],
             "0.0.0.0:6664",
+            Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
         let mut live_nodes_watcher = node1

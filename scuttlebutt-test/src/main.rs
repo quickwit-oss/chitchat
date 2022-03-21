@@ -67,6 +67,7 @@ async fn main() -> Result<(), std::io::Error> {
         NodeId::from(opt.listen_addr.as_str()),
         &opt.seeds[..],
         &opt.listen_addr,
+        Vec::<(&str, &str)>::new(),
         FailureDetectorConfig::default(),
     );
     let scuttlebutt = scuttlebutt_server.scuttlebutt();
