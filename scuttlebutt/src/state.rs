@@ -130,6 +130,10 @@ impl ClusterState {
         self.seed_nodes.iter().map(|node_id| node_id.as_str())
     }
 
+    pub fn remove_node(&mut self, node_id: &NodeId) {
+        self.node_states.remove(node_id);
+    }
+
     pub fn apply_delta(&mut self, delta: Delta) {
         for (node_id, node_delta) in delta.node_deltas {
             let mut node_state_map = self

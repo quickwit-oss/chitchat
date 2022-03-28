@@ -39,7 +39,7 @@ pub struct FailureDetector {
     /// Denotes live nodes.
     live_nodes: HashSet<NodeId>,
     /// Denotes dead nodes.
-    dead_nodes: HashSet<NodeId>,
+    dead_nodes: HashMap<NodeId, Instant>,
 }
 
 impl FailureDetector {
@@ -48,7 +48,7 @@ impl FailureDetector {
             node_samples: RwLock::new(HashMap::new()),
             config,
             live_nodes: HashSet::new(),
-            dead_nodes: HashSet::new(),
+            dead_nodes: HashMap::new(),
         }
     }
 
@@ -72,7 +72,7 @@ impl FailureDetector {
             debug!(node_id = ?node_id, phi = phi, "updating node liveliness");
             if phi > self.config.phi_threshold {
                 self.live_nodes.remove(node_id);
-                self.dead_nodes.insert(node_id.clone());
+                self.dead_nodes.insert(node_id.clone(), Instant::now());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
                 self.node_samples.write().unwrap().remove(node_id);
@@ -83,14 +83,29 @@ impl FailureDetector {
         }
     }
 
+    /// Removes and returns the list of garbage collectible nodes.
+    pub fn garbage_collect(&mut self) -> Vec<NodeId> {
+        let mut garbage_collected_nodes = Vec::new();
+        for (node_id, instant) in self.dead_nodes.iter() {
+            if instant.elapsed() >= self.config.dead_node_grace_period {
+                garbage_collected_nodes.push(node_id.clone())
+            }
+        }
+
+        for node_id in garbage_collected_nodes.iter() {
+            self.dead_nodes.remove(node_id);
+        }
+        garbage_collected_nodes
+    }
+
     /// Returns a list of live nodes.
     pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
-        self.live_nodes.iter() //.map(|node_id| node_id.as_str())
+        self.live_nodes.iter()
     }
 
     /// Returns a list of dead nodes.
     pub fn dead_nodes(&self) -> impl Iterator<Item = &NodeId> {
-        self.dead_nodes.iter() //.map(|node_id| node_id.as_str())
+        self.dead_nodes.iter().map(|(node_id, _)| node_id)
     }
 
     /// Returns the current phi value of a node.
@@ -114,6 +129,8 @@ pub struct FailureDetectorConfig {
     pub max_interval: Duration,
     /// Initial interval used on startup when no previous heartbeat exists.  
     pub initial_interval: Duration,
+    /// Threshold period after which dead node can be removed from the cluster.
+    pub dead_node_grace_period: Duration,
 }
 
 impl FailureDetectorConfig {
@@ -122,12 +139,14 @@ impl FailureDetectorConfig {
         sampling_window_size: usize,
         max_interval: Duration,
         initial_interval: Duration,
+        dead_node_grace_period: Duration,
     ) -> Self {
         Self {
             phi_threshold,
             sampling_window_size,
             max_interval,
             initial_interval,
+            dead_node_grace_period,
         }
     }
 }
@@ -139,6 +158,7 @@ impl Default for FailureDetectorConfig {
             sampling_window_size: 1000,
             max_interval: Duration::from_secs(10),
             initial_interval: Duration::from_secs(5),
+            dead_node_grace_period: Duration::from_secs(24 * 60 * 60), // 24 hours
         }
     }
 }
@@ -288,8 +308,45 @@ mod tests {
             .map(|node_id| node_id.id.as_str())
             .collect::<Vec<_>>();
         live_nodes.sort_unstable();
-
         assert_eq!(live_nodes, vec!["node-1", "node-2", "node-3"]);
+        assert_eq!(failure_detector.garbage_collect(), vec![]);
+
+        // stop reporting heartbeat for few seconds
+        MockClock::advance(Duration::from_secs(50));
+        for node_id in &node_ids_choices {
+            failure_detector.update_node_liveliness(node_id);
+        }
+        let mut dead_nodes = failure_detector
+            .dead_nodes()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        dead_nodes.sort_unstable();
+        assert_eq!(dead_nodes, vec!["node-1", "node-2", "node-3"]);
+        assert_eq!(failure_detector.garbage_collect(), vec![]);
+
+        // Wait for dead_node_grace_period & garbage collect.
+        MockClock::advance(Duration::from_secs(25 * 60 * 60));
+        let garbage_collected_nodes = failure_detector.garbage_collect();
+        assert_eq!(
+            failure_detector
+                .live_nodes()
+                .map(|node_id| node_id.id.as_str())
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            failure_detector
+                .dead_nodes()
+                .map(|node_id| node_id.id.as_str())
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new()
+        );
+        let mut removed_nodes = garbage_collected_nodes
+            .iter()
+            .map(|node_id| node_id.id.as_str())
+            .collect::<Vec<_>>();
+        removed_nodes.sort_unstable();
+        assert_eq!(removed_nodes, vec!["node-1", "node-2", "node-3"]);
     }
 
     #[test]
