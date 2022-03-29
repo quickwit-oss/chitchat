@@ -240,6 +240,12 @@ impl ScuttleButt {
                 error!(current_node = ?self.self_node_id, "error while reporting membership change event.")
             }
         }
+
+        // Perform garbage collection.
+        let garbage_collected_nodes = self.failure_detector.garbage_collect();
+        for node_id in garbage_collected_nodes.iter() {
+            self.cluster_state.remove_node(node_id)
+        }
     }
 
     pub fn node_state(&self, node_id: &NodeId) -> Option<&NodeState> {
@@ -295,7 +301,7 @@ impl ScuttleButt {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeInclusive;
+    use std::ops::{Add, RangeInclusive};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -307,6 +313,8 @@ mod tests {
 
     use super::*;
     use crate::server::ScuttleServer;
+
+    const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(25);
 
     fn run_scuttlebutt_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
         let syn_message = initiating_node.create_syn_message();
@@ -344,7 +352,10 @@ mod tests {
             seeds,
             address,
             Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
+            FailureDetectorConfig {
+                dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
+                ..Default::default()
+            },
         )
     }
 
@@ -593,6 +604,74 @@ mod tests {
                 .collect::<Vec<_>>();
 
             wait_for_scuttlebutt_state(node.scuttlebutt(), 5, &peers.to_vec()).await;
+        }
+
+        shutdown_nodes(nodes).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_dead_node_garbage_collection() -> anyhow::Result<()> {
+        let mut nodes = setup_nodes(60001..=60006).await;
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "60002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            5,
+            &[
+                NodeId::from("localhost:60001"),
+                NodeId::from("localhost:60003"),
+                NodeId::from("localhost:60004"),
+                NodeId::from("localhost:60005"),
+                NodeId::from("localhost:60006"),
+            ],
+        )
+        .await;
+
+        // Take down node at localhost:60003
+        let (id, node) = nodes.remove(2);
+        assert_eq!(id, "60003");
+        node.shutdown().await.unwrap();
+
+        let (id, node) = nodes.get(1).unwrap();
+        assert_eq!(id, "60002");
+        wait_for_scuttlebutt_state(
+            node.scuttlebutt(),
+            4,
+            &[
+                NodeId::from("localhost:60001"),
+                NodeId::from("localhost:60004"),
+                NodeId::from("localhost:60005"),
+                NodeId::from("localhost:60006"),
+            ],
+        )
+        .await;
+
+        // Dead node should still be known to the cluster.
+        let dead_node_id = NodeId::from("localhost:60003");
+        for (_, node) in nodes.iter() {
+            assert!(node
+                .scuttlebutt()
+                .lock()
+                .await
+                .node_state(&dead_node_id)
+                .is_some());
+        }
+
+        // Wait a bit more than `dead_node_grace_period` since all nodes will not
+        // notice cluster change at the same time.
+        let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(15));
+        time::sleep(wait_for).await;
+
+        // Dead node should no longer be known to the cluster.
+        for (_, node) in nodes.iter() {
+            assert!(node
+                .scuttlebutt()
+                .lock()
+                .await
+                .node_state(&dead_node_id)
+                .is_none());
         }
 
         shutdown_nodes(nodes).await?;
