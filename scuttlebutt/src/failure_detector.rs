@@ -18,7 +18,6 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
 use std::time::Duration;
 #[cfg(not(test))]
 use std::time::Instant;
@@ -32,12 +31,10 @@ use crate::NodeId;
 
 /// A phi accrual failure detector implementation.
 pub struct FailureDetector {
-    /// Heartbeat samples for each node.
-    node_samples: RwLock<HashMap<NodeId, SamplingWindow>>,
     /// Failure detector configuration.
     config: FailureDetectorConfig,
     /// Denotes live nodes.
-    live_nodes: HashSet<NodeId>,
+    live_nodes: HashMap<NodeId, SamplingWindow>,
     /// Denotes dead nodes.
     dead_nodes: HashSet<NodeId>,
 }
@@ -45,9 +42,8 @@ pub struct FailureDetector {
 impl FailureDetector {
     pub fn new(config: FailureDetectorConfig) -> Self {
         Self {
-            node_samples: RwLock::new(HashMap::new()),
             config,
-            live_nodes: HashSet::new(),
+            live_nodes: HashMap::new(),
             dead_nodes: HashSet::new(),
         }
     }
@@ -55,8 +51,7 @@ impl FailureDetector {
     /// Reports node heartbeat.
     pub fn report_heartbeat(&mut self, node_id: &NodeId) {
         debug!(node_id = ?node_id, "reporting node heartbeat.");
-        let mut node_samples = self.node_samples.write().unwrap();
-        let heartbeat_window = node_samples.entry(node_id.clone()).or_insert_with(|| {
+        let heartbeat_window = self.live_nodes.entry(node_id.clone()).or_insert_with(|| {
             SamplingWindow::new(
                 self.config.sampling_window_size,
                 self.config.max_interval,
@@ -75,9 +70,7 @@ impl FailureDetector {
                 self.dead_nodes.insert(node_id.clone());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
-                self.node_samples.write().unwrap().remove(node_id);
             } else {
-                self.live_nodes.insert(node_id.clone());
                 self.dead_nodes.remove(node_id);
             }
         }
@@ -85,7 +78,7 @@ impl FailureDetector {
 
     /// Returns a list of live nodes.
     pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
-        self.live_nodes.iter() //.map(|node_id| node_id.as_str())
+        self.live_nodes.iter().map(|(node_id, _)| node_id)
     }
 
     /// Returns a list of dead nodes.
@@ -95,9 +88,7 @@ impl FailureDetector {
 
     /// Returns the current phi value of a node.
     fn phi(&mut self, node_id: &NodeId) -> Option<f64> {
-        self.node_samples
-            .read()
-            .unwrap()
+        self.live_nodes
             .get(node_id)
             .map(|sampling_window| sampling_window.phi())
     }
@@ -112,7 +103,7 @@ pub struct FailureDetectorConfig {
     pub sampling_window_size: usize,
     /// Heartbeat longer than this will be dropped.
     pub max_interval: Duration,
-    /// Initial interval used on startup when no previous heartbeat exists.  
+    /// Initial interval used on startup when no previous heartbeat exists.
     pub initial_interval: Duration,
 }
 
