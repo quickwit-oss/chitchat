@@ -130,7 +130,7 @@ impl ClusterState {
         self.seed_nodes.iter().map(|node_id| node_id.as_str())
     }
 
-    pub fn remove_node(&mut self, node_id: &NodeId) {
+    pub(crate) fn remove_node(&mut self, node_id: &NodeId) {
         self.node_states.remove(node_id);
     }
 

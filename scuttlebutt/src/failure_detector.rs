@@ -18,7 +18,6 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
 use std::time::Duration;
 #[cfg(not(test))]
 use std::time::Instant;
@@ -33,7 +32,7 @@ use crate::NodeId;
 /// A phi accrual failure detector implementation.
 pub struct FailureDetector {
     /// Heartbeat samples for each node.
-    node_samples: RwLock<HashMap<NodeId, SamplingWindow>>,
+    node_samples: HashMap<NodeId, SamplingWindow>,
     /// Failure detector configuration.
     config: FailureDetectorConfig,
     /// Denotes live nodes.
@@ -45,7 +44,7 @@ pub struct FailureDetector {
 impl FailureDetector {
     pub fn new(config: FailureDetectorConfig) -> Self {
         Self {
-            node_samples: RwLock::new(HashMap::new()),
+            node_samples: HashMap::new(),
             config,
             live_nodes: HashSet::new(),
             dead_nodes: HashMap::new(),
@@ -55,8 +54,7 @@ impl FailureDetector {
     /// Reports node heartbeat.
     pub fn report_heartbeat(&mut self, node_id: &NodeId) {
         debug!(node_id = ?node_id, "reporting node heartbeat.");
-        let mut node_samples = self.node_samples.write().unwrap();
-        let heartbeat_window = node_samples.entry(node_id.clone()).or_insert_with(|| {
+        let heartbeat_window = self.node_samples.entry(node_id.clone()).or_insert_with(|| {
             SamplingWindow::new(
                 self.config.sampling_window_size,
                 self.config.max_interval,
@@ -75,7 +73,7 @@ impl FailureDetector {
                 self.dead_nodes.insert(node_id.clone(), Instant::now());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
-                self.node_samples.write().unwrap().remove(node_id);
+                self.node_samples.remove(node_id);
             } else {
                 self.live_nodes.insert(node_id.clone());
                 self.dead_nodes.remove(node_id);
@@ -111,8 +109,6 @@ impl FailureDetector {
     /// Returns the current phi value of a node.
     fn phi(&mut self, node_id: &NodeId) -> Option<f64> {
         self.node_samples
-            .read()
-            .unwrap()
             .get(node_id)
             .map(|sampling_window| sampling_window.phi())
     }
