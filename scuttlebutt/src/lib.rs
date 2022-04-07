@@ -34,7 +34,7 @@ pub use failure_detector::FailureDetectorConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -172,12 +172,26 @@ impl ScuttleButt {
 
     pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
         let digest = self.compute_digest();
-        ScuttleButtMessage::Syn { digest }
+        ScuttleButtMessage::Syn {
+            cluster_name: self.cluster_name.clone(),
+            digest,
+        }
     }
 
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
-            ScuttleButtMessage::Syn { digest } => {
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => {
+                if cluster_name != self.cluster_name {
+                    warn!(
+                        cluster_name = ?cluster_name,
+                        "ignoring syn message with mismatching cluster name"
+                    );
+                    return None;
+                }
+
                 let self_digest = self.compute_digest();
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
@@ -417,16 +431,6 @@ mod tests {
         })
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_scuttlebutt_spawn() -> anyhow::Result<()> {
-        let node = start_node(20001, &["localhost:20001".to_string()]);
-        assert_eq!(
-            node.scuttlebutt().lock().await.cluster_name(),
-            "test-cluster"
-        );
-        Ok(())
     }
 
     #[test]

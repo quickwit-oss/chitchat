@@ -34,7 +34,10 @@ use crate::serialize::Serializable;
 #[derive(Debug)]
 pub enum ScuttleButtMessage {
     /// Node A initiates handshakes.
-    Syn { digest: Digest },
+    Syn {
+        cluster_name: String,
+        digest: Digest,
+    },
     /// Node B returns a partial update as described
     /// in the scuttlebutt reconcialiation algorithm,
     /// and returns its own checksum.
@@ -68,9 +71,13 @@ impl MessageType {
 impl Serializable for ScuttleButtMessage {
     fn serialize(&self, buf: &mut Vec<u8>) {
         match self {
-            ScuttleButtMessage::Syn { digest } => {
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => {
                 buf.push(MessageType::Syn.to_code());
                 digest.serialize(buf);
+                cluster_name.serialize(buf);
             }
             ScuttleButtMessage::SynAck { digest, delta } => {
                 buf.push(MessageType::SynAck.to_code());
@@ -94,7 +101,11 @@ impl Serializable for ScuttleButtMessage {
         match code {
             MessageType::Syn => {
                 let digest = Digest::deserialize(buf)?;
-                Ok(Self::Syn { digest })
+                let cluster_name = String::deserialize(buf)?;
+                Ok(Self::Syn {
+                    cluster_name,
+                    digest,
+                })
             }
             MessageType::SynAck => {
                 let digest = Digest::deserialize(buf)?;
@@ -110,7 +121,10 @@ impl Serializable for ScuttleButtMessage {
 
     fn serialized_len(&self) -> usize {
         match self {
-            ScuttleButtMessage::Syn { digest } => 1 + digest.serialized_len(),
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => 1 + cluster_name.serialized_len() + digest.serialized_len(),
             ScuttleButtMessage::SynAck { digest, delta } => {
                 1 + digest.serialized_len() + delta.serialized_len()
             }

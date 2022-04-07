@@ -98,9 +98,7 @@ impl ScuttleServer {
 
     /// Call a function with mutable access to the [`ScuttleButt`].
     pub async fn with_scuttlebutt<F, T>(&self, mut fun: F) -> T
-    where
-        F: FnMut(&mut ScuttleButt) -> T,
-    {
+    where F: FnMut(&mut ScuttleButt) -> T {
         let mut scuttlebutt = self.scuttlebutt.lock().await;
         fun(&mut scuttlebutt)
     }
@@ -412,7 +410,13 @@ mod tests {
 
         let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::Syn { .. } => (),
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => {
+                assert_eq!(cluster_name, "test-cluster");
+                assert_eq!(digest.node_max_version.len(), 1);
+            }
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -454,6 +458,42 @@ mod tests {
             ScuttleButtMessage::SynAck { .. } => (),
             message => panic!("unexpected message: {:?}", message),
         }
+
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignore_mismatched_cluster_name() {
+        let server_addr = "0.0.0.0:2223";
+        let socket = UdpSocket::bind("0.0.0.0:2224").await.unwrap();
+        let mut outsider = ScuttleButt::with_node_id_and_seeds(
+            "offline".into(),
+            HashSet::new(),
+            "offline".to_string(),
+            "another-cluster".to_string(),
+            Vec::<(&str, &str)>::new(),
+            FailureDetectorConfig::default(),
+        );
+
+        let server = ScuttleServer::spawn(
+            server_addr.into(),
+            &[],
+            server_addr,
+            "test-cluster".to_string(),
+            Vec::<(&str, &str)>::new(),
+            FailureDetectorConfig::default(),
+        );
+
+        let mut buf = Vec::new();
+        let syn = outsider.create_syn_message();
+        syn.serialize(&mut buf);
+        socket.send_to(&buf[..], server_addr).await.unwrap();
+
+        // server will drop the message, we expect the recv to timeout
+        let mut buf = [0; super::UDP_MTU];
+        let resp =
+            tokio::time::timeout(Duration::from_millis(100), socket.recv_from(&mut buf)).await;
+        assert!(resp.is_err(), "unexpected response from peer");
 
         server.shutdown().await.unwrap();
     }
