@@ -40,6 +40,7 @@ impl Api {
     async fn index(&self) -> Json<serde_json::Value> {
         let scuttlebutt_guard = self.scuttlebutt.lock().await;
         let response = ApiResponse {
+            cluster_name: scuttlebutt_guard.cluster_name().to_string(),
             cluster_state: SerializableClusterState::from(scuttlebutt_guard.cluster_state()),
             live_nodes: scuttlebutt_guard.live_nodes().cloned().collect::<Vec<_>>(),
             dead_nodes: scuttlebutt_guard.dead_nodes().cloned().collect::<Vec<_>>(),
@@ -67,6 +68,7 @@ async fn main() -> Result<(), std::io::Error> {
         NodeId::from(opt.listen_addr.as_str()),
         &opt.seeds[..],
         &opt.listen_addr,
+        "testing".to_string(),
         Vec::<(&str, &str)>::new(),
         FailureDetectorConfig::default(),
     );

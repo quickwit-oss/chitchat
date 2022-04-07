@@ -63,6 +63,7 @@ impl ScuttleServer {
         node_id: NodeId,
         seed_nodes: &[String],
         address: impl Into<String>,
+        cluster_name: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
@@ -72,6 +73,7 @@ impl ScuttleServer {
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
+            cluster_name,
             initial_key_values,
             failure_detector_config,
         );
@@ -96,7 +98,9 @@ impl ScuttleServer {
 
     /// Call a function with mutable access to the [`ScuttleButt`].
     pub async fn with_scuttlebutt<F, T>(&self, mut fun: F) -> T
-    where F: FnMut(&mut ScuttleButt) -> T {
+    where
+        F: FnMut(&mut ScuttleButt) -> T,
+    {
         let mut scuttlebutt = self.scuttlebutt.lock().await;
         fun(&mut scuttlebutt)
     }
@@ -397,6 +401,7 @@ mod tests {
             "0.0.0.0:1112".into(),
             &[],
             "0.0.0.0:1112",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -422,6 +427,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -430,6 +436,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -458,6 +465,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -466,6 +474,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -497,6 +506,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -505,6 +515,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -537,6 +548,7 @@ mod tests {
             "0.0.0.0:5552".into(),
             &[server_addr.into()],
             "0.0.0.0:5552",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -559,6 +571,7 @@ mod tests {
             test_addr.into(),
             HashSet::new(),
             test_addr.to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -570,6 +583,7 @@ mod tests {
             NodeId::from(server_addr),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -617,6 +631,7 @@ mod tests {
             NodeId::from("0.0.0.0:6663"),
             &[],
             "0.0.0.0:6663",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -624,6 +639,7 @@ mod tests {
             NodeId::from("0.0.0.0:6664"),
             &["0.0.0.0:6663".to_string()],
             "0.0.0.0:6664",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
