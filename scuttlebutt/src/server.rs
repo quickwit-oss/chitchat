@@ -544,46 +544,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignore_oversized_payload() {
-        let server_addr = "0.0.0.0:4441";
-        let server = ScuttleServer::spawn(
-            server_addr.into(),
-            &[],
-            server_addr,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-        let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
-            "offline".into(),
-            HashSet::new(),
-            "offline".to_string(),
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-
-        // Send broken payload.
-        socket.send_to(&[0; UDP_MTU], server_addr).await.unwrap();
-
-        // Confirm nothing broke using a regular payload.
-        let syn = scuttlebutt.create_syn_message();
-        let buf = syn.serialize_to_vec();
-        socket.send_to(&buf[..], server_addr).await.unwrap();
-
-        let mut buf = [0; UDP_MTU];
-        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
-
-        match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
-            ScuttleButtMessage::SynAck { .. } => (),
-            message => panic!("unexpected message: {:?}", message),
-        }
-
-        server.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
     async fn seeding() {
         let server_addr = "0.0.0.0:5551";
         let socket = UdpSocket::bind(server_addr).await.unwrap();
