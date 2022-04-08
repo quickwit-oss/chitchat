@@ -31,7 +31,7 @@ use crate::serialize::Serializable;
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ScuttleButtMessage {
     /// Node A initiates handshakes.
     Syn {
@@ -44,6 +44,9 @@ pub enum ScuttleButtMessage {
     SynAck { digest: Digest, delta: Delta },
     /// Node A returns a partial update for B.
     Ack { delta: Delta },
+    /// Node B rejects the Syn message because of a
+    /// cluster name mismatch between the peers.
+    BadCluster,
 }
 
 #[derive(Copy, Clone)]
@@ -52,6 +55,7 @@ enum MessageType {
     Syn = 0,
     SynAck = 1u8,
     Ack = 2u8,
+    BadCluster = 3u8,
 }
 
 impl MessageType {
@@ -60,6 +64,7 @@ impl MessageType {
             0 => Some(Self::Syn),
             1 => Some(Self::SynAck),
             2 => Some(Self::Ack),
+            3 => Some(Self::BadCluster),
             _ => None,
         }
     }
@@ -87,6 +92,9 @@ impl Serializable for ScuttleButtMessage {
             ScuttleButtMessage::Ack { delta } => {
                 buf.push(MessageType::Ack.to_code());
                 delta.serialize(buf);
+            }
+            ScuttleButtMessage::BadCluster => {
+                buf.push(MessageType::BadCluster.to_code());
             }
         }
     }
@@ -116,6 +124,7 @@ impl Serializable for ScuttleButtMessage {
                 let delta = Delta::deserialize(buf)?;
                 Ok(Self::Ack { delta })
             }
+            MessageType::BadCluster => Ok(Self::BadCluster),
         }
     }
 
@@ -129,6 +138,30 @@ impl Serializable for ScuttleButtMessage {
                 1 + digest.serialized_len() + delta.serialized_len()
             }
             ScuttleButtMessage::Ack { delta } => 1 + delta.serialized_len(),
+            ScuttleButtMessage::BadCluster => 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::serialize::test_serdeser_aux;
+    use crate::{Digest, ScuttleButtMessage};
+
+    #[test]
+    fn test_syn() {
+        let mut digest = Digest::default();
+        digest.add_node("node1".into(), 1);
+        digest.add_node("node2".into(), 2);
+        let syn = ScuttleButtMessage::Syn {
+            cluster_name: "cluster-a".to_string(),
+            digest,
+        };
+        test_serdeser_aux(&syn, 58);
+    }
+
+    #[test]
+    fn test_bad_cluster() {
+        test_serdeser_aux(&ScuttleButtMessage::BadCluster, 1);
     }
 }

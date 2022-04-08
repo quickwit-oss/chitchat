@@ -187,9 +187,9 @@ impl ScuttleButt {
                 if cluster_name != self.cluster_name {
                     warn!(
                         cluster_name = ?cluster_name,
-                        "ignoring syn message with mismatching cluster name"
+                        "rejecting syn message with mismatching cluster name"
                     );
-                    return None;
+                    return Some(ScuttleButtMessage::BadCluster);
                 }
 
                 let self_digest = self.compute_digest();
@@ -217,6 +217,10 @@ impl ScuttleButt {
             ScuttleButtMessage::Ack { delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
+                None
+            }
+            ScuttleButtMessage::BadCluster => {
+                warn!("message rejected by peer: cluster name mismatch");
                 None
             }
         }

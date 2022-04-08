@@ -463,18 +463,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignore_mismatched_cluster_name() {
-        let server_addr = "0.0.0.0:2223";
-        let socket = UdpSocket::bind("0.0.0.0:2224").await.unwrap();
+    async fn syn_bad_cluster() {
+        let outsider_addr = "0.0.0.0:2224";
+        let socket = UdpSocket::bind(outsider_addr).await.unwrap();
         let mut outsider = ScuttleButt::with_node_id_and_seeds(
-            "offline".into(),
+            outsider_addr.into(),
             HashSet::new(),
-            "offline".to_string(),
+            outsider_addr.into(),
             "another-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
 
+        let server_addr = "0.0.0.0:2223";
         let server = ScuttleServer::spawn(
             server_addr.into(),
             &[],
@@ -489,11 +490,14 @@ mod tests {
         syn.serialize(&mut buf);
         socket.send_to(&buf[..], server_addr).await.unwrap();
 
-        // server will drop the message, we expect the recv to timeout
         let mut buf = [0; super::UDP_MTU];
-        let resp =
-            tokio::time::timeout(Duration::from_millis(100), socket.recv_from(&mut buf)).await;
-        assert!(resp.is_err(), "unexpected response from peer");
+        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
+
+        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        match msg {
+            ScuttleButtMessage::BadCluster => (),
+            message => panic!("unexpected message: {:?}", message),
+        }
 
         server.shutdown().await.unwrap();
     }
