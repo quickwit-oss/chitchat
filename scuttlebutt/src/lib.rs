@@ -186,7 +186,7 @@ impl ScuttleButt {
             } => {
                 if cluster_name != self.cluster_name {
                     warn!(
-                        cluster_name = ?cluster_name,
+                        cluster_name = %cluster_name,
                         "rejecting syn message with mismatching cluster name"
                     );
                     return Some(ScuttleButtMessage::BadCluster);
