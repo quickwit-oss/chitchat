@@ -78,6 +78,7 @@ fn test_multiple_nodes() -> anyhow::Result<()> {
         .node_states
         .get("localhost:10003")
         .is_some());
+    assert_eq!(info.cluster_name, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 

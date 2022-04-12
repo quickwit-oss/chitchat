@@ -34,7 +34,7 @@ pub use failure_detector::FailureDetectorConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::digest::Digest;
 use crate::message::ScuttleButtMessage;
@@ -120,6 +120,7 @@ pub struct ScuttleButt {
     mtu: usize,
     address: String,
     self_node_id: NodeId,
+    cluster_name: String,
     cluster_state: ClusterState,
     heartbeat: u64,
     /// The failure detector instance.
@@ -135,6 +136,7 @@ impl ScuttleButt {
         self_node_id: NodeId,
         seed_ids: HashSet<String>,
         address: String,
+        cluster_name: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
@@ -143,6 +145,7 @@ impl ScuttleButt {
             mtu: 60_000,
             address,
             self_node_id,
+            cluster_name,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
             heartbeat: 0,
             failure_detector: FailureDetector::new(failure_detector_config),
@@ -169,12 +172,26 @@ impl ScuttleButt {
 
     pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
         let digest = self.compute_digest();
-        ScuttleButtMessage::Syn { digest }
+        ScuttleButtMessage::Syn {
+            cluster_name: self.cluster_name.clone(),
+            digest,
+        }
     }
 
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
-            ScuttleButtMessage::Syn { digest } => {
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => {
+                if cluster_name != self.cluster_name {
+                    warn!(
+                        cluster_name = %cluster_name,
+                        "rejecting syn message with mismatching cluster name"
+                    );
+                    return Some(ScuttleButtMessage::BadCluster);
+                }
+
                 let self_digest = self.compute_digest();
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
@@ -200,6 +217,10 @@ impl ScuttleButt {
             ScuttleButtMessage::Ack { delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
+                None
+            }
+            ScuttleButtMessage::BadCluster => {
+                warn!("message rejected by peer: cluster name mismatch");
                 None
             }
         }
@@ -273,6 +294,10 @@ impl ScuttleButt {
 
     pub fn self_node_id(&self) -> &NodeId {
         &self.self_node_id
+    }
+
+    pub fn cluster_name(&self) -> &str {
+        &self.cluster_name
     }
 
     /// Computes digest.
@@ -351,6 +376,7 @@ mod tests {
             NodeId::from(address.as_str()),
             seeds,
             address,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig {
                 dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
@@ -417,6 +443,7 @@ mod tests {
             NodeId::from("node1"),
             HashSet::new(),
             "node1".to_string(),
+            "test-cluster".to_string(),
             vec![("key1a", "1"), ("key2a", "2")],
             FailureDetectorConfig::default(),
         );
@@ -424,6 +451,7 @@ mod tests {
             NodeId::from("node2"),
             HashSet::new(),
             "node2".to_string(),
+            "test-cluster".to_string(),
             vec![("key1b", "1"), ("key2b", "2")],
             FailureDetectorConfig::default(),
         );
@@ -570,6 +598,7 @@ mod tests {
             NodeId::new("new_node".to_string(), address.clone()),
             &["localhost:40001".to_string()],
             address,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );

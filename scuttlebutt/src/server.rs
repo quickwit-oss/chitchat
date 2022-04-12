@@ -63,6 +63,7 @@ impl ScuttleServer {
         node_id: NodeId,
         seed_nodes: &[String],
         address: impl Into<String>,
+        cluster_name: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
@@ -72,6 +73,7 @@ impl ScuttleServer {
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
+            cluster_name,
             initial_key_values,
             failure_detector_config,
         );
@@ -397,6 +399,7 @@ mod tests {
             "0.0.0.0:1112".into(),
             &[],
             "0.0.0.0:1112",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -407,7 +410,13 @@ mod tests {
 
         let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::Syn { .. } => (),
+            ScuttleButtMessage::Syn {
+                cluster_name,
+                digest,
+            } => {
+                assert_eq!(cluster_name, "test-cluster");
+                assert_eq!(digest.node_max_version.len(), 1);
+            }
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -422,6 +431,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -430,6 +440,7 @@ mod tests {
             server_addr.into(),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -452,12 +463,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn syn_bad_cluster() {
+        let outsider_addr = "0.0.0.0:2224";
+        let socket = UdpSocket::bind(outsider_addr).await.unwrap();
+        let mut outsider = ScuttleButt::with_node_id_and_seeds(
+            outsider_addr.into(),
+            HashSet::new(),
+            outsider_addr.into(),
+            "another-cluster".to_string(),
+            Vec::<(&str, &str)>::new(),
+            FailureDetectorConfig::default(),
+        );
+
+        let server_addr = "0.0.0.0:2223";
+        let server = ScuttleServer::spawn(
+            server_addr.into(),
+            &[],
+            server_addr,
+            "test-cluster".to_string(),
+            Vec::<(&str, &str)>::new(),
+            FailureDetectorConfig::default(),
+        );
+
+        let mut buf = Vec::new();
+        let syn = outsider.create_syn_message();
+        syn.serialize(&mut buf);
+        socket.send_to(&buf[..], server_addr).await.unwrap();
+
+        let mut buf = [0; super::UDP_MTU];
+        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
+
+        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        match msg {
+            ScuttleButtMessage::BadCluster => (),
+            message => panic!("unexpected message: {:?}", message),
+        }
+
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn ignore_broken_payload() {
         let server_addr = "0.0.0.0:3331";
         let server = ScuttleServer::spawn(
             server_addr.into(),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -466,6 +518,7 @@ mod tests {
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -491,44 +544,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignore_oversized_payload() {
-        let server_addr = "0.0.0.0:4441";
-        let server = ScuttleServer::spawn(
-            server_addr.into(),
-            &[],
-            server_addr,
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-        let socket = UdpSocket::bind("0.0.0.0:4442").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
-            "offline".into(),
-            HashSet::new(),
-            "offline".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-
-        // Send broken payload.
-        socket.send_to(&[0; UDP_MTU], server_addr).await.unwrap();
-
-        // Confirm nothing broke using a regular payload.
-        let syn = scuttlebutt.create_syn_message();
-        let buf = syn.serialize_to_vec();
-        socket.send_to(&buf[..], server_addr).await.unwrap();
-
-        let mut buf = [0; UDP_MTU];
-        let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
-
-        match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
-            ScuttleButtMessage::SynAck { .. } => (),
-            message => panic!("unexpected message: {:?}", message),
-        }
-
-        server.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
     async fn seeding() {
         let server_addr = "0.0.0.0:5551";
         let socket = UdpSocket::bind(server_addr).await.unwrap();
@@ -537,6 +552,7 @@ mod tests {
             "0.0.0.0:5552".into(),
             &[server_addr.into()],
             "0.0.0.0:5552",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -559,6 +575,7 @@ mod tests {
             test_addr.into(),
             HashSet::new(),
             test_addr.to_string(),
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -570,6 +587,7 @@ mod tests {
             NodeId::from(server_addr),
             &[],
             server_addr,
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -617,6 +635,7 @@ mod tests {
             NodeId::from("0.0.0.0:6663"),
             &[],
             "0.0.0.0:6663",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
@@ -624,6 +643,7 @@ mod tests {
             NodeId::from("0.0.0.0:6664"),
             &["0.0.0.0:6663".to_string()],
             "0.0.0.0:6664",
+            "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
