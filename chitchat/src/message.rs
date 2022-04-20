@@ -25,18 +25,18 @@ use crate::delta::Delta;
 use crate::digest::Digest;
 use crate::serialize::Serializable;
 
-/// ScuttleButt message.
+/// Chitchat message.
 ///
 /// Each variant represents a step of the gossip "handshake"
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
 #[derive(Debug, PartialEq)]
-pub enum ScuttleButtMessage {
+pub enum ChitchatMessage {
     /// Node A initiates handshakes.
     Syn { cluster_id: String, digest: Digest },
     /// Node B returns a partial update as described
-    /// in the chitchat reconcialiation algorithm,
+    /// in the scuttlebutt reconcialiation algorithm,
     /// and returns its own checksum.
     SynAck { digest: Digest, delta: Delta },
     /// Node A returns a partial update for B.
@@ -70,24 +70,24 @@ impl MessageType {
     }
 }
 
-impl Serializable for ScuttleButtMessage {
+impl Serializable for ChitchatMessage {
     fn serialize(&self, buf: &mut Vec<u8>) {
         match self {
-            ScuttleButtMessage::Syn { cluster_id, digest } => {
+            ChitchatMessage::Syn { cluster_id, digest } => {
                 buf.push(MessageType::Syn.to_code());
                 digest.serialize(buf);
                 cluster_id.serialize(buf);
             }
-            ScuttleButtMessage::SynAck { digest, delta } => {
+            ChitchatMessage::SynAck { digest, delta } => {
                 buf.push(MessageType::SynAck.to_code());
                 digest.serialize(buf);
                 delta.serialize(buf);
             }
-            ScuttleButtMessage::Ack { delta } => {
+            ChitchatMessage::Ack { delta } => {
                 buf.push(MessageType::Ack.to_code());
                 delta.serialize(buf);
             }
-            ScuttleButtMessage::BadCluster => {
+            ChitchatMessage::BadCluster => {
                 buf.push(MessageType::BadCluster.to_code());
             }
         }
@@ -121,14 +121,14 @@ impl Serializable for ScuttleButtMessage {
 
     fn serialized_len(&self) -> usize {
         match self {
-            ScuttleButtMessage::Syn { cluster_id, digest } => {
+            ChitchatMessage::Syn { cluster_id, digest } => {
                 1 + cluster_id.serialized_len() + digest.serialized_len()
             }
-            ScuttleButtMessage::SynAck { digest, delta } => {
+            ChitchatMessage::SynAck { digest, delta } => {
                 1 + digest.serialized_len() + delta.serialized_len()
             }
-            ScuttleButtMessage::Ack { delta } => 1 + delta.serialized_len(),
-            ScuttleButtMessage::BadCluster => 1,
+            ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
+            ChitchatMessage::BadCluster => 1,
         }
     }
 }
@@ -136,14 +136,14 @@ impl Serializable for ScuttleButtMessage {
 #[cfg(test)]
 mod tests {
     use crate::serialize::test_serdeser_aux;
-    use crate::{Digest, ScuttleButtMessage};
+    use crate::{ChitchatMessage, Digest};
 
     #[test]
     fn test_syn() {
         let mut digest = Digest::default();
         digest.add_node("node1".into(), 1);
         digest.add_node("node2".into(), 2);
-        let syn = ScuttleButtMessage::Syn {
+        let syn = ChitchatMessage::Syn {
             cluster_id: "cluster-a".to_string(),
             digest,
         };
@@ -152,6 +152,6 @@ mod tests {
 
     #[test]
     fn test_bad_cluster() {
-        test_serdeser_aux(&ScuttleButtMessage::BadCluster, 1);
+        test_serdeser_aux(&ChitchatMessage::BadCluster, 1);
     }
 }

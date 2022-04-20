@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
-use chitchat::server::ScuttleServer;
-use chitchat::{FailureDetectorConfig, NodeId, ScuttleButt, SerializableClusterState};
+use chitchat::server::ChitchatServer;
+use chitchat::{Chitchat, FailureDetectorConfig, NodeId, SerializableClusterState};
 use chitchat_test::ApiResponse;
 use poem::listener::TcpListener;
 use poem::{Route, Server};
@@ -30,12 +30,12 @@ use structopt::StructOpt;
 use tokio::sync::Mutex;
 
 struct Api {
-    chitchat: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<Chitchat>>,
 }
 
 #[OpenApi]
 impl Api {
-    /// Scuttlebutt state
+    /// Chitchat state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
         let chitchat_guard = self.chitchat.lock().await;
@@ -50,7 +50,7 @@ impl Api {
 }
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "Scuttlebutt", about = "An example of StructOpt usage.")]
+#[structopt(name = "chitchat", about = "Chitchat test server.")]
 struct Opt {
     #[structopt(short = "h", default_value = "localhost:10000")]
     listen_addr: String,
@@ -64,7 +64,7 @@ async fn main() -> Result<(), std::io::Error> {
     let opt = Opt::from_args();
     println!("{:?}", opt);
 
-    let chitchat_server = ScuttleServer::spawn(
+    let chitchat_server = ChitchatServer::spawn(
         NodeId::from(opt.listen_addr.as_str()),
         &opt.seeds[..],
         &opt.listen_addr,

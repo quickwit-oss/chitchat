@@ -159,7 +159,7 @@ fn write_str(s: &str, buf: &mut Vec<u8>) {
 
 /// Trait to serialize messages.
 ///
-/// Scuttlebutt uses a custom binary serialization format.
+/// Chitchat uses a custom binary serialization format.
 /// The point of this format is to make it possible
 /// to truncate the delta payload to a given mtu.
 pub trait Serializable: Sized {
