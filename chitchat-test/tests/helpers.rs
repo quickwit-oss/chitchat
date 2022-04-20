@@ -48,9 +48,9 @@ fn cargo_bin_str(name: &str) -> PathBuf {
         .unwrap_or_else(|| target_dir().join(format!("{}{}", name, env::consts::EXE_SUFFIX)))
 }
 
-/// Creates a `scuttlebutt-test` command with provided list of arguments.
+/// Creates a `chitchat-test` command with provided list of arguments.
 pub fn spawn_command(arguments: &str) -> io::Result<Child> {
-    std::process::Command::new(cargo_bin("scuttlebutt-test"))
+    std::process::Command::new(cargo_bin("chitchat-test"))
         .args(arguments.split_whitespace())
         .stdout(Stdio::piped())
         .spawn()

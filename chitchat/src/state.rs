@@ -175,7 +175,7 @@ impl ClusterState {
         }
     }
 
-    /// Implements the scuttlebutt reconciliation with the scuttle-depth ordering.
+    /// Implements the chitchat reconciliation with the scuttle-depth ordering.
     pub fn compute_delta(
         &self,
         digest: &Digest,
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_state_compute_delta_depth_first_scuttlebutt() {
+    fn test_cluster_state_compute_delta_depth_first_chitchat() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
         digest.add_node("node1".into(), 1);
