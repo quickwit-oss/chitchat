@@ -63,7 +63,7 @@ impl ScuttleServer {
         node_id: NodeId,
         seed_nodes: &[String],
         address: impl Into<String>,
-        cluster_name: String,
+        cluster_id: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
@@ -73,7 +73,7 @@ impl ScuttleServer {
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
-            cluster_name,
+            cluster_id,
             initial_key_values,
             failure_detector_config,
         );
@@ -411,10 +411,10 @@ mod tests {
         let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
             ScuttleButtMessage::Syn {
-                cluster_name,
+                cluster_id,
                 digest,
             } => {
-                assert_eq!(cluster_name, "test-cluster");
+                assert_eq!(cluster_id, "test-cluster");
                 assert_eq!(digest.node_max_version.len(), 1);
             }
             message => panic!("unexpected message: {:?}", message),

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ApiResponse {
-    pub cluster_name: String,
+    pub cluster_id: String,
     pub cluster_state: SerializableClusterState,
     pub live_nodes: Vec<NodeId>,
     pub dead_nodes: Vec<NodeId>,
