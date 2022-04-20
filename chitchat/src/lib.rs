@@ -37,7 +37,7 @@ use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
 use crate::digest::Digest;
-use crate::message::ScuttleButtMessage;
+use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
 use crate::state::NodeState;
 pub use crate::state::{ClusterState, SerializableClusterState};
@@ -47,7 +47,7 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
 pub type Version = u64;
 
-/// [`NodeId`] represents a ScuttleButt Node identifier.
+/// [`NodeId`] represents a Chitchat Node identifier.
 ///
 /// For the lifetime of a cluster, nodes can go down and back up, they may
 /// permanently die. These are couple of issues we want to solve with [`NodeId`] struct:
@@ -67,7 +67,7 @@ pub type Version = u64;
 ///   expected to be from a config item or an environnement variable.
 /// - Making part of the `id` attribute static and related to the node solves the last requirement.
 ///
-/// Because ScuttleButt instance is not concerned about caching strategy and what needs to be
+/// Because Chitchat instance is not concerned about caching strategy and what needs to be
 /// cached, We let the client decide what makes up the `id` attribute and how to extract its
 /// components.
 ///
@@ -116,7 +116,7 @@ pub struct VersionedValue {
     pub version: Version,
 }
 
-pub struct ScuttleButt {
+pub struct Chitchat {
     mtu: usize,
     address: String,
     self_node_id: NodeId,
@@ -131,7 +131,7 @@ pub struct ScuttleButt {
     live_nodes_watcher_rx: watch::Receiver<HashSet<NodeId>>,
 }
 
-impl ScuttleButt {
+impl Chitchat {
     pub fn with_node_id_and_seeds(
         self_node_id: NodeId,
         seed_ids: HashSet<String>,
@@ -141,7 +141,7 @@ impl ScuttleButt {
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
-        let mut chitchat = ScuttleButt {
+        let mut chitchat = Chitchat {
             mtu: 60_000,
             address,
             self_node_id,
@@ -170,23 +170,23 @@ impl ScuttleButt {
         self.mtu = mtu;
     }
 
-    pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
+    pub fn create_syn_message(&mut self) -> ChitchatMessage {
         let digest = self.compute_digest();
-        ScuttleButtMessage::Syn {
+        ChitchatMessage::Syn {
             cluster_id: self.cluster_id.clone(),
             digest,
         }
     }
 
-    pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
+    pub fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         match msg {
-            ScuttleButtMessage::Syn { cluster_id, digest } => {
+            ChitchatMessage::Syn { cluster_id, digest } => {
                 if cluster_id != self.cluster_id {
                     warn!(
                         cluster_id = %cluster_id,
                         "rejecting syn message with mismatching cluster name"
                     );
-                    return Some(ScuttleButtMessage::BadCluster);
+                    return Some(ChitchatMessage::BadCluster);
                 }
 
                 let self_digest = self.compute_digest();
@@ -197,26 +197,26 @@ impl ScuttleButt {
                     dead_nodes,
                 );
                 self.report_to_failure_detector(&delta);
-                Some(ScuttleButtMessage::SynAck {
+                Some(ChitchatMessage::SynAck {
                     delta,
                     digest: self_digest,
                 })
             }
-            ScuttleButtMessage::SynAck { digest, delta } => {
+            ChitchatMessage::SynAck { digest, delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self
                     .cluster_state
                     .compute_delta(&digest, self.mtu - 1, dead_nodes);
-                Some(ScuttleButtMessage::Ack { delta })
+                Some(ChitchatMessage::Ack { delta })
             }
-            ScuttleButtMessage::Ack { delta } => {
+            ChitchatMessage::Ack { delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 None
             }
-            ScuttleButtMessage::BadCluster => {
+            ChitchatMessage::BadCluster => {
                 warn!("message rejected by peer: cluster name mismatch");
                 None
             }
@@ -334,11 +334,11 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
-    use crate::server::ScuttleServer;
+    use crate::server::ChitchatServer;
 
     const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(25);
 
-    fn run_chitchat_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
+    fn run_chitchat_handshake(initiating_node: &mut Chitchat, peer_node: &mut Chitchat) {
         let syn_message = initiating_node.create_syn_message();
         let syn_ack_message = peer_node.process_message(syn_message).unwrap();
         let ack_message = initiating_node.process_message(syn_ack_message).unwrap();
@@ -356,7 +356,7 @@ mod tests {
         }
     }
 
-    fn assert_nodes_sync(nodes: &[&ScuttleButt]) {
+    fn assert_nodes_sync(nodes: &[&Chitchat]) {
         let first_node_states = &nodes[0].cluster_state.node_states;
         for other_node in nodes.iter().skip(1) {
             let node_states = &other_node.cluster_state.node_states;
@@ -367,9 +367,9 @@ mod tests {
         }
     }
 
-    fn start_node(port: u32, seeds: &[String]) -> ScuttleServer {
+    fn start_node(port: u32, seeds: &[String]) -> ChitchatServer {
         let address = format!("localhost:{}", port);
-        ScuttleServer::spawn(
+        ChitchatServer::spawn(
             NodeId::from(address.as_str()),
             seeds,
             address,
@@ -382,7 +382,7 @@ mod tests {
         )
     }
 
-    async fn setup_nodes(port_range: RangeInclusive<u32>) -> Vec<(String, ScuttleServer)> {
+    async fn setup_nodes(port_range: RangeInclusive<u32>) -> Vec<(String, ChitchatServer)> {
         let mut tasks = Vec::new();
         let mut ports = port_range.clone();
         let seed_port = ports.next().unwrap();
@@ -406,7 +406,7 @@ mod tests {
         tasks
     }
 
-    async fn shutdown_nodes(nodes: Vec<(String, ScuttleServer)>) -> anyhow::Result<()> {
+    async fn shutdown_nodes(nodes: Vec<(String, ChitchatServer)>) -> anyhow::Result<()> {
         for (_, node) in nodes {
             node.shutdown().await?;
         }
@@ -414,7 +414,7 @@ mod tests {
     }
 
     async fn wait_for_chitchat_state(
-        chitchat: Arc<Mutex<ScuttleButt>>,
+        chitchat: Arc<Mutex<Chitchat>>,
         expected_node_count: usize,
         expected_nodes: &[NodeId],
     ) {
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_chitchat_handshake() {
-        let mut node1 = ScuttleButt::with_node_id_and_seeds(
+        let mut node1 = Chitchat::with_node_id_and_seeds(
             NodeId::from("node1"),
             HashSet::new(),
             "node1".to_string(),
@@ -444,7 +444,7 @@ mod tests {
             vec![("key1a", "1"), ("key2a", "2")],
             FailureDetectorConfig::default(),
         );
-        let mut node2 = ScuttleButt::with_node_id_and_seeds(
+        let mut node2 = Chitchat::with_node_id_and_seeds(
             NodeId::from("node2"),
             HashSet::new(),
             "node2".to_string(),
@@ -591,7 +591,7 @@ mod tests {
         // Restart node at localhost:40003 with new name
         let port = 40003;
         let address = format!("localhost:{}", port);
-        let new_node_chitchat = ScuttleServer::spawn(
+        let new_node_chitchat = ChitchatServer::spawn(
             NodeId::new("new_node".to_string(), address.clone()),
             &["localhost:40001".to_string()],
             address,

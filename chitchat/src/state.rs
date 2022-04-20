@@ -175,7 +175,7 @@ impl ClusterState {
         }
     }
 
-    /// Implements the chitchat reconciliation with the scuttle-depth ordering.
+    /// Implements the scuttlebutt reconciliation with the scuttle-depth ordering.
     pub fn compute_delta(
         &self,
         digest: &Digest,

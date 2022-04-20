@@ -31,9 +31,9 @@ use tokio::time;
 use tracing::error;
 
 use crate::failure_detector::FailureDetectorConfig;
-use crate::message::ScuttleButtMessage;
+use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
-use crate::{NodeId, ScuttleButt};
+use crate::{Chitchat, NodeId};
 
 /// Maximum payload size (in bytes) for UDP.
 const UDP_MTU: usize = 65_507;
@@ -48,17 +48,17 @@ const GOSSIP_INTERVAL: Duration = if cfg!(test) {
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
 
-/// UDP ScuttleButt server.
-pub struct ScuttleServer {
+/// UDP Chitchat server.
+pub struct ChitchatServer {
     channel: UnboundedSender<ChannelMessage>,
-    chitchat: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<Chitchat>>,
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
 }
 
-impl ScuttleServer {
+impl ChitchatServer {
     /// Launch a new server.
     ///
-    /// This will start the ScuttleButt server as a new Tokio background task.
+    /// This will start the Chitchat server as a new Tokio background task.
     pub fn spawn(
         node_id: NodeId,
         seed_nodes: &[String],
@@ -69,7 +69,7 @@ impl ScuttleServer {
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let chitchat = ScuttleButt::with_node_id_and_seeds(
+        let chitchat = Chitchat::with_node_id_and_seeds(
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
@@ -92,13 +92,13 @@ impl ScuttleServer {
         }
     }
 
-    pub fn chitchat(&self) -> Arc<Mutex<ScuttleButt>> {
+    pub fn chitchat(&self) -> Arc<Mutex<Chitchat>> {
         self.chitchat.clone()
     }
 
-    /// Call a function with mutable access to the [`ScuttleButt`].
+    /// Call a function with mutable access to the [`Chitchat`].
     pub async fn with_chitchat<F, T>(&self, mut fun: F) -> T
-    where F: FnMut(&mut ScuttleButt) -> T {
+    where F: FnMut(&mut Chitchat) -> T {
         let mut chitchat = self.chitchat.lock().await;
         fun(&mut chitchat)
     }
@@ -109,24 +109,24 @@ impl ScuttleServer {
         self.join_handle.await?
     }
 
-    /// Perform a ScuttleButt "handshake" with another UDP server.
+    /// Perform a Chitchat "handshake" with another UDP server.
     pub fn gossip(&self, addr: impl Into<String>) -> Result<(), anyhow::Error> {
         self.channel.send(ChannelMessage::Gossip(addr.into()))?;
         Ok(())
     }
 }
 
-/// UDP server for ScuttleButt communication.
+/// UDP server for Chitchat communication.
 struct UdpServer {
     channel: UnboundedReceiver<ChannelMessage>,
-    chitchat: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<Chitchat>>,
     socket: Arc<UdpSocket>,
 }
 
 impl UdpServer {
     async fn new(
         channel: UnboundedReceiver<ChannelMessage>,
-        chitchat: Arc<Mutex<ScuttleButt>>,
+        chitchat: Arc<Mutex<Chitchat>>,
     ) -> anyhow::Result<Self> {
         let socket = {
             let bind_address = &chitchat.lock().await.address;
@@ -140,7 +140,7 @@ impl UdpServer {
         })
     }
 
-    /// Listen for new ScuttleButt messages.
+    /// Listen for new Chitchat messages.
     async fn run(&mut self) -> anyhow::Result<()> {
         let mut gossip_interval = time::interval(GOSSIP_INTERVAL);
         let mut rng = SmallRng::from_entropy();
@@ -169,7 +169,7 @@ impl UdpServer {
     /// Process a single UDP packet.
     async fn process_package(&self, addr: SocketAddr, mut data: &[u8]) -> anyhow::Result<()> {
         // Handle gossip from other servers.
-        let message = ScuttleButtMessage::deserialize(&mut data)?;
+        let message = ChitchatMessage::deserialize(&mut data)?;
         let response = self.chitchat.lock().await.process_message(message);
 
         // Send reply if necessary.
@@ -352,7 +352,7 @@ mod tests {
 
     use super::*;
     use crate::failure_detector::FailureDetectorConfig;
-    use crate::message::ScuttleButtMessage;
+    use crate::message::ChitchatMessage;
     use crate::HEARTBEAT_KEY;
 
     #[derive(Debug, Default)]
@@ -395,7 +395,7 @@ mod tests {
         let test_addr = "0.0.0.0:1111";
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             "0.0.0.0:1112".into(),
             &[],
             "0.0.0.0:1112",
@@ -408,9 +408,9 @@ mod tests {
         let mut buf = [0; UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
 
-        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        let msg = ChitchatMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::Syn { cluster_id, digest } => {
+            ChitchatMessage::Syn { cluster_id, digest } => {
                 assert_eq!(cluster_id, "test-cluster");
                 assert_eq!(digest.node_max_version.len(), 1);
             }
@@ -424,7 +424,7 @@ mod tests {
     async fn syn_ack() {
         let server_addr = "0.0.0.0:2221";
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
-        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = Chitchat::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
@@ -433,7 +433,7 @@ mod tests {
             FailureDetectorConfig::default(),
         );
 
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             server_addr.into(),
             &[],
             server_addr,
@@ -450,9 +450,9 @@ mod tests {
         let mut buf = [0; super::UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
 
-        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        let msg = ChitchatMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::SynAck { .. } => (),
+            ChitchatMessage::SynAck { .. } => (),
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -463,7 +463,7 @@ mod tests {
     async fn syn_bad_cluster() {
         let outsider_addr = "0.0.0.0:2224";
         let socket = UdpSocket::bind(outsider_addr).await.unwrap();
-        let mut outsider = ScuttleButt::with_node_id_and_seeds(
+        let mut outsider = Chitchat::with_node_id_and_seeds(
             outsider_addr.into(),
             HashSet::new(),
             outsider_addr.into(),
@@ -473,7 +473,7 @@ mod tests {
         );
 
         let server_addr = "0.0.0.0:2223";
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             server_addr.into(),
             &[],
             server_addr,
@@ -490,9 +490,9 @@ mod tests {
         let mut buf = [0; super::UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
 
-        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        let msg = ChitchatMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::BadCluster => (),
+            ChitchatMessage::BadCluster => (),
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -502,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn ignore_broken_payload() {
         let server_addr = "0.0.0.0:3331";
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             server_addr.into(),
             &[],
             server_addr,
@@ -511,7 +511,7 @@ mod tests {
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
-        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = Chitchat::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
@@ -531,9 +531,9 @@ mod tests {
         let mut buf = [0; UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
 
-        let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
+        let msg = ChitchatMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::SynAck { .. } => (),
+            ChitchatMessage::SynAck { .. } => (),
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -545,7 +545,7 @@ mod tests {
         let server_addr = "0.0.0.0:5551";
         let socket = UdpSocket::bind(server_addr).await.unwrap();
 
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             "0.0.0.0:5552".into(),
             &[server_addr.into()],
             "0.0.0.0:5552",
@@ -557,8 +557,8 @@ mod tests {
         let mut buf = [0; UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
 
-        match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
-            ScuttleButtMessage::Syn { .. } => (),
+        match ChitchatMessage::deserialize(&mut &buf[..len]).unwrap() {
+            ChitchatMessage::Syn { .. } => (),
             message => panic!("unexpected message: {:?}", message),
         }
 
@@ -568,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat() {
         let test_addr = "0.0.0.0:6661";
-        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = Chitchat::with_node_id_and_seeds(
             test_addr.into(),
             HashSet::new(),
             test_addr.to_string(),
@@ -580,7 +580,7 @@ mod tests {
 
         let server_addr = "0.0.0.0:6662";
         let server_node_id = NodeId::from(server_addr);
-        let server = ScuttleServer::spawn(
+        let server = ChitchatServer::spawn(
             NodeId::from(server_addr),
             &[],
             server_addr,
@@ -602,8 +602,8 @@ mod tests {
         let mut buf: Box<[u8]> = vec![0; UDP_MTU].into_boxed_slice();
         let (len, _addr) = timeout(socket.recv_from(&mut buf[..])).await.unwrap();
 
-        let message = match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
-            message @ ScuttleButtMessage::Syn { .. } => message,
+        let message = match ChitchatMessage::deserialize(&mut &buf[..len]).unwrap() {
+            message @ ChitchatMessage::Syn { .. } => message,
             message => panic!("unexpected message: {:?}", message),
         };
 
@@ -614,8 +614,8 @@ mod tests {
 
         // Wait for delta to ensure heartbeat key was incremented.
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
-        let delta = match ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap() {
-            ScuttleButtMessage::Ack { delta } => delta,
+        let delta = match ChitchatMessage::deserialize(&mut &buf[..len]).unwrap() {
+            ChitchatMessage::Ack { delta } => delta,
             message => panic!("unexpected message: {:?}", message),
         };
 
@@ -628,7 +628,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_member_change_event_is_broadcasted() {
-        let node1 = ScuttleServer::spawn(
+        let node1 = ChitchatServer::spawn(
             NodeId::from("0.0.0.0:6663"),
             &[],
             "0.0.0.0:6663",
@@ -636,7 +636,7 @@ mod tests {
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
-        let node2 = ScuttleServer::spawn(
+        let node2 = ChitchatServer::spawn(
             NodeId::from("0.0.0.0:6664"),
             &["0.0.0.0:6663".to_string()],
             "0.0.0.0:6664",
