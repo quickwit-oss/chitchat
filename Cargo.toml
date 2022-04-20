@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-  "scuttlebutt",
-  "scuttlebutt-test",
+  "chitchat",
+  "chitchat-test",
 ]

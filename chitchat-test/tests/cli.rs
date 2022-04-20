@@ -26,9 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{panic, thread};
 
+use chitchat_test::ApiResponse;
 use helpers::spawn_command;
 use once_cell::sync::Lazy;
-use scuttlebutt_test::ApiResponse;
 
 type PeersList = Arc<Mutex<Vec<(Child, String)>>>;
 
