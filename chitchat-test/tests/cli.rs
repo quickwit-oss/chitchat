@@ -26,9 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{panic, thread};
 
+use chitchat_test::ApiResponse;
 use helpers::spawn_command;
 use once_cell::sync::Lazy;
-use scuttlebutt_test::ApiResponse;
 
 type PeersList = Arc<Mutex<Vec<(Child, String)>>>;
 
@@ -78,7 +78,7 @@ fn test_multiple_nodes() -> anyhow::Result<()> {
         .node_states
         .get("localhost:10003")
         .is_some());
-    assert_eq!(info.cluster_name, "testing");
+    assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 

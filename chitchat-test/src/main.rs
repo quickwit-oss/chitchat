@@ -19,18 +19,18 @@
 
 use std::sync::Arc;
 
+use chitchat::server::ScuttleServer;
+use chitchat::{FailureDetectorConfig, NodeId, ScuttleButt, SerializableClusterState};
+use chitchat_test::ApiResponse;
 use poem::listener::TcpListener;
 use poem::{Route, Server};
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
-use scuttlebutt::server::ScuttleServer;
-use scuttlebutt::{FailureDetectorConfig, NodeId, ScuttleButt, SerializableClusterState};
-use scuttlebutt_test::ApiResponse;
 use structopt::StructOpt;
 use tokio::sync::Mutex;
 
 struct Api {
-    scuttlebutt: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<ScuttleButt>>,
 }
 
 #[OpenApi]
@@ -38,12 +38,12 @@ impl Api {
     /// Scuttlebutt state
     #[oai(path = "/", method = "get")]
     async fn index(&self) -> Json<serde_json::Value> {
-        let scuttlebutt_guard = self.scuttlebutt.lock().await;
+        let chitchat_guard = self.chitchat.lock().await;
         let response = ApiResponse {
-            cluster_name: scuttlebutt_guard.cluster_name().to_string(),
-            cluster_state: SerializableClusterState::from(scuttlebutt_guard.cluster_state()),
-            live_nodes: scuttlebutt_guard.live_nodes().cloned().collect::<Vec<_>>(),
-            dead_nodes: scuttlebutt_guard.dead_nodes().cloned().collect::<Vec<_>>(),
+            cluster_id: chitchat_guard.cluster_id().to_string(),
+            cluster_state: SerializableClusterState::from(chitchat_guard.cluster_state()),
+            live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
+            dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -64,7 +64,7 @@ async fn main() -> Result<(), std::io::Error> {
     let opt = Opt::from_args();
     println!("{:?}", opt);
 
-    let scuttlebutt_server = ScuttleServer::spawn(
+    let chitchat_server = ScuttleServer::spawn(
         NodeId::from(opt.listen_addr.as_str()),
         &opt.seeds[..],
         &opt.listen_addr,
@@ -72,8 +72,8 @@ async fn main() -> Result<(), std::io::Error> {
         Vec::<(&str, &str)>::new(),
         FailureDetectorConfig::default(),
     );
-    let scuttlebutt = scuttlebutt_server.scuttlebutt();
-    let api = Api { scuttlebutt };
+    let chitchat = chitchat_server.chitchat();
+    let api = Api { chitchat };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")
         .server(&format!("http://{}/", opt.listen_addr));
     let docs = api_service.swagger_ui();

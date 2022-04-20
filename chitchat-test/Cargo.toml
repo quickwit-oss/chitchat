@@ -1,12 +1,12 @@
 [package]
-name = "scuttlebutt-test"
+name = "chitchat-test"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-scuttlebutt = { version = "0.1.0", path = "../scuttlebutt" }
+chitchat = { version = "0.1.0", path = "../chitchat" }
 poem = "1"
 poem-openapi = {version="1.2", features = ["swagger-ui"] }
 structopt = "0.3"

@@ -1,7 +1,7 @@
-# Scuttlebutt test
+# Chitchat test
 
-This project runs a simple scuttlebut server
-to test the scuttlebutt crate.
+This project runs a simple chitchat server
+to test the chitchat crate.
 
 
 ## Example

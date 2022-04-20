@@ -1,11 +1,11 @@
-# Scuttlebutt
+# chitchat
 
 This crate is used at the core of Quickwit for
 - cluster membership
 - failure detection
 - sharing configuration, and extra metadata values
 
-The idea of relying on scuttlebutt + phi-accrual detection is borrowed from 
+The idea of relying on scuttlebutt reconciliation and phi-accrual detection is borrowed from
 Cassandra, itself borrowing it from DynamoDB.
 
 A anti-entropy gossip algorithm called scuttlebutt is in charge of spreading
@@ -24,7 +24,7 @@ All nodes keep updating an heartbeat key,
 so that any node should keep receiving updates from about
 any live nodes.
 
-Not receiving any update from node for a given amount of time can therefore be 
+Not receiving any update from node for a given amount of time can therefore be
 regarded as a sign of failure. Rather than using a hard threshold,
 we use phi-accrual detection to dynamically compute a threshold.
 

@@ -51,7 +51,7 @@ const GOSSIP_COUNT: usize = 3;
 /// UDP ScuttleButt server.
 pub struct ScuttleServer {
     channel: UnboundedSender<ChannelMessage>,
-    scuttlebutt: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<ScuttleButt>>,
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
 }
 
@@ -63,44 +63,44 @@ impl ScuttleServer {
         node_id: NodeId,
         seed_nodes: &[String],
         address: impl Into<String>,
-        cluster_name: String,
+        cluster_id: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+        let chitchat = ScuttleButt::with_node_id_and_seeds(
             node_id,
             seed_nodes.iter().cloned().collect(),
             address.into(),
-            cluster_name,
+            cluster_id,
             initial_key_values,
             failure_detector_config,
         );
-        let scuttlebutt_arc = Arc::new(Mutex::new(scuttlebutt));
-        let scuttlebutt_server = scuttlebutt_arc.clone();
+        let chitchat_arc = Arc::new(Mutex::new(chitchat));
+        let chitchat_server = chitchat_arc.clone();
 
         let join_handle = tokio::spawn(async move {
-            let mut server = UdpServer::new(rx, scuttlebutt_server).await?;
+            let mut server = UdpServer::new(rx, chitchat_server).await?;
             server.run().await
         });
 
         Self {
             channel: tx,
-            scuttlebutt: scuttlebutt_arc,
+            chitchat: chitchat_arc,
             join_handle,
         }
     }
 
-    pub fn scuttlebutt(&self) -> Arc<Mutex<ScuttleButt>> {
-        self.scuttlebutt.clone()
+    pub fn chitchat(&self) -> Arc<Mutex<ScuttleButt>> {
+        self.chitchat.clone()
     }
 
     /// Call a function with mutable access to the [`ScuttleButt`].
-    pub async fn with_scuttlebutt<F, T>(&self, mut fun: F) -> T
+    pub async fn with_chitchat<F, T>(&self, mut fun: F) -> T
     where F: FnMut(&mut ScuttleButt) -> T {
-        let mut scuttlebutt = self.scuttlebutt.lock().await;
-        fun(&mut scuttlebutt)
+        let mut chitchat = self.chitchat.lock().await;
+        fun(&mut chitchat)
     }
 
     /// Shut the server down.
@@ -119,22 +119,22 @@ impl ScuttleServer {
 /// UDP server for ScuttleButt communication.
 struct UdpServer {
     channel: UnboundedReceiver<ChannelMessage>,
-    scuttlebutt: Arc<Mutex<ScuttleButt>>,
+    chitchat: Arc<Mutex<ScuttleButt>>,
     socket: Arc<UdpSocket>,
 }
 
 impl UdpServer {
     async fn new(
         channel: UnboundedReceiver<ChannelMessage>,
-        scuttlebutt: Arc<Mutex<ScuttleButt>>,
+        chitchat: Arc<Mutex<ScuttleButt>>,
     ) -> anyhow::Result<Self> {
         let socket = {
-            let bind_address = &scuttlebutt.lock().await.address;
+            let bind_address = &chitchat.lock().await.address;
             Arc::new(UdpSocket::bind(bind_address).await?)
         };
 
         Ok(Self {
-            scuttlebutt,
+            chitchat,
             channel,
             socket,
         })
@@ -170,7 +170,7 @@ impl UdpServer {
     async fn process_package(&self, addr: SocketAddr, mut data: &[u8]) -> anyhow::Result<()> {
         // Handle gossip from other servers.
         let message = ScuttleButtMessage::deserialize(&mut data)?;
-        let response = self.scuttlebutt.lock().await.process_message(message);
+        let response = self.chitchat.lock().await.process_message(message);
 
         // Send reply if necessary.
         if let Some(message) = response {
@@ -185,28 +185,28 @@ impl UdpServer {
     /// Gossip to multiple randomly chosen nodes.
     async fn gossip_multiple(&self, rng: &mut SmallRng) {
         // Gossip with live nodes & probabilistically include a random dead node
-        let scuttlebutt_guard = self.scuttlebutt.lock().await;
-        let cluster_state = scuttlebutt_guard.cluster_state();
+        let chitchat_guard = self.chitchat.lock().await;
+        let cluster_state = chitchat_guard.cluster_state();
 
         let peer_nodes = cluster_state
             .nodes()
-            .filter(|node_id| *node_id != scuttlebutt_guard.self_node_id())
+            .filter(|node_id| *node_id != chitchat_guard.self_node_id())
             .map(|node_id| node_id.gossip_public_address.as_str())
             .collect::<HashSet<_>>();
-        let live_nodes = scuttlebutt_guard
+        let live_nodes = chitchat_guard
             .live_nodes()
             .map(|node_id| node_id.gossip_public_address.as_str())
             .collect::<HashSet<_>>();
-        let dead_nodes = scuttlebutt_guard
+        let dead_nodes = chitchat_guard
             .dead_nodes()
             .map(|node_id| node_id.gossip_public_address.as_str())
             .collect::<HashSet<_>>();
-        let seed_nodes = scuttlebutt_guard.seed_nodes().collect::<HashSet<_>>();
+        let seed_nodes = chitchat_guard.seed_nodes().collect::<HashSet<_>>();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) =
             select_nodes_for_gossip(rng, peer_nodes, live_nodes, dead_nodes, seed_nodes);
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
-        drop(scuttlebutt_guard);
+        drop(chitchat_guard);
 
         for node in selected_nodes {
             let result = self.gossip(&node).await;
@@ -230,13 +230,13 @@ impl UdpServer {
         }
 
         // Update nodes liveliness
-        let mut scuttlebutt_guard = self.scuttlebutt.lock().await;
-        scuttlebutt_guard.update_nodes_liveliness();
+        let mut chitchat_guard = self.chitchat.lock().await;
+        chitchat_guard.update_nodes_liveliness();
     }
 
     /// Gossip to one other UDP server.
     async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
-        let syn = self.scuttlebutt.lock().await.create_syn_message();
+        let syn = self.chitchat.lock().await.create_syn_message();
         let mut buf = Vec::new();
         syn.serialize(&mut buf);
         let _ = self.socket.send_to(&buf, addr.into()).await?;
@@ -410,11 +410,8 @@ mod tests {
 
         let msg = ScuttleButtMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
-            ScuttleButtMessage::Syn {
-                cluster_name,
-                digest,
-            } => {
-                assert_eq!(cluster_name, "test-cluster");
+            ScuttleButtMessage::Syn { cluster_id, digest } => {
+                assert_eq!(cluster_id, "test-cluster");
                 assert_eq!(digest.node_max_version.len(), 1);
             }
             message => panic!("unexpected message: {:?}", message),
@@ -427,7 +424,7 @@ mod tests {
     async fn syn_ack() {
         let server_addr = "0.0.0.0:2221";
         let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
@@ -446,7 +443,7 @@ mod tests {
         );
 
         let mut buf = Vec::new();
-        let syn = scuttlebutt.create_syn_message();
+        let syn = chitchat.create_syn_message();
         syn.serialize(&mut buf);
         socket.send_to(&buf[..], server_addr).await.unwrap();
 
@@ -514,7 +511,7 @@ mod tests {
             FailureDetectorConfig::default(),
         );
         let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
             "offline".into(),
             HashSet::new(),
             "offline".to_string(),
@@ -527,7 +524,7 @@ mod tests {
         socket.send_to(b"broken", server_addr).await.unwrap();
 
         // Confirm nothing broke using a regular payload.
-        let syn = scuttlebutt.create_syn_message();
+        let syn = chitchat.create_syn_message();
         let message = syn.serialize_to_vec();
         socket.send_to(&message, server_addr).await.unwrap();
 
@@ -571,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat() {
         let test_addr = "0.0.0.0:6661";
-        let mut scuttlebutt = ScuttleButt::with_node_id_and_seeds(
+        let mut chitchat = ScuttleButt::with_node_id_and_seeds(
             test_addr.into(),
             HashSet::new(),
             test_addr.to_string(),
@@ -594,10 +591,10 @@ mod tests {
 
         // Add our test socket to the server's nodes.
         server
-            .with_scuttlebutt(|server_scuttlebutt| {
-                let syn = server_scuttlebutt.create_syn_message();
-                let syn_ack = scuttlebutt.process_message(syn).unwrap();
-                server_scuttlebutt.process_message(syn_ack);
+            .with_chitchat(|server_chitchat| {
+                let syn = server_chitchat.create_syn_message();
+                let syn_ack = chitchat.process_message(syn).unwrap();
+                server_chitchat.process_message(syn_ack);
             })
             .await;
 
@@ -611,7 +608,7 @@ mod tests {
         };
 
         // Reply.
-        let syn_ack = scuttlebutt.process_message(message).unwrap();
+        let syn_ack = chitchat.process_message(message).unwrap();
         let message = syn_ack.serialize_to_vec();
         socket.send_to(&message[..], server_addr).await.unwrap();
 
@@ -648,7 +645,7 @@ mod tests {
             FailureDetectorConfig::default(),
         );
         let mut live_nodes_watcher = node1
-            .scuttlebutt()
+            .chitchat()
             .lock()
             .await
             .live_nodes_watcher()

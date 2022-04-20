@@ -51,7 +51,7 @@ pub type Version = u64;
 ///
 /// For the lifetime of a cluster, nodes can go down and back up, they may
 /// permanently die. These are couple of issues we want to solve with [`NodeId`] struct:
-/// - We want a fresh local scuttlebutt state for every run of a node.
+/// - We want a fresh local chitchat state for every run of a node.
 /// - We don’t want other nodes to override a newly started node state with an obsolete state.
 /// - We want other running nodes to detect that a newly started node’s state prevails all its
 ///   previous state.
@@ -75,7 +75,7 @@ pub type Version = u64;
 /// `{node_unique_id}/{node_generation}/`.
 /// - node_unique_id: a static unique name for the node.
 /// - node_generation: a monotonically increasing value (timestamp on every run)
-/// More details at https://github.com/quickwit-oss/scuttlebutt/issues/1#issuecomment-1059029051
+/// More details at https://github.com/quickwit-oss/chitchat/issues/1#issuecomment-1059029051
 ///
 /// Note: using timestamp to make the `id` dynamic has the potential of reusing
 /// a previously used `id` in cases where the clock is reset in the past. We believe this
@@ -120,7 +120,7 @@ pub struct ScuttleButt {
     mtu: usize,
     address: String,
     self_node_id: NodeId,
-    cluster_name: String,
+    cluster_id: String,
     cluster_state: ClusterState,
     heartbeat: u64,
     /// The failure detector instance.
@@ -136,16 +136,16 @@ impl ScuttleButt {
         self_node_id: NodeId,
         seed_ids: HashSet<String>,
         address: String,
-        cluster_name: String,
+        cluster_id: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
-        let mut scuttlebutt = ScuttleButt {
+        let mut chitchat = ScuttleButt {
             mtu: 60_000,
             address,
             self_node_id,
-            cluster_name,
+            cluster_id,
             cluster_state: ClusterState::with_seed_ids(seed_ids),
             heartbeat: 0,
             failure_detector: FailureDetector::new(failure_detector_config),
@@ -153,7 +153,7 @@ impl ScuttleButt {
             live_nodes_watcher_rx,
         };
 
-        let self_node_state = scuttlebutt.self_node_state();
+        let self_node_state = chitchat.self_node_state();
 
         // Immediately mark node as alive to ensure it responds to SYNs.
         self_node_state.set(HEARTBEAT_KEY, 0);
@@ -163,7 +163,7 @@ impl ScuttleButt {
             self_node_state.set(key, value);
         }
 
-        scuttlebutt
+        chitchat
     }
 
     pub fn set_mtu(&mut self, mtu: usize) {
@@ -173,20 +173,17 @@ impl ScuttleButt {
     pub fn create_syn_message(&mut self) -> ScuttleButtMessage {
         let digest = self.compute_digest();
         ScuttleButtMessage::Syn {
-            cluster_name: self.cluster_name.clone(),
+            cluster_id: self.cluster_id.clone(),
             digest,
         }
     }
 
     pub fn process_message(&mut self, msg: ScuttleButtMessage) -> Option<ScuttleButtMessage> {
         match msg {
-            ScuttleButtMessage::Syn {
-                cluster_name,
-                digest,
-            } => {
-                if cluster_name != self.cluster_name {
+            ScuttleButtMessage::Syn { cluster_id, digest } => {
+                if cluster_id != self.cluster_id {
                     warn!(
-                        cluster_name = %cluster_name,
+                        cluster_id = %cluster_id,
                         "rejecting syn message with mismatching cluster name"
                     );
                     return Some(ScuttleButtMessage::BadCluster);
@@ -296,8 +293,8 @@ impl ScuttleButt {
         &self.self_node_id
     }
 
-    pub fn cluster_name(&self) -> &str {
-        &self.cluster_name
+    pub fn cluster_id(&self) -> &str {
+        &self.cluster_id
     }
 
     /// Computes digest.
@@ -341,7 +338,7 @@ mod tests {
 
     const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(25);
 
-    fn run_scuttlebutt_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
+    fn run_chitchat_handshake(initiating_node: &mut ScuttleButt, peer_node: &mut ScuttleButt) {
         let syn_message = initiating_node.create_syn_message();
         let syn_ack_message = peer_node.process_message(syn_message).unwrap();
         let ack_message = initiating_node.process_message(syn_ack_message).unwrap();
@@ -416,12 +413,12 @@ mod tests {
         Ok(())
     }
 
-    async fn wait_for_scuttlebutt_state(
-        scuttlebutt: Arc<Mutex<ScuttleButt>>,
+    async fn wait_for_chitchat_state(
+        chitchat: Arc<Mutex<ScuttleButt>>,
         expected_node_count: usize,
         expected_nodes: &[NodeId],
     ) {
-        let mut live_nodes_watcher = scuttlebutt
+        let mut live_nodes_watcher = chitchat
             .lock()
             .await
             .live_nodes_watcher()
@@ -438,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scuttlebutt_handshake() {
+    fn test_chitchat_handshake() {
         let mut node1 = ScuttleButt::with_node_id_and_seeds(
             NodeId::from("node1"),
             HashSet::new(),
@@ -455,19 +452,19 @@ mod tests {
             vec![("key1b", "1"), ("key2b", "2")],
             FailureDetectorConfig::default(),
         );
-        run_scuttlebutt_handshake(&mut node1, &mut node2);
+        run_chitchat_handshake(&mut node1, &mut node2);
         dbg!(&node1.cluster_state());
         dbg!(&node2.cluster_state());
         assert_nodes_sync(&[&node1, &node2]);
         // useless handshake
-        run_scuttlebutt_handshake(&mut node1, &mut node2);
+        run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
         {
             let state1 = node1.self_node_state();
             state1.set("key1a", "3");
             state1.set("key1c", "4");
         }
-        run_scuttlebutt_handshake(&mut node1, &mut node2);
+        run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
     }
 
@@ -477,8 +474,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "20002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             4,
             &[
                 NodeId::from("localhost:20001"),
@@ -499,8 +496,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "30002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             5,
             &[
                 NodeId::from("localhost:30001"),
@@ -519,8 +516,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "30002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             4,
             &[
                 NodeId::from("localhost:30001"),
@@ -540,8 +537,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "30002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             5,
             &[
                 NodeId::from("localhost:30001"),
@@ -563,8 +560,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "40002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             3,
             &[
                 NodeId::from("localhost:40001"),
@@ -581,8 +578,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "40002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             2,
             &[
                 NodeId::from("localhost:40001"),
@@ -594,7 +591,7 @@ mod tests {
         // Restart node at localhost:40003 with new name
         let port = 40003;
         let address = format!("localhost:{}", port);
-        let new_node_scuttlebutt = ScuttleServer::spawn(
+        let new_node_chitchat = ScuttleServer::spawn(
             NodeId::new("new_node".to_string(), address.clone()),
             &["localhost:40001".to_string()],
             address,
@@ -602,12 +599,12 @@ mod tests {
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig::default(),
         );
-        nodes.push((port.to_string(), new_node_scuttlebutt));
+        nodes.push((port.to_string(), new_node_chitchat));
 
         let (id, node) = nodes.get(3).unwrap();
         assert_eq!(id, "40003");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             3,
             &[
                 NodeId::from("localhost:40001"),
@@ -632,7 +629,7 @@ mod tests {
                 .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
                 .collect::<Vec<_>>();
 
-            wait_for_scuttlebutt_state(node.scuttlebutt(), 5, &peers.to_vec()).await;
+            wait_for_chitchat_state(node.chitchat(), 5, &peers.to_vec()).await;
         }
 
         shutdown_nodes(nodes).await?;
@@ -645,8 +642,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "60002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             5,
             &[
                 NodeId::from("localhost:60001"),
@@ -665,8 +662,8 @@ mod tests {
 
         let (id, node) = nodes.get(1).unwrap();
         assert_eq!(id, "60002");
-        wait_for_scuttlebutt_state(
-            node.scuttlebutt(),
+        wait_for_chitchat_state(
+            node.chitchat(),
             4,
             &[
                 NodeId::from("localhost:60001"),
@@ -681,7 +678,7 @@ mod tests {
         let dead_node_id = NodeId::from("localhost:60003");
         for (_, node) in nodes.iter() {
             assert!(node
-                .scuttlebutt()
+                .chitchat()
                 .lock()
                 .await
                 .node_state(&dead_node_id)
@@ -696,7 +693,7 @@ mod tests {
         // Dead node should no longer be known to the cluster.
         for (_, node) in nodes.iter() {
             assert!(node
-                .scuttlebutt()
+                .chitchat()
                 .lock()
                 .await
                 .node_state(&dead_node_id)
