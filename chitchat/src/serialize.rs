@@ -18,7 +18,7 @@ impl Serializable for u16 {
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         if buf.len() < 2 {
-            bail!("Buffer two short");
+            bail!("Buffer too short");
         }
         let val = u16::from_le_bytes([buf[0], buf[1]]);
         buf.consume(2);
@@ -37,7 +37,7 @@ impl Serializable for u64 {
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         if buf.len() < 8 {
-            bail!("Buffer two short");
+            bail!("Buffer too short");
         }
         let val_bytes: [u8; 8] = buf[0..8].try_into()?;
         let val = u64::from_le_bytes(val_bytes);
