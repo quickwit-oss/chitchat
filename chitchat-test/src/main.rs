@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use chitchat::server::ChitchatServer;
 use chitchat::{Chitchat, FailureDetectorConfig, NodeId, SerializableClusterState};
-use chitchat_test::ApiResponse;
+use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use poem::listener::TcpListener;
 use poem::{Route, Server};
+use poem_openapi::param::Query;
 use poem_openapi::payload::Json;
 use poem_openapi::{OpenApi, OpenApiService};
 use structopt::StructOpt;
@@ -27,6 +28,21 @@ impl Api {
             dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
+    }
+
+    /// Set a key & value on this node (with no validation).
+    #[oai(path = "/set_kv/", method = "get")]
+    async fn named_visitor(
+        &self,
+        key: Query<String>,
+        value: Query<String>,
+    ) -> Json<serde_json::Value> {
+        let mut chitchat_guard = self.chitchat.lock().await;
+
+        let cc_state = chitchat_guard.self_node_state();
+        cc_state.set(key.as_str(), value.as_str());
+
+        Json(serde_json::to_value(&SetKeyValueResponse { status: true }).unwrap())
     }
 }
 
