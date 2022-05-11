@@ -88,7 +88,7 @@ pub struct DeltaWriter {
     delta: Delta,
     mtu: usize,
     num_bytes: usize,
-    current_node_id: NodeId,
+    current_node_id: Option<NodeId>,
     current_node_delta: NodeDelta,
     reached_capacity: bool,
 }
@@ -99,31 +99,29 @@ impl DeltaWriter {
             delta: Delta::default(),
             mtu,
             num_bytes: 2,
-            current_node_id: NodeId::default(),
+            current_node_id: None,
             current_node_delta: NodeDelta::default(),
             reached_capacity: false,
         }
     }
     fn flush(&mut self) {
-        let node_id = mem::take(&mut self.current_node_id);
+        let node_id_opt = mem::take(&mut self.current_node_id);
         let node_delta = mem::take(&mut self.current_node_delta);
-        if node_id == NodeId::default() {
-            return;
+        if let Some(node_id) = node_id_opt {
+            self.delta.node_deltas.insert(node_id, node_delta);
         }
-        self.delta.node_deltas.insert(node_id, node_delta);
     }
 
     pub fn add_node(&mut self, node_id: NodeId) -> bool {
-        assert!(node_id != NodeId::default());
-        assert!(node_id != self.current_node_id);
+        assert!(Some(&node_id) != self.current_node_id.as_ref());
         assert!(!self.delta.node_deltas.contains_key(&node_id));
         self.flush();
-        if !self
-            .attempt_add_bytes(2 + node_id.id.len() + 2 + node_id.gossip_public_address.len() + 2)
-        {
+        if !self.attempt_add_bytes(
+            2 + node_id.id.len() + node_id.gossip_public_address.serialized_len() + 2,
+        ) {
             return false;
         }
-        self.current_node_id = node_id;
+        self.current_node_id = Some(node_id);
         true
     }
 
@@ -138,6 +136,7 @@ impl DeltaWriter {
         true
     }
 
+    /// Returns false if the KV could not be added because mtu was reached.
     pub fn add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
         assert!(!self.current_node_delta.key_values.contains_key(key));
         if !self.attempt_add_bytes(2 + key.len() + 2 + versioned_value.value.len() + 8) {
@@ -204,48 +203,47 @@ mod tests {
     fn test_delta_serialization_default() {
         test_serdeser_aux(&Delta::default(), 2);
     }
-
     #[test]
     fn test_delta_serialization_simple() {
-        let mut delta_writer = DeltaWriter::with_mtu(122);
-        delta_writer.add_node(NodeId::from("node1"));
-        delta_writer.add_kv(
+        let mut delta_writer = DeltaWriter::with_mtu(132);
+        delta_writer.add_node(NodeId::for_test_localhost(10_001));
+        assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
             },
-        );
-        delta_writer.add_kv(
+        ));
+        assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
             },
-        );
-        delta_writer.add_node(NodeId::from("node2"));
-        delta_writer.add_kv(
+        ));
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        assert!(delta_writer.add_kv(
             "key21",
             VersionedValue {
                 value: "val21".to_string(),
                 version: 2,
             },
-        );
-        delta_writer.add_kv(
+        ));
+        assert!(delta_writer.add_kv(
             "key22",
             VersionedValue {
                 value: "val22".to_string(),
                 version: 3,
             },
-        );
+        ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 122);
+        test_serdeser_aux(&delta, 132);
     }
 
     #[test]
     fn test_delta_serialization_simple_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(78);
-        assert!(delta_writer.add_node(NodeId::from("node1")));
+        let mut delta_writer = DeltaWriter::with_mtu(110);
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -260,15 +258,15 @@ mod tests {
                 version: 2
             }
         ));
-        assert!(delta_writer.add_node(NodeId::from("node2")));
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 78);
+        test_serdeser_aux(&delta, 88);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(77);
-        assert!(delta_writer.add_node(NodeId::from("node1")));
+        let mut delta_writer = DeltaWriter::with_mtu(87);
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -283,15 +281,15 @@ mod tests {
                 version: 2
             }
         ));
-        assert!(!delta_writer.add_node(NodeId::from("node2")));
+        assert!(!delta_writer.add_node(NodeId::for_test_localhost(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 62);
+        test_serdeser_aux(&delta, 67);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_kv() {
-        let mut delta_writer = DeltaWriter::with_mtu(54);
-        assert!(delta_writer.add_node(NodeId::from("node1")));
+        let mut delta_writer = DeltaWriter::with_mtu(66);
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -307,14 +305,14 @@ mod tests {
             }
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 40);
+        test_serdeser_aux(&delta, 45);
     }
 
     #[test]
     #[should_panic]
     fn test_delta_serialization_panic_if_add_after_exceed() {
         let mut delta_writer = DeltaWriter::with_mtu(54);
-        assert!(delta_writer.add_node(NodeId::from("node1")));
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {

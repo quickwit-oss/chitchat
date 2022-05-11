@@ -70,7 +70,6 @@ impl FailureDetector {
                 garbage_collected_nodes.push(node_id.clone())
             }
         }
-
         for node_id in garbage_collected_nodes.iter() {
             self.dead_nodes.remove(node_id);
         }
@@ -104,7 +103,7 @@ pub struct FailureDetectorConfig {
     pub sampling_window_size: usize,
     /// Heartbeat longer than this will be dropped.
     pub max_interval: Duration,
-    /// Initial interval used on startup when no previous heartbeat exists.  
+    /// Initial interval used on startup when no previous heartbeat exists.
     pub initial_interval: Duration,
     /// Threshold period after which dead node can be removed from the cluster.
     pub dead_node_grace_period: Duration,
@@ -265,9 +264,9 @@ mod tests {
 
         let intervals_choices = vec![1u64, 2];
         let node_ids_choices = vec![
-            NodeId::from("node-1"),
-            NodeId::from("node-2"),
-            NodeId::from("node-3"),
+            NodeId::for_test_localhost(10_001),
+            NodeId::for_test_localhost(10_002),
+            NodeId::for_test_localhost(10_003),
         ];
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
@@ -285,7 +284,7 @@ mod tests {
             .map(|node_id| node_id.id.as_str())
             .collect::<Vec<_>>();
         live_nodes.sort_unstable();
-        assert_eq!(live_nodes, vec!["node-1", "node-2", "node-3"]);
+        assert_eq!(live_nodes, vec!["node-10001", "node-10002", "node-10003"]);
         assert_eq!(failure_detector.garbage_collect(), vec![]);
 
         // stop reporting heartbeat for few seconds
@@ -298,7 +297,7 @@ mod tests {
             .map(|node_id| node_id.id.as_str())
             .collect::<Vec<_>>();
         dead_nodes.sort_unstable();
-        assert_eq!(dead_nodes, vec!["node-1", "node-2", "node-3"]);
+        assert_eq!(dead_nodes, vec!["node-10001", "node-10002", "node-10003"]);
         assert_eq!(failure_detector.garbage_collect(), vec![]);
 
         // Wait for dead_node_grace_period & garbage collect.
@@ -323,7 +322,10 @@ mod tests {
             .map(|node_id| node_id.id.as_str())
             .collect::<Vec<_>>();
         removed_nodes.sort_unstable();
-        assert_eq!(removed_nodes, vec!["node-1", "node-2", "node-3"]);
+        assert_eq!(
+            removed_nodes,
+            vec!["node-10001", "node-10002", "node-10003"]
+        );
     }
 
     #[test]
@@ -331,7 +333,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
         let intervals_choices = vec![1u64, 2];
-        let node_1 = NodeId::from("node-1");
+        let node_1 = NodeId::for_test_localhost(10_001);
 
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
@@ -345,7 +347,7 @@ mod tests {
                 .live_nodes()
                 .map(|node_id| node_id.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["node-1"]
+            vec!["node-10001"]
         );
 
         // Check node-1 is down (stop reporting heartbeat).
@@ -371,7 +373,7 @@ mod tests {
                 .live_nodes()
                 .map(|node_id| node_id.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["node-1"]
+            vec!["node-10001"]
         );
     }
 
@@ -379,7 +381,7 @@ mod tests {
     fn test_failure_detector_node_state_after_initial_interval() {
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
-        let node_id = NodeId::from("node-1");
+        let node_id = NodeId::for_test_localhost(10_001);
         failure_detector.report_heartbeat(&node_id);
 
         MockClock::advance(Duration::from_secs(1));
@@ -389,7 +391,7 @@ mod tests {
             .live_nodes()
             .map(|node_id| node_id.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(live_nodes, vec!["node-1"]);
+        assert_eq!(live_nodes, vec!["node-10001"]);
         MockClock::advance(Duration::from_secs(40));
         failure_detector.update_node_liveliness(&node_id);
 
