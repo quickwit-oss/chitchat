@@ -1,8 +1,11 @@
+use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use chitchat::server::ChitchatServer;
 use chitchat::{Chitchat, FailureDetectorConfig, NodeId, SerializableClusterState};
 use chitchat_test::ApiResponse;
+use cool_id_generator::Size;
 use poem::listener::TcpListener;
 use poem::{Route, Server};
 use poem_openapi::payload::Json;
@@ -33,26 +36,50 @@ impl Api {
 #[derive(Debug, StructOpt)]
 #[structopt(name = "chitchat", about = "Chitchat test server.")]
 struct Opt {
-    #[structopt(short = "h", default_value = "localhost:10000")]
-    listen_addr: String,
+    /// Defines the socket addr on which we should listen to.
+    #[structopt(long = "listen_addr", default_value = "127.0.0.1:10000")]
+    listen_addr: SocketAddr,
+    /// Defines the socket_address (host:port) other servers should use to
+    /// reach this server.
+    ///
+    /// It defaults to the listen address, but this is only valid
+    /// when all server are running on the same server.
+    #[structopt(long = "public_addr")]
+    public_addr: Option<SocketAddr>,
+
+    /// Node id. Has to be unique. If None, the node_id will be generated from
+    /// the public_addr and a random suffix.
+    #[structopt(long = "node_id")]
+    node_id: Option<String>,
+
     #[structopt(long = "seed")]
     seeds: Vec<String>,
 }
 
+fn generate_server_id(public_addr: SocketAddr) -> String {
+    let cool_id = cool_id_generator::get_id(Size::Medium);
+    format!("server:{}-{}", public_addr, cool_id)
+}
+
 #[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
+async fn main() -> io::Result<()> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
-
+    let public_addr = opt.public_addr.unwrap_or(opt.listen_addr);
+    let node_id_str = opt
+        .node_id
+        .unwrap_or_else(|| generate_server_id(public_addr));
+    let node_id = NodeId::new(node_id_str, public_addr);
     let chitchat_server = ChitchatServer::spawn(
-        NodeId::from(opt.listen_addr.as_str()),
+        node_id,
         &opt.seeds[..],
-        &opt.listen_addr,
+        opt.listen_addr,
         "testing".to_string(),
         Vec::<(&str, &str)>::new(),
         FailureDetectorConfig::default(),
-    );
+    )
+    .await;
     let chitchat = chitchat_server.chitchat();
     let api = Api { chitchat };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")
