@@ -6,6 +6,7 @@ mod failure_detector;
 mod message;
 pub(crate) mod serialize;
 mod state;
+pub mod transport;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -102,7 +103,6 @@ pub struct VersionedValue {
 
 pub struct Chitchat {
     mtu: usize,
-    listen_address: SocketAddr,
     self_node_id: NodeId,
     cluster_id: String,
     cluster_state: ClusterState,
@@ -119,7 +119,6 @@ impl Chitchat {
     pub fn with_node_id_and_seeds(
         self_node_id: NodeId,
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
-        listen_address: SocketAddr,
         cluster_id: String,
         initial_key_values: Vec<(impl ToString, impl ToString)>,
         failure_detector_config: FailureDetectorConfig,
@@ -127,7 +126,6 @@ impl Chitchat {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
         let mut chitchat = Chitchat {
             mtu: 60_000,
-            listen_address,
             self_node_id,
             cluster_id,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
@@ -355,7 +353,6 @@ mod tests {
         ChitchatServer::spawn(
             node_id.clone(),
             seeds,
-            node_id.gossip_public_address,
             "test-cluster".to_string(),
             Vec::<(&str, &str)>::new(),
             FailureDetectorConfig {

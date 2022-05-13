@@ -1,8 +1,8 @@
-use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use chitchat::server::ChitchatServer;
+use chitchat::transport::UdpTransport;
 use chitchat::{Chitchat, FailureDetectorConfig, NodeId, SerializableClusterState};
 use chitchat_test::ApiResponse;
 use cool_id_generator::Size;
@@ -62,7 +62,7 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
@@ -71,10 +71,11 @@ async fn main() -> io::Result<()> {
         .node_id
         .unwrap_or_else(|| generate_server_id(public_addr));
     let node_id = NodeId::new(node_id_str, public_addr);
+    let udp_transport = Box::new(UdpTransport::open(opt.listen_addr).await?);
     let chitchat_server = ChitchatServer::spawn(
         node_id,
         &opt.seeds[..],
-        opt.listen_addr,
+        udp_transport,
         "testing".to_string(),
         Vec::<(&str, &str)>::new(),
         FailureDetectorConfig::default(),
