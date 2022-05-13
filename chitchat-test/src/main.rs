@@ -32,11 +32,7 @@ impl Api {
 
     /// Set a key & value on this node (with no validation).
     #[oai(path = "/set_kv/", method = "get")]
-    async fn set_kv(
-        &self,
-        key: Query<String>,
-        value: Query<String>,
-    ) -> Json<serde_json::Value> {
+    async fn set_kv(&self, key: Query<String>, value: Query<String>) -> Json<serde_json::Value> {
         let mut chitchat_guard = self.chitchat.lock().await;
 
         let cc_state = chitchat_guard.self_node_state();
