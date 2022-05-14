@@ -78,7 +78,7 @@ async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>
 // in order to avoid having a split cluster.
 //
 // The newcomers are supposed to chime in too,
-// so there is not need to refresh it too often,
+// so there is no need to refresh it too often,
 // especially if it is not empty.
 async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<SocketAddr>> {
     let mut seed_addrs_not_requiring_resolution: HashSet<SocketAddr> = Default::default();

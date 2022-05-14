@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::{FailureDetectorConfig, NodeId};
 
+/// A struct for configuring a Chitact instance.
 pub struct ChitchatConfig {
     pub node_id: NodeId,
     pub cluster_id: String,
