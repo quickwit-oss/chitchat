@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chitchat::server::ChitchatServer;
-use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use chitchat::{Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId, SerializableClusterState};
+use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use cool_id_generator::Size;
 use poem::listener::TcpListener;
 use poem::{Route, Server};
