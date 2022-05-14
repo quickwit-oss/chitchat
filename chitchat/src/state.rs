@@ -1,10 +1,12 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
@@ -80,16 +82,27 @@ impl NodeState {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+#[derive(Debug)]
 pub struct ClusterState {
-    pub(crate) seed_nodes: HashSet<String>,
     pub(crate) node_states: BTreeMap<NodeId, NodeState>,
+    seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
+}
+
+#[cfg(test)]
+impl Default for ClusterState {
+    fn default() -> Self {
+        let (_seed_addrs_tx, seed_addrs_rx) = watch::channel(Default::default());
+        Self {
+            node_states: Default::default(),
+            seed_addrs: seed_addrs_rx,
+        }
+    }
 }
 
 impl ClusterState {
-    pub fn with_seed_ids(node_ids: HashSet<String>) -> ClusterState {
+    pub fn with_seed_addrs(seed_addrs: watch::Receiver<HashSet<SocketAddr>>) -> ClusterState {
         ClusterState {
-            seed_nodes: node_ids,
+            seed_addrs,
             node_states: BTreeMap::new(),
         }
     }
@@ -107,8 +120,8 @@ impl ClusterState {
         self.node_states.keys()
     }
 
-    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
-        self.seed_nodes.iter().map(|node_id| node_id.as_str())
+    pub fn seed_addrs(&self) -> HashSet<SocketAddr> {
+        self.seed_addrs.borrow().clone()
     }
 
     pub(crate) fn remove_node(&mut self, node_id: &NodeId) {
@@ -200,18 +213,18 @@ impl ClusterState {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableClusterState {
-    pub seed_nodes: HashSet<String>,
+    pub seed_addrs: HashSet<SocketAddr>,
     pub node_states: BTreeMap<String, NodeState>,
 }
 
-impl From<ClusterState> for SerializableClusterState {
-    fn from(state: ClusterState) -> Self {
+impl<'a> From<&'a ClusterState> for SerializableClusterState {
+    fn from(state: &'a ClusterState) -> Self {
         SerializableClusterState {
-            seed_nodes: state.seed_nodes,
+            seed_addrs: state.seed_addrs(),
             node_states: state
                 .node_states
-                .into_iter()
-                .map(|(node_id, node_state)| (node_id.id, node_state))
+                .iter()
+                .map(|(node_id, node_state)| (node_id.id.clone(), node_state.clone()))
                 .collect(),
         }
     }
@@ -271,17 +284,17 @@ mod tests {
     #[test]
     fn test_node_sorted_by_stale_length_simple() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        let node_ids = vec![("node1", 1), ("node2", 2), ("node3", 3)]
+        let node_ids = vec![(10_001, 1), (10_002, 2), (10_003, 3)]
             .into_iter()
-            .map(|(node_id, state_length)| (NodeId::from(node_id), state_length))
+            .map(|(port, state_length)| (NodeId::for_test_localhost(port), state_length))
             .collect::<Vec<_>>();
         for (node_id, state_length) in node_ids.iter() {
             node_sorted_by_stale_length.insert(node_id, *state_length);
         }
         let nodes: Vec<&NodeId> = node_sorted_by_stale_length.into_iter().collect();
-        let expected_nodes: Vec<NodeId> = vec!["node3", "node2", "node1"]
+        let expected_nodes: Vec<NodeId> = [10_003, 10_002, 10_001]
             .into_iter()
-            .map(NodeId::from)
+            .map(NodeId::for_test_localhost)
             .collect();
         assert_eq!(nodes, expected_nodes.iter().collect::<Vec<_>>());
     }
@@ -289,33 +302,34 @@ mod tests {
     #[test]
     fn test_node_sorted_by_stale_length_doubles() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        let node_ids = vec![("node1", 1), ("node2a", 2), ("node2b", 2), ("node2c", 2)]
+        let node_ids = vec![(10_001, 1), (20_001, 2), (20_002, 2), (20_003, 2)]
             .into_iter()
-            .map(|(node_id, state_length)| (NodeId::from(node_id), state_length))
+            .map(|(port, state_length)| (NodeId::for_test_localhost(port), state_length))
             .collect::<Vec<_>>();
+
         for (node_id, state_length) in node_ids.iter() {
             node_sorted_by_stale_length.insert(node_id, *state_length);
         }
 
-        let nodes: Vec<&NodeId> = node_sorted_by_stale_length.into_iter().collect();
-        let expected_nodes: Vec<NodeId> = vec!["node2b", "node2a", "node2c", "node1"]
+        let nodes: Vec<NodeId> = node_sorted_by_stale_length.into_iter().cloned().collect();
+        let expected_nodes: Vec<NodeId> = vec![20_002, 20_001, 20_003, 10_001]
             .into_iter()
-            .map(NodeId::from)
+            .map(NodeId::for_test_localhost)
             .collect();
-        assert_eq!(nodes, expected_nodes.iter().collect::<Vec<_>>());
+        assert_eq!(nodes, expected_nodes);
     }
 
     #[test]
     fn test_cluster_state_missing_node() {
         let cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state(&"node".into());
+        let node_state = cluster_state.node_state(&NodeId::for_test_localhost(10_001));
         assert!(node_state.is_none());
     }
 
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&"node".into());
+        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -329,7 +343,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&"node".into());
+        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -367,7 +381,7 @@ mod tests {
     #[should_panic(expected = "Value for key `text` is too large (actual: 528, maximum: 500)")]
     fn test_cluster_state_set_with_large_value() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&"node".into());
+        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
         let large_value = "The quick brown fox jumps over the lazy dog.".repeat(12);
         node_state.set("text", large_value);
     }
@@ -375,7 +389,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&"node".into());
+        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
@@ -397,25 +411,26 @@ mod tests {
     #[test]
     fn test_cluster_state_compute_digest() {
         let mut cluster_state = ClusterState::default();
-
-        let node1_state = cluster_state.node_state_mut(&"node1".into());
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set("key_a", "");
         node1_state.set("key_b", "");
 
-        let node2_state = cluster_state.node_state_mut(&"node2".into());
+        let node2 = NodeId::for_test_localhost(10_002);
+        let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set("key_a", "");
 
         let digest = cluster_state.compute_digest(HashSet::new());
         let mut node_max_version_map = BTreeMap::default();
-        node_max_version_map.insert("node1".into(), 2);
-        node_max_version_map.insert("node2".into(), 1);
+        node_max_version_map.insert(node1.clone(), 2);
+        node_max_version_map.insert(node2.clone(), 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
 
         // exclude node1
-        let dead_nodes = vec![NodeId::from("node1")];
+        let dead_nodes = vec![node1];
         let digest = cluster_state.compute_digest(dead_nodes.iter().collect());
         let mut node_max_version_map = BTreeMap::default();
-        node_max_version_map.insert("node2".into(), 1);
+        node_max_version_map.insert(node2, 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
     }
 
@@ -423,16 +438,17 @@ mod tests {
     fn test_cluster_state_apply_delta() {
         let mut cluster_state = ClusterState::default();
 
-        let node1_state = cluster_state.node_state_mut(&"node1".into());
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 3); // 3
 
         let mut delta = Delta::default();
-        delta.add_node_delta("node1".into(), "key_a", "4", 4);
-        delta.add_node_delta("node1".into(), "key_b", "2", 2);
+        delta.add_node_delta(node1.clone(), "key_a", "4", 4);
+        delta.add_node_delta(node1.clone(), "key_b", "2", 2);
         cluster_state.apply_delta(delta);
 
-        let node1_state = cluster_state.node_state(&"node1".into()).unwrap();
+        let node1_state = cluster_state.node_state(&node1).unwrap();
         assert_eq!(
             node1_state.get_versioned("key_a").unwrap(),
             &VersionedValue {
@@ -491,11 +507,13 @@ mod tests {
     fn test_cluster_state() -> ClusterState {
         let mut cluster_state = ClusterState::default();
 
-        let node1_state = cluster_state.node_state_mut(&"node1".into());
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 3
 
-        let node2_state = cluster_state.node_state_mut(&"node2".into());
+        let node2 = NodeId::for_test_localhost(10_002);
+        let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
@@ -508,16 +526,18 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_single_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node1".into(), 1);
-        digest.add_node("node2".into(), 2);
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node2 = NodeId::for_test_localhost(10_002);
+        digest.add_node(node1.clone(), 1);
+        digest.add_node(node2.clone(), 2);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             HashSet::new(),
             &[
-                (&"node2".into(), "key_c", "3", 3),
-                (&"node2".into(), "key_d", "4", 4),
-                (&"node1".into(), "key_b", "2", 2),
+                (&node2, "key_c", "3", 3),
+                (&node2, "key_d", "4", 4),
+                (&node1, "key_b", "2", 2),
             ],
         );
     }
@@ -526,16 +546,18 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_chitchat() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node1".into(), 1);
-        digest.add_node("node2".into(), 2);
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node2 = NodeId::for_test_localhost(10_002);
+        digest.add_node(node1.clone(), 1);
+        digest.add_node(node2.clone(), 2);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             HashSet::new(),
             &[
-                (&"node2".into(), "key_c", "3", 3),
-                (&"node2".into(), "key_d", "4", 4),
-                (&"node1".into(), "key_b", "2", 2),
+                (&node2, "key_c", "3", 3),
+                (&node2, "key_d", "4", 4),
+                (&node1, "key_b", "2", 2),
             ],
         );
     }
@@ -544,15 +566,17 @@ mod tests {
     fn test_cluster_state_compute_delta_missing_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        digest.add_node("node2".into(), 3);
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node2 = NodeId::for_test_localhost(10_002);
+        digest.add_node(node2.clone(), 3);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             HashSet::new(),
             &[
-                (&"node1".into(), "key_a", "1", 1),
-                (&"node1".into(), "key_b", "2", 2),
-                (&"node2".into(), "key_d", "4", 4),
+                (&node1, "key_a", "1", 1),
+                (&node1, "key_b", "2", 2),
+                (&node2, "key_d", "4", 4),
             ],
         );
     }
@@ -561,17 +585,14 @@ mod tests {
     fn test_cluster_state_compute_delta_should_ignore_dead_nodes() {
         let cluster_state = test_cluster_state();
         let digest = Digest::default();
-
-        let dead_nodes = vec![NodeId::from("node2")];
-
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node2 = NodeId::for_test_localhost(10_002);
+        let dead_nodes = vec![node2];
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
             &digest,
             dead_nodes.iter().collect(),
-            &[
-                (&"node1".into(), "key_a", "1", 1),
-                (&"node1".into(), "key_b", "2", 2),
-            ],
+            &[(&node1, "key_a", "1", 1), (&node1, "key_b", "2", 2)],
         );
     }
 }

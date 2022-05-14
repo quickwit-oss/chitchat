@@ -3,40 +3,47 @@
 mod helpers;
 
 use std::process::Child;
-use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
-use std::{panic, thread};
 
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use helpers::spawn_command;
-use once_cell::sync::Lazy;
 
-type PeersList = Arc<Mutex<Vec<(Child, String)>>>;
+struct KillOnDrop(Child);
 
-static PEERS: Lazy<PeersList> = Lazy::new(|| Arc::new(Mutex::new(Vec::<(Child, String)>::new())));
-
-fn setup_nodes(size: usize, wait_stabilization_secs: u64) {
-    let mut peers_guard = PEERS.lock().unwrap();
-    let seed_port = 10000;
-    let seed_node = spawn_command(format!("-h localhost:{}", seed_port).as_str()).unwrap();
-    peers_guard.push((seed_node, format!("http://localhost:{}", seed_port)));
-    for i in 1..size {
-        let node_port = seed_port + i;
-        let node = spawn_command(
-            format!("-h localhost:{} --seed localhost:{}", node_port, seed_port).as_str(),
-        )
-        .unwrap();
-        peers_guard.push((node, format!("http://localhost:{}", node_port)))
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
     }
-    thread::sleep(Duration::from_secs(wait_stabilization_secs));
 }
 
-fn shutdown_nodes() {
-    let mut peers_guard = PEERS.lock().unwrap();
-    for (node, _) in peers_guard.iter_mut() {
-        let _ = node.kill();
+fn setup_nodes(
+    port_offset: usize,
+    num_nodes: usize,
+    wait_stabilization_secs: u64,
+    dns_required_for_seed: bool,
+) -> Vec<KillOnDrop> {
+    let seed_port = port_offset;
+    let seed_node =
+        spawn_command(format!("--listen_addr 127.0.0.1:{seed_port} --interval_ms 120").as_str())
+            .unwrap();
+    let mut child_process_handles = vec![KillOnDrop(seed_node)];
+    for i in 1..num_nodes {
+        let node_port = seed_port + i;
+        let seed_host_name = if dns_required_for_seed {
+            "localhost"
+        } else {
+            "127.0.0.1"
+        };
+        let command_args = format!(
+            "--listen_addr 127.0.0.1:{node_port} --seed {seed_host_name}:{seed_port} --node_id \
+             node_{i} --interval_ms 50"
+        );
+        let node = spawn_command(&command_args).unwrap();
+        child_process_handles.push(KillOnDrop(node));
     }
-    peers_guard.clear();
+    thread::sleep(Duration::from_secs(wait_stabilization_secs));
+    child_process_handles
 }
 
 fn get_node_info(node_api_endpoint: &str) -> anyhow::Result<ApiResponse> {
@@ -51,38 +58,40 @@ fn set_kv(node_api_endpoint: &str, key: &str, value: &str) -> anyhow::Result<Set
 }
 
 #[test]
-fn test_multiple_nodes() -> anyhow::Result<()> {
-    panic::set_hook(Box::new(|error| {
-        println!("{}", error);
-        shutdown_nodes();
-    }));
-    setup_nodes(5, 3);
-
+fn test_multiple_nodes() {
+    let child_handles = setup_nodes(13_000, 5, 5, false);
+    assert_eq!(child_handles.len(), 5);
+  
     // Assert that we can set a key.
     let set_kv_response = set_kv("http://localhost:10001/set_kv", "some_key", "some_value")?;
     assert_eq!(set_kv_response.status, true);
 
     // Check node states through api.
-    let info = get_node_info("http://localhost:10001")?;
-    assert!(info
-        .cluster_state
-        .node_states
-        .get("localhost:10003")
-        .is_some());
+    let info = get_node_info("http://127.0.0.1:13001").unwrap();
+    assert!(info.cluster_state.node_states.get("node_3").is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
-
+  
     // Check that "some_key" we set on this local node (localhost:10001) is
     // indeed set to be "some_value"
     let ns = info
         .cluster_state
         .node_states
-        .get("localhost:10001")
+        .get("node_1")
         .unwrap();
     let v = ns.get_versioned("some_key").unwrap();
     assert_eq!(v.value, "some_value");
-
     shutdown_nodes();
-    Ok(())
+}
+
+#[test]
+fn test_multiple_nodes_with_dns_resolution_for_seed() {
+    let _child_handles = setup_nodes(12_000, 5, 5, true);
+    // Check node states through api.
+    let info = get_node_info("http://127.0.0.1:12001").unwrap();
+    assert!(info.cluster_state.node_states.get("node_3").is_some());
+    assert_eq!(info.cluster_id, "testing");
+    assert_eq!(info.live_nodes.len(), 4);
+    assert_eq!(info.dead_nodes.len(), 0);
 }
