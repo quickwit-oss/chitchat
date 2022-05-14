@@ -61,9 +61,10 @@ fn set_kv(node_api_endpoint: &str, key: &str, value: &str) -> anyhow::Result<Set
 fn test_multiple_nodes() {
     let child_handles = setup_nodes(13_000, 5, 5, false);
     assert_eq!(child_handles.len(), 5);
-  
+
     // Assert that we can set a key.
-    let set_kv_response = set_kv("http://localhost:10001/set_kv", "some_key", "some_value")?;
+    let set_kv_response =
+        set_kv("http://127.0.0.1:13001/set_kv", "some_key", "some_value").unwrap();
     assert_eq!(set_kv_response.status, true);
 
     // Check node states through api.
@@ -72,17 +73,12 @@ fn test_multiple_nodes() {
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
-  
+
     // Check that "some_key" we set on this local node (localhost:10001) is
     // indeed set to be "some_value"
-    let ns = info
-        .cluster_state
-        .node_states
-        .get("node_1")
-        .unwrap();
+    let ns = info.cluster_state.node_states.get("node_1").unwrap();
     let v = ns.get_versioned("some_key").unwrap();
     assert_eq!(v.value, "some_value");
-    shutdown_nodes();
 }
 
 #[test]
