@@ -1,10 +1,12 @@
-use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chitchat::server::ChitchatServer;
-use chitchat::{Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId, SerializableClusterState};
+use chitchat::transport::UdpTransport;
+use chitchat::{
+    spawn_chitchat, Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId,
+    SerializableClusterState,
+};
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use cool_id_generator::Size;
 use poem::listener::TcpListener;
@@ -78,7 +80,7 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
     println!("{:?}", opt);
@@ -96,8 +98,8 @@ async fn main() -> io::Result<()> {
         mtu: 60_000,
         failure_detector_config: FailureDetectorConfig::default(),
     };
-    let chitchat_server = ChitchatServer::spawn(config, Vec::new()).await;
-    let chitchat = chitchat_server.chitchat();
+    let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
+    let chitchat = chitchat_handler.chitchat();
     let api = Api { chitchat };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")
         .server(&format!("http://{}/", opt.listen_addr));

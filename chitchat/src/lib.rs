@@ -1,4 +1,4 @@
-pub mod server;
+mod server;
 
 mod configuration;
 mod delta;
@@ -7,6 +7,7 @@ mod failure_detector;
 mod message;
 pub(crate) mod serialize;
 mod state;
+pub mod transport;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -21,8 +22,9 @@ use tracing::{debug, error, warn};
 
 pub use self::configuration::ChitchatConfig;
 use crate::digest::Digest;
-use crate::message::ChitchatMessage;
+pub use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
+pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::NodeState;
 pub use crate::state::{ClusterState, SerializableClusterState};
 
@@ -161,7 +163,6 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-
                 let self_digest = self.compute_digest();
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
@@ -270,6 +271,12 @@ impl Chitchat {
         &self.config.cluster_id
     }
 
+    pub fn update_heartbeat(&mut self) {
+        self.heartbeat += 1;
+        let heartbeat = self.heartbeat;
+        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
+    }
+
     /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
@@ -277,9 +284,6 @@ impl Chitchat {
     /// through the cluster.
     fn compute_digest(&mut self) -> Digest {
         // Ensure for every reply from this node, at least the heartbeat is changed.
-        self.heartbeat += 1;
-        let heartbeat = self.heartbeat;
-        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
         let dead_nodes: HashSet<_> = self.dead_nodes().collect();
         self.cluster_state.compute_digest(dead_nodes)
     }
@@ -307,7 +311,8 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
-    use crate::server::ChitchatServer;
+    use crate::server::{spawn_chitchat, ChitchatHandle};
+    use crate::transport::{ChannelTransport, Transport};
 
     const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
@@ -340,35 +345,45 @@ mod tests {
         }
     }
 
-    async fn start_node(node_id: NodeId, seeds: &[String]) -> ChitchatServer {
+    async fn start_node(
+        node_id: NodeId,
+        seeds: &[String],
+        transport: &dyn Transport,
+    ) -> ChitchatHandle {
         let config = ChitchatConfig {
             node_id: node_id.clone(),
             cluster_id: "default-cluster".to_string(),
-            gossip_interval: Duration::from_millis(50),
+            gossip_interval: Duration::from_millis(100),
             listen_addr: node_id.gossip_public_address,
             seed_nodes: seeds.to_vec(),
             mtu: 60_000,
             failure_detector_config: FailureDetectorConfig {
                 dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
                 phi_threshold: 5.0,
+                initial_interval: Duration::from_millis(100),
                 ..Default::default()
             },
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
-        ChitchatServer::spawn(config, initial_kvs).await
+        spawn_chitchat(config, initial_kvs, transport)
+            .await
+            .unwrap()
     }
 
-    async fn setup_nodes(port_range: RangeInclusive<u16>) -> Vec<ChitchatServer> {
+    async fn setup_nodes(
+        port_range: RangeInclusive<u16>,
+        transport: &dyn Transport,
+    ) -> Vec<ChitchatHandle> {
         let node_ids: Vec<NodeId> = port_range.map(NodeId::for_test_localhost).collect();
-        let node_without_seed = start_node(node_ids[0].clone(), &[]).await;
-        let mut chitchat_servers: Vec<ChitchatServer> = vec![node_without_seed];
+        let node_without_seed = start_node(node_ids[0].clone(), &[], transport).await;
+        let mut chitchat_handlers: Vec<ChitchatHandle> = vec![node_without_seed];
         for node_id in &node_ids[1..] {
             let seeds = node_ids
                 .iter()
                 .filter(|&peer_id| peer_id != node_id)
                 .map(|peer_id| peer_id.gossip_public_address.to_string())
                 .collect::<Vec<_>>();
-            chitchat_servers.push(start_node(node_id.clone(), &seeds).await);
+            chitchat_handlers.push(start_node(node_id.clone(), &seeds, transport).await);
         }
         // Make sure the failure detector's fake clock moves forward.
         tokio::spawn(async {
@@ -377,10 +392,10 @@ mod tests {
                 MockClock::advance(Duration::from_millis(50));
             }
         });
-        chitchat_servers
+        chitchat_handlers
     }
 
-    async fn shutdown_nodes(nodes: Vec<ChitchatServer>) -> anyhow::Result<()> {
+    async fn shutdown_nodes(nodes: Vec<ChitchatHandle>) -> anyhow::Result<()> {
         for node in nodes {
             node.shutdown().await?;
         }
@@ -445,7 +460,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_nodes() -> anyhow::Result<()> {
-        let nodes = setup_nodes(20001..=20005).await;
+        let transport = ChannelTransport::default();
+        let nodes = setup_nodes(20001..=20005, &transport).await;
 
         let node = nodes.get(1).unwrap();
         assert_eq!(node.node_id().public_port(), 20002);
@@ -467,7 +483,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
-        let mut nodes = setup_nodes(30001..=30006).await;
+        let transport = ChannelTransport::default();
+        let mut nodes = setup_nodes(30001..=30006, &transport).await;
         let node = &nodes[1];
         assert_eq!(node.node_id().gossip_public_address.port(), 30002);
         wait_for_chitchat_state(
@@ -510,6 +527,7 @@ mod tests {
                 &[NodeId::for_test_localhost(30_001)
                     .gossip_public_address
                     .to_string()],
+                &transport,
             )
             .await,
         );
@@ -535,7 +553,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dead_node_should_not_be_gossiped_when_node_joins() -> anyhow::Result<()> {
-        let mut nodes = setup_nodes(40001..=40004).await;
+        let transport = ChannelTransport::default();
+        let mut nodes = setup_nodes(40001..=40004, &transport).await;
         {
             let node2 = nodes.get(1).unwrap();
             assert_eq!(node2.node_id().public_port(), 40002);
@@ -572,10 +591,13 @@ mod tests {
 
         // Restart node at localhost:40003 with new name
         let mut new_config = ChitchatConfig::for_test(40_003);
+
         new_config.node_id.id = "new_node".to_string();
         let seed = NodeId::for_test_localhost(40_002).gossip_public_address;
         new_config.seed_nodes = vec![seed.to_string()];
-        let new_node_chitchat = ChitchatServer::spawn(new_config, Vec::new()).await;
+        let new_node_chitchat = spawn_chitchat(new_config, Vec::new(), &transport)
+            .await
+            .unwrap();
 
         wait_for_chitchat_state(
             new_node_chitchat.chitchat(),
@@ -595,8 +617,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_partition_nodes() -> anyhow::Result<()> {
+        let transport = ChannelTransport::default();
         let port_range = 11_001u16..=11_006;
-        let nodes = setup_nodes(port_range.clone()).await;
+        let nodes = setup_nodes(port_range.clone(), &transport).await;
 
         // Check nodes know each other.
         for node in nodes.iter() {
@@ -614,7 +637,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dead_node_garbage_collection() -> anyhow::Result<()> {
-        let mut nodes = setup_nodes(60001..=60006).await;
+        let transport = ChannelTransport::default();
+        let mut nodes = setup_nodes(60001..=60006, &transport).await;
         let node = nodes.get(1).unwrap();
         assert_eq!(node.node_id().public_port(), 60002);
         wait_for_chitchat_state(
@@ -662,7 +686,7 @@ mod tests {
 
         // Wait a bit more than `dead_node_grace_period` since all nodes will not
         // notice cluster change at the same time.
-        let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(20));
+        let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(5));
         time::sleep(wait_for).await;
 
         // Dead node should no longer be known to the cluster.
