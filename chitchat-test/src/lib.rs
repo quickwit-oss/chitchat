@@ -8,3 +8,8 @@ pub struct ApiResponse {
     pub live_nodes: Vec<NodeId>,
     pub dead_nodes: Vec<NodeId>,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SetKeyValueResponse {
+    pub status: bool,
+}

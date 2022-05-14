@@ -6,7 +6,7 @@ use std::process::Child;
 use std::thread;
 use std::time::Duration;
 
-use chitchat_test::ApiResponse;
+use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use helpers::spawn_command;
 
 struct KillOnDrop(Child);
@@ -51,16 +51,38 @@ fn get_node_info(node_api_endpoint: &str) -> anyhow::Result<ApiResponse> {
     Ok(response)
 }
 
+fn set_kv(node_api_endpoint: &str, key: &str, value: &str) -> anyhow::Result<SetKeyValueResponse> {
+    let simple_set_kv = format!("{}?key={}&value={}", node_api_endpoint, key, value);
+    let response = reqwest::blocking::get(simple_set_kv)?.json::<SetKeyValueResponse>()?;
+    Ok(response)
+}
+
 #[test]
 fn test_multiple_nodes() {
     let child_handles = setup_nodes(13_000, 5, 5, false);
     assert_eq!(child_handles.len(), 5);
+  
+    // Assert that we can set a key.
+    let set_kv_response = set_kv("http://localhost:10001/set_kv", "some_key", "some_value")?;
+    assert_eq!(set_kv_response.status, true);
+
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:13001").unwrap();
     assert!(info.cluster_state.node_states.get("node_3").is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
+  
+    // Check that "some_key" we set on this local node (localhost:10001) is
+    // indeed set to be "some_value"
+    let ns = info
+        .cluster_state
+        .node_states
+        .get("node_1")
+        .unwrap();
+    let v = ns.get_versioned("some_key").unwrap();
+    assert_eq!(v.value, "some_value");
+    shutdown_nodes();
 }
 
 #[test]
