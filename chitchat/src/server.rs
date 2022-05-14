@@ -4,73 +4,148 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rand::prelude::*;
-use tokio::net::UdpSocket;
+use tokio::net::{lookup_host, ToSocketAddrs, UdpSocket};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::error;
+use tracing::{debug, error, info, warn};
 
-use crate::failure_detector::FailureDetectorConfig;
 use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
-use crate::{Chitchat, NodeId};
+use crate::{Chitchat, ChitchatConfig, NodeId};
 
 /// Maximum payload size (in bytes) for UDP.
 const UDP_MTU: usize = 65_507;
-
-/// Interval between random gossip.
-const GOSSIP_INTERVAL: Duration = if cfg!(test) {
-    Duration::from_millis(200)
-} else {
-    Duration::from_secs(1)
-};
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
 
 /// UDP Chitchat server.
 pub struct ChitchatServer {
-    channel: UnboundedSender<ChannelMessage>,
+    node_id: NodeId,
+    command_tx: UnboundedSender<Command>,
     chitchat: Arc<Mutex<Chitchat>>,
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
+}
+
+const DNS_POLLING_DURATION: Duration = Duration::from_secs(60);
+
+async fn dns_refresh_loop(
+    seed_hosts_requiring_dns: HashSet<String>,
+    seed_addrs_not_requiring_resolution: HashSet<SocketAddr>,
+    seed_addrs_tx: watch::Sender<HashSet<SocketAddr>>,
+) {
+    let mut interval = time::interval(DNS_POLLING_DURATION);
+    // We actually do not want to run the polling loop right away,
+    // hence this tick.
+    interval.tick().await;
+    while seed_addrs_tx.receiver_count() > 0 {
+        interval.tick().await;
+        let mut seed_addrs = seed_addrs_not_requiring_resolution.clone();
+        for seed_host in &seed_hosts_requiring_dns {
+            resolve_seed_host(seed_host, &mut seed_addrs).await;
+        }
+        if seed_addrs_tx.send(seed_addrs).is_err() {
+            return;
+        }
+    }
+}
+
+async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>) {
+    if let Ok(resolved_seed_addrs) = lookup_host(seed_host).await {
+        for seed_addr in resolved_seed_addrs {
+            if seed_addrs.contains(&seed_addr) {
+                continue;
+            }
+            debug!(seed_host=seed_host, seed_addr=%seed_addr, "seed-addr-from_dns");
+            seed_addrs.insert(seed_addr);
+        }
+    } else {
+        warn!(seed_host=%seed_host, "Failed to lookup host");
+    }
+}
+
+// The seed nodes address can be string representing a
+// socket addr directly, or hostnames:port.
+//
+// The latter is especially important when relying on
+// a headless service in k8s or when using DNS in general.
+//
+// In that case, we do not want to perform the resolution
+// once and forall.
+// We want to periodically retry DNS resolution,
+// in order to avoid having a split cluster.
+//
+// The newcomers are supposed to chime in too,
+// so there is no need to refresh it too often,
+// especially if it is not empty.
+async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<SocketAddr>> {
+    let mut seed_addrs_not_requiring_resolution: HashSet<SocketAddr> = Default::default();
+    let mut first_round_seed_resolution: HashSet<SocketAddr> = Default::default();
+    let mut seed_requiring_dns: HashSet<String> = Default::default();
+    for seed in seeds {
+        if let Ok(seed_addr) = seed.parse() {
+            seed_addrs_not_requiring_resolution.insert(seed_addr);
+        } else {
+            seed_requiring_dns.insert(seed.clone());
+            // We run DNS resolution for the first iteration too.
+            // It will be run in the DNS polling loop too, but running
+            // it for the first iteration makes sure our first gossip
+            // round will not be for nothing.
+            resolve_seed_host(seed, &mut first_round_seed_resolution).await;
+        }
+    }
+
+    let initial_seed_addrs: HashSet<SocketAddr> = seed_addrs_not_requiring_resolution
+        .union(&first_round_seed_resolution)
+        .cloned()
+        .collect();
+
+    info!(initial_seed_addrs=?initial_seed_addrs);
+
+    let (seed_addrs_tx, seed_addrs_rx) = watch::channel(initial_seed_addrs);
+    if !seed_requiring_dns.is_empty() {
+        tokio::task::spawn(dns_refresh_loop(
+            seed_requiring_dns,
+            seed_addrs_not_requiring_resolution,
+            seed_addrs_tx,
+        ));
+    }
+    seed_addrs_rx
 }
 
 impl ChitchatServer {
     /// Launch a new server.
     ///
     /// This will start the Chitchat server as a new Tokio background task.
-    pub fn spawn(
-        node_id: NodeId,
-        seed_nodes: &[String],
-        address: impl Into<String>,
-        cluster_id: String,
-        initial_key_values: Vec<(impl ToString, impl ToString)>,
-        failure_detector_config: FailureDetectorConfig,
-    ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub async fn spawn(config: ChitchatConfig, initial_key_values: Vec<(String, String)>) -> Self {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let chitchat = Chitchat::with_node_id_and_seeds(
-            node_id,
-            seed_nodes.iter().cloned().collect(),
-            address.into(),
-            cluster_id,
-            initial_key_values,
-            failure_detector_config,
-        );
+        let seed_addrs: watch::Receiver<HashSet<SocketAddr>> =
+            spawn_dns_refresh_loop(&config.seed_nodes).await;
+
+        let node_id = config.node_id.clone();
+
+        let chitchat = Chitchat::with_node_id_and_seeds(config, seed_addrs, initial_key_values);
         let chitchat_arc = Arc::new(Mutex::new(chitchat));
         let chitchat_server = chitchat_arc.clone();
 
         let join_handle = tokio::spawn(async move {
-            let mut server = UdpServer::new(rx, chitchat_server).await?;
+            let mut server = UdpServer::new(command_rx, chitchat_server).await?;
             server.run().await
         });
 
         Self {
-            channel: tx,
+            node_id,
+            command_tx,
             chitchat: chitchat_arc,
             join_handle,
         }
+    }
+
+    pub fn node_id(&self) -> &NodeId {
+        &self.node_id
     }
 
     pub fn chitchat(&self) -> Arc<Mutex<Chitchat>> {
@@ -86,46 +161,43 @@ impl ChitchatServer {
 
     /// Shut the server down.
     pub async fn shutdown(self) -> Result<(), anyhow::Error> {
-        let _ = self.channel.send(ChannelMessage::Shutdown);
+        let _ = self.command_tx.send(Command::Shutdown);
         self.join_handle.await?
     }
 
     /// Perform a Chitchat "handshake" with another UDP server.
     pub fn gossip(&self, addr: impl Into<String>) -> Result<(), anyhow::Error> {
-        self.channel.send(ChannelMessage::Gossip(addr.into()))?;
+        self.command_tx.send(Command::Gossip(addr.into()))?;
         Ok(())
     }
 }
 
 /// UDP server for Chitchat communication.
 struct UdpServer {
-    channel: UnboundedReceiver<ChannelMessage>,
+    command_rx: UnboundedReceiver<Command>,
     chitchat: Arc<Mutex<Chitchat>>,
-    socket: Arc<UdpSocket>,
+    socket: UdpSocket,
 }
 
 impl UdpServer {
     async fn new(
-        channel: UnboundedReceiver<ChannelMessage>,
+        command_rx: UnboundedReceiver<Command>,
         chitchat: Arc<Mutex<Chitchat>>,
     ) -> anyhow::Result<Self> {
-        let socket = {
-            let bind_address = &chitchat.lock().await.address;
-            Arc::new(UdpSocket::bind(bind_address).await?)
-        };
-
+        let bind_address = chitchat.lock().await.config.listen_addr;
+        let socket = UdpSocket::bind(bind_address).await?;
         Ok(Self {
             chitchat,
-            channel,
+            command_rx,
             socket,
         })
     }
 
     /// Listen for new Chitchat messages.
     async fn run(&mut self) -> anyhow::Result<()> {
-        let mut gossip_interval = time::interval(GOSSIP_INTERVAL);
-        let mut rng = SmallRng::from_entropy();
-
+        let gossip_interval = self.chitchat.lock().await.config.gossip_interval;
+        let mut gossip_interval = time::interval(gossip_interval);
+        let mut rng = SmallRng::from_rng(thread_rng()).expect("Failed to seed random generator");
         let mut buf = [0; UDP_MTU];
         loop {
             tokio::select! {
@@ -136,11 +208,11 @@ impl UdpServer {
                     Err(err) => return Err(err.into()),
                 },
                 _ = gossip_interval.tick() => self.gossip_multiple(&mut rng).await,
-                message = self.channel.recv() => match message {
-                    Some(ChannelMessage::Gossip(addr)) => {
+                message = self.command_rx.recv() => match message {
+                    Some(Command::Gossip(addr)) => {
                         let _ = self.gossip(addr).await;
                     },
-                    Some(ChannelMessage::Shutdown) | None => break,
+                    Some(Command::Shutdown) | None => break,
                 },
             }
         }
@@ -172,17 +244,17 @@ impl UdpServer {
         let peer_nodes = cluster_state
             .nodes()
             .filter(|node_id| *node_id != chitchat_guard.self_node_id())
-            .map(|node_id| node_id.gossip_public_address.as_str())
+            .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
         let live_nodes = chitchat_guard
             .live_nodes()
-            .map(|node_id| node_id.gossip_public_address.as_str())
+            .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
         let dead_nodes = chitchat_guard
             .dead_nodes()
-            .map(|node_id| node_id.gossip_public_address.as_str())
+            .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
-        let seed_nodes = chitchat_guard.seed_nodes().collect::<HashSet<_>>();
+        let seed_nodes: HashSet<SocketAddr> = chitchat_guard.seed_nodes();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) =
             select_nodes_for_gossip(rng, peer_nodes, live_nodes, dead_nodes, seed_nodes);
 
@@ -216,65 +288,61 @@ impl UdpServer {
     }
 
     /// Gossip to one other UDP server.
-    async fn gossip(&self, addr: impl Into<String>) -> anyhow::Result<()> {
+    async fn gossip(&self, addr: impl ToSocketAddrs) -> anyhow::Result<()> {
         let syn = self.chitchat.lock().await.create_syn_message();
         let mut buf = Vec::new();
         syn.serialize(&mut buf);
-        let _ = self.socket.send_to(&buf, addr.into()).await?;
+        let _ = self.socket.send_to(&buf, addr).await?;
         Ok(())
     }
 }
 
 #[derive(Debug)]
-enum ChannelMessage {
+enum Command {
     Gossip(String),
     Shutdown,
 }
 
 fn select_nodes_for_gossip<R>(
     rng: &mut R,
-    peer_nodes: HashSet<&str>,
-    live_nodes: HashSet<&str>,
-    dead_nodes: HashSet<&str>,
-    seed_nodes: HashSet<&str>,
-) -> (Vec<String>, Option<String>, Option<String>)
+    peer_nodes: HashSet<SocketAddr>,
+    live_nodes: HashSet<SocketAddr>,
+    dead_nodes: HashSet<SocketAddr>,
+    seed_nodes: HashSet<SocketAddr>,
+) -> (Vec<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>)
 where
     R: Rng + ?Sized,
 {
     let live_nodes_count = live_nodes.len();
     let dead_nodes_count = dead_nodes.len();
-    const EMPTY_STRING: String = String::new();
-    let mut rand_nodes = [EMPTY_STRING; GOSSIP_COUNT];
 
     // Select `GOSSIP_COUNT` number of live nodes.
     // On startup, select from cluster nodes since we don't know any live node yet.
-    let count = if live_nodes_count == 0 {
+    let nodes = if live_nodes_count == 0 {
         peer_nodes
-            .iter()
-            .map(ToString::to_string)
-            .choose_multiple_fill(rng, &mut rand_nodes)
     } else {
         live_nodes
-            .iter()
-            .map(ToString::to_string)
-            .choose_multiple_fill(rng, &mut rand_nodes)
-    };
-    let mut nodes = Vec::new();
+    }
+    .iter()
+    .cloned()
+    .choose_multiple(rng, GOSSIP_COUNT);
+
     let mut has_gossiped_with_a_seed_node = false;
-    for node_id in &rand_nodes[..count] {
-        has_gossiped_with_a_seed_node =
-            has_gossiped_with_a_seed_node || seed_nodes.contains(node_id.as_str());
-        nodes.push((*node_id).clone());
+    for node_id in &nodes {
+        if seed_nodes.contains(node_id) {
+            has_gossiped_with_a_seed_node = true;
+            break;
+        }
     }
 
     // Select a dead node for potential gossip.
-    let random_dead_node_opt =
+    let random_dead_node_opt: Option<SocketAddr> =
         select_dead_node_to_gossip_with(rng, &dead_nodes, live_nodes_count, dead_nodes_count);
 
     // Select a seed node for potential gossip.
     // It prevents network partition caused by the number of seeds.
     // See https://issues.apache.org/jira/browse/CASSANDRA-150
-    let random_seed_node_opt =
+    let random_seed_node_opt: Option<SocketAddr> =
         if !has_gossiped_with_a_seed_node || live_nodes_count < seed_nodes.len() {
             select_seed_node_to_gossip_with(rng, &seed_nodes, live_nodes_count, dead_nodes_count)
         } else {
@@ -287,16 +355,16 @@ where
 /// Selects a dead node to gossip with, with some probability.
 fn select_dead_node_to_gossip_with<R>(
     rng: &mut R,
-    dead_nodes: &HashSet<&str>,
+    dead_nodes: &HashSet<SocketAddr>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<String>
+) -> Option<SocketAddr>
 where
     R: Rng + ?Sized,
 {
     let selection_probability = dead_nodes_count as f64 / (live_nodes_count + 1) as f64;
     if selection_probability > rng.gen::<f64>() {
-        return dead_nodes.iter().choose(rng).map(ToString::to_string);
+        return dead_nodes.iter().choose(rng).cloned();
     }
     None
 }
@@ -304,22 +372,17 @@ where
 /// Selects a seed node to gossip with, with some probability.
 fn select_seed_node_to_gossip_with<R>(
     rng: &mut R,
-    seed_nodes: &HashSet<&str>,
+    seed_nodes: &HashSet<SocketAddr>,
     live_nodes_count: usize,
     dead_nodes_count: usize,
-) -> Option<String>
+) -> Option<SocketAddr>
 where
     R: Rng + ?Sized,
 {
-    let random_seed_node = seed_nodes.iter().choose(rng).map(ToString::to_string);
-    if live_nodes_count == 0 {
-        return random_seed_node;
-    }
-
     let selection_probability =
         seed_nodes.len() as f64 / (live_nodes_count + dead_nodes_count) as f64;
-    if selection_probability >= rng.gen::<f64>() {
-        return random_seed_node;
+    if live_nodes_count == 0 || rng.gen::<f64>() <= selection_probability {
+        return seed_nodes.iter().choose(rng).cloned();
     }
     None
 }
@@ -332,7 +395,6 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
-    use crate::failure_detector::FailureDetectorConfig;
     use crate::message::ChitchatMessage;
     use crate::HEARTBEAT_KEY;
 
@@ -361,8 +423,8 @@ mod tests {
         }
     }
 
-    fn to_hash_set<'a>(node_ids: &[&'a str]) -> std::collections::HashSet<&'a str> {
-        node_ids.iter().copied().collect()
+    fn to_hash_set<T: Eq + std::hash::Hash>(node_ids: Vec<T>) -> std::collections::HashSet<T> {
+        node_ids.into_iter().collect()
     }
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
@@ -372,18 +434,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn syn() {
+    async fn test_syn() {
         let test_addr = "0.0.0.0:1111";
         let socket = UdpSocket::bind(test_addr).await.unwrap();
-
-        let server = ChitchatServer::spawn(
-            "0.0.0.0:1112".into(),
-            &[],
-            "0.0.0.0:1112",
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+        let config = ChitchatConfig::for_test(1112);
+        let server = ChitchatServer::spawn(config, Vec::new()).await;
         server.gossip(test_addr).unwrap();
 
         let mut buf = [0; UDP_MTU];
@@ -392,7 +447,7 @@ mod tests {
         let msg = ChitchatMessage::deserialize(&mut &buf[..len]).unwrap();
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
-                assert_eq!(cluster_id, "test-cluster");
+                assert_eq!(cluster_id, "default-cluster");
                 assert_eq!(digest.node_max_version.len(), 1);
             }
             message => panic!("unexpected message: {:?}", message),
@@ -401,32 +456,30 @@ mod tests {
         server.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn syn_ack() {
-        let server_addr = "0.0.0.0:2221";
-        let socket = UdpSocket::bind("0.0.0.0:2222").await.unwrap();
-        let mut chitchat = Chitchat::with_node_id_and_seeds(
-            "offline".into(),
-            HashSet::new(),
-            "offline".to_string(),
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+    #[cfg(test)]
+    fn empty_seeds() -> watch::Receiver<HashSet<SocketAddr>> {
+        watch::channel(Default::default()).1
+    }
 
-        let server = ChitchatServer::spawn(
-            server_addr.into(),
-            &[],
-            server_addr,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
+    #[tokio::test]
+    async fn test_syn_ack() {
+        let node_2 = NodeId::for_test_localhost(2221);
+        let config1 = ChitchatConfig::for_test(2222);
+        let socket = UdpSocket::bind(config1.listen_addr).await.unwrap();
+        let mut chitchat = Chitchat::with_node_id_and_seeds(
+            ChitchatConfig::for_test(2222),
+            empty_seeds(),
+            Vec::new(),
         );
+        let server = ChitchatServer::spawn(ChitchatConfig::for_test(2221), Vec::new()).await;
 
         let mut buf = Vec::new();
         let syn = chitchat.create_syn_message();
         syn.serialize(&mut buf);
-        socket.send_to(&buf[..], server_addr).await.unwrap();
+        socket
+            .send_to(&buf[..], node_2.gossip_public_address)
+            .await
+            .unwrap();
 
         let mut buf = [0; super::UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
@@ -441,27 +494,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn syn_bad_cluster() {
-        let outsider_addr = "0.0.0.0:2224";
-        let socket = UdpSocket::bind(outsider_addr).await.unwrap();
-        let mut outsider = Chitchat::with_node_id_and_seeds(
-            outsider_addr.into(),
-            HashSet::new(),
-            outsider_addr.into(),
-            "another-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+    async fn test_syn_bad_cluster() {
+        let mut outsider_config = ChitchatConfig::for_test(2224);
+        let socket = UdpSocket::bind(outsider_config.listen_addr).await.unwrap();
+        outsider_config.cluster_id = "another-cluster".to_string();
+        let mut outsider =
+            Chitchat::with_node_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
 
-        let server_addr = "0.0.0.0:2223";
-        let server = ChitchatServer::spawn(
-            server_addr.into(),
-            &[],
-            server_addr,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+        let server_config = ChitchatConfig::for_test(2223);
+        let server_addr = server_config.node_id.gossip_public_address;
+        let server = ChitchatServer::spawn(server_config, Vec::new()).await;
 
         let mut buf = Vec::new();
         let syn = outsider.create_syn_message();
@@ -481,31 +523,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignore_broken_payload() {
-        let server_addr = "0.0.0.0:3331";
-        let server = ChitchatServer::spawn(
-            server_addr.into(),
-            &[],
-            server_addr,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-        let socket = UdpSocket::bind("0.0.0.0:3332").await.unwrap();
-        let mut chitchat = Chitchat::with_node_id_and_seeds(
-            "offline".into(),
-            HashSet::new(),
-            "offline".to_string(),
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-
+    async fn test_ignore_broken_payload() {
+        let server_config = ChitchatConfig::for_test(3331);
+        let server_addr = server_config.node_id.gossip_public_address;
+        let server = ChitchatServer::spawn(server_config, Vec::new()).await;
+        let client_config = ChitchatConfig::for_test(3332);
+        let socket = UdpSocket::bind(client_config.listen_addr).await.unwrap();
+        let mut client_chitchat =
+            Chitchat::with_node_id_and_seeds(client_config, empty_seeds(), Vec::new());
         // Send broken payload.
         socket.send_to(b"broken", server_addr).await.unwrap();
 
         // Confirm nothing broke using a regular payload.
-        let syn = chitchat.create_syn_message();
+        let syn = client_chitchat.create_syn_message();
         let message = syn.serialize_to_vec();
         socket.send_to(&message, server_addr).await.unwrap();
 
@@ -522,18 +552,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seeding() {
-        let server_addr = "0.0.0.0:5551";
-        let socket = UdpSocket::bind(server_addr).await.unwrap();
+    async fn test_seeding() {
+        let seed_config = ChitchatConfig::for_test(5551);
+        let seed_addr = seed_config.node_id.gossip_public_address;
+        let socket = UdpSocket::bind(seed_addr).await.unwrap();
 
-        let server = ChitchatServer::spawn(
-            "0.0.0.0:5552".into(),
-            &[server_addr.into()],
-            "0.0.0.0:5552",
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+        let mut client_config = ChitchatConfig::for_test(5552);
+        client_config.seed_nodes = vec![seed_addr.to_string()];
+        let client = ChitchatServer::spawn(client_config, Vec::new()).await;
 
         let mut buf = [0; UDP_MTU];
         let (len, _addr) = timeout(socket.recv_from(&mut buf)).await.unwrap();
@@ -543,32 +569,20 @@ mod tests {
             message => panic!("unexpected message: {:?}", message),
         }
 
-        server.shutdown().await.unwrap();
+        client.shutdown().await.unwrap();
     }
 
     #[tokio::test]
-    async fn heartbeat() {
-        let test_addr = "0.0.0.0:6661";
-        let mut chitchat = Chitchat::with_node_id_and_seeds(
-            test_addr.into(),
-            HashSet::new(),
-            test_addr.to_string(),
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+    async fn test_heartbeat() {
+        let test_config = ChitchatConfig::for_test(6661);
+        let test_addr = test_config.listen_addr;
+        let mut chitchat = Chitchat::with_node_id_and_seeds(test_config, empty_seeds(), Vec::new());
         let socket = UdpSocket::bind(test_addr).await.unwrap();
 
-        let server_addr = "0.0.0.0:6662";
-        let server_node_id = NodeId::from(server_addr);
-        let server = ChitchatServer::spawn(
-            NodeId::from(server_addr),
-            &[],
-            server_addr,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+        let server_config = ChitchatConfig::for_test(6662);
+        let server_id = server_config.node_id.clone();
+        let server_addr = server_config.node_id.gossip_public_address;
+        let server = ChitchatServer::spawn(server_config, Vec::new()).await;
 
         // Add our test socket to the server's nodes.
         server
@@ -600,7 +614,7 @@ mod tests {
             message => panic!("unexpected message: {:?}", message),
         };
 
-        let node_delta = &delta.node_deltas.get(&server_node_id).unwrap().key_values;
+        let node_delta = &delta.node_deltas.get(&server_id).unwrap().key_values;
         let heartbeat = &node_delta.get(HEARTBEAT_KEY).unwrap().value;
         assert_eq!(heartbeat, "2");
 
@@ -609,22 +623,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_member_change_event_is_broadcasted() {
-        let node1 = ChitchatServer::spawn(
-            NodeId::from("0.0.0.0:6663"),
-            &[],
-            "0.0.0.0:6663",
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-        let node2 = ChitchatServer::spawn(
-            NodeId::from("0.0.0.0:6664"),
-            &["0.0.0.0:6663".to_string()],
-            "0.0.0.0:6664",
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
+        let node1_config = ChitchatConfig::for_test(6663);
+        let node1_addr = node1_config.node_id.gossip_public_address;
+        let node1 = ChitchatServer::spawn(node1_config, Vec::new()).await;
+
+        let mut node2_config = ChitchatConfig::for_test(6664);
+        node2_config.seed_nodes = vec![node1_addr.to_string()];
+        let node2_id = node2_config.node_id.clone();
+        let node2 = ChitchatServer::spawn(node2_config, Vec::new()).await;
         let mut live_nodes_watcher = node1
             .chitchat()
             .lock()
@@ -635,7 +641,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), async move {
             let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains(&NodeId::from("0.0.0.0:6664")));
+            assert!(live_nodes.contains(&node2_id));
         })
         .await
         .unwrap();
@@ -646,49 +652,68 @@ mod tests {
 
     #[test]
     fn test_select_nodes_for_gossip() {
-        {
-            let mut rng = RngForTest::default();
-            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-                &mut rng,
-                to_hash_set(&["node-1", "node-2", "node-3"]),
-                to_hash_set(&["node-1", "node-2"]),
-                to_hash_set(&["node-3"]),
-                to_hash_set(&["node-2"]),
-            );
-            assert_eq!(nodes.len(), 2);
-            assert_eq!(dead_node, Some("node-3".to_string()));
-            assert_eq!(
-                seed_node, None,
-                "Should have already gossiped with a seed node."
-            );
-        }
+        let node1 = NodeId::for_test_localhost(10_001);
+        let node2 = NodeId::for_test_localhost(10_002);
+        let node3 = NodeId::for_test_localhost(10_003);
+        let mut rng = RngForTest::default();
+        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            to_hash_set(vec![
+                node1.gossip_public_address,
+                node2.gossip_public_address,
+                node3.gossip_public_address,
+            ]),
+            to_hash_set(vec![
+                node1.gossip_public_address,
+                node2.gossip_public_address,
+            ]),
+            to_hash_set(vec![node3.gossip_public_address]),
+            to_hash_set(vec![node2.gossip_public_address]),
+        );
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(dead_node, Some(node3.gossip_public_address));
+        assert_eq!(
+            seed_node, None,
+            "Should have already gossiped with a seed node."
+        );
+    }
 
-        {
-            let mut rng = RngForTest::default();
-            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-                &mut rng,
-                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-                to_hash_set(&[]),
-                to_hash_set(&[]),
-            );
-            assert_eq!(nodes.len(), 3);
-            assert_eq!(dead_node, None);
-            assert_eq!(seed_node, None);
-        }
+    #[test]
+    fn test_gossip_no_dead_node_no_seed_nodes() {
+        let nodes: HashSet<SocketAddr> = (10_001..=10_005)
+            .map(NodeId::for_test_localhost)
+            .map(|node_id| node_id.gossip_public_address)
+            .collect();
+        let mut rng = RngForTest::default();
+        let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            nodes.clone(),
+            nodes,
+            to_hash_set(vec![]),
+            to_hash_set(vec![]),
+        );
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(dead_node, None);
+        assert_eq!(seed_node, None);
+    }
 
-        {
-            let mut rng = RngForTest::default();
-            let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
-                &mut rng,
-                to_hash_set(&["node-1", "node-2", "node-3", "node-4", "node-5"]),
-                to_hash_set(&["node-1"]),
-                to_hash_set(&["node-2", "node-3", "node-4", "node-5"]),
-                to_hash_set(&["node-4", "node-5"]),
-            );
-            assert_eq!(nodes, ["node-1".to_string()]);
-            assert!(dead_node.is_some());
-            assert!(seed_node.is_some());
-        }
+    #[test]
+    fn test_gossip_dead_and_seed_node() {
+        let nodes: Vec<SocketAddr> = (10_001..=10_005)
+            .map(NodeId::for_test_localhost)
+            .map(|node_id| node_id.gossip_public_address)
+            .collect();
+        let seeds: HashSet<SocketAddr> = nodes[3..5].iter().cloned().collect();
+        let mut rng = RngForTest::default();
+        let (gossip_nodes, gossip_dead_node, gossip_seed_node) = select_nodes_for_gossip(
+            &mut rng,
+            to_hash_set(nodes.clone()),
+            to_hash_set(vec![nodes[0]]),
+            nodes[1..].iter().cloned().collect(),
+            seeds,
+        );
+        assert_eq!(gossip_nodes, &[nodes[0]]);
+        assert!(gossip_dead_node.is_some());
+        assert!(gossip_seed_node.is_some());
     }
 }

@@ -1,5 +1,6 @@
 pub mod server;
 
+mod configuration;
 mod delta;
 mod digest;
 mod failure_detector;
@@ -8,6 +9,7 @@ pub(crate) mod serialize;
 mod state;
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 
 use delta::Delta;
 use failure_detector::FailureDetector;
@@ -17,6 +19,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
+pub use self::configuration::ChitchatConfig;
 use crate::digest::Digest;
 use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
@@ -61,32 +64,33 @@ pub type Version = u64;
 /// Note: using timestamp to make the `id` dynamic has the potential of reusing
 /// a previously used `id` in cases where the clock is reset in the past. We believe this
 /// very rare and things should just work fine.
-#[derive(Default, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct NodeId {
     // The unique identifier of this node in the cluster.
     pub id: String,
     // The SocketAddr other peers should use to communicate.
-    pub gossip_public_address: String,
+    pub gossip_public_address: SocketAddr,
 }
 
 impl NodeId {
-    pub fn new(id: String, gossip_public_address: String) -> Self {
+    pub fn new(id: String, gossip_public_address: SocketAddr) -> Self {
         Self {
             id,
             gossip_public_address,
         }
     }
-}
 
-impl From<&str> for NodeId {
-    fn from(id: &str) -> Self {
-        Self::new(id.to_string(), id.to_string())
+    pub fn for_test_localhost(port: u16) -> Self {
+        NodeId::new(
+            format!("node-{port}"),
+            ([127u8, 0u8, 0u8, 1u8], port).into(),
+        )
     }
-}
 
-impl From<String> for NodeId {
-    fn from(id: String) -> Self {
-        Self::new(id.clone(), id)
+    /// Returns the gossip public port. Useful for test assert only.
+    #[cfg(test)]
+    pub fn public_port(&self) -> u16 {
+        self.gossip_public_address.port()
     }
 }
 
@@ -98,10 +102,7 @@ pub struct VersionedValue {
 }
 
 pub struct Chitchat {
-    mtu: usize,
-    address: String,
-    self_node_id: NodeId,
-    cluster_id: String,
+    config: ChitchatConfig,
     cluster_state: ClusterState,
     heartbeat: u64,
     /// The failure detector instance.
@@ -114,22 +115,17 @@ pub struct Chitchat {
 
 impl Chitchat {
     pub fn with_node_id_and_seeds(
-        self_node_id: NodeId,
-        seed_ids: HashSet<String>,
-        address: String,
-        cluster_id: String,
-        initial_key_values: Vec<(impl ToString, impl ToString)>,
-        failure_detector_config: FailureDetectorConfig,
+        config: ChitchatConfig,
+        seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
+        initial_key_values: Vec<(String, String)>,
     ) -> Self {
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
+        let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let mut chitchat = Chitchat {
-            mtu: 60_000,
-            address,
-            self_node_id,
-            cluster_id,
-            cluster_state: ClusterState::with_seed_ids(seed_ids),
+            config,
+            cluster_state: ClusterState::with_seed_addrs(seed_addrs),
             heartbeat: 0,
-            failure_detector: FailureDetector::new(failure_detector_config),
+            failure_detector,
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
         };
@@ -147,14 +143,10 @@ impl Chitchat {
         chitchat
     }
 
-    pub fn set_mtu(&mut self, mtu: usize) {
-        self.mtu = mtu;
-    }
-
     pub fn create_syn_message(&mut self) -> ChitchatMessage {
         let digest = self.compute_digest();
         ChitchatMessage::Syn {
-            cluster_id: self.cluster_id.clone(),
+            cluster_id: self.config.cluster_id.clone(),
             digest,
         }
     }
@@ -162,7 +154,7 @@ impl Chitchat {
     pub fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
-                if cluster_id != self.cluster_id {
+                if cluster_id != self.config.cluster_id {
                     warn!(
                         cluster_id = %cluster_id,
                         "rejecting syn message with mismatching cluster name"
@@ -174,7 +166,7 @@ impl Chitchat {
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
                     &digest,
-                    self.mtu - 1 - self_digest.serialized_len(),
+                    self.config.mtu - 1 - self_digest.serialized_len(),
                     dead_nodes,
                 );
                 self.report_to_failure_detector(&delta);
@@ -187,9 +179,9 @@ impl Chitchat {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
-                let delta = self
-                    .cluster_state
-                    .compute_delta(&digest, self.mtu - 1, dead_nodes);
+                let delta =
+                    self.cluster_state
+                        .compute_delta(&digest, self.config.mtu - 1, dead_nodes);
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
@@ -226,7 +218,7 @@ impl Chitchat {
         let cluster_nodes = self
             .cluster_state
             .nodes()
-            .filter(|node_id| *node_id != &self.self_node_id)
+            .filter(|node_id| *node_id != self.self_node_id())
             .collect::<Vec<_>>();
         for node_id in &cluster_nodes {
             self.failure_detector.update_node_liveliness(node_id);
@@ -234,16 +226,16 @@ impl Chitchat {
 
         let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
         if live_nodes_before != live_nodes_after {
-            debug!(current_node = ?self.self_node_id, live_nodes = ?live_nodes_after, "nodes status changed");
+            debug!(current_node = ?self.self_node_id(), live_nodes = ?live_nodes_after, "nodes status changed");
             if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
-                error!(current_node = ?self.self_node_id, "error while reporting membership change event.")
+                error!(current_node = ?self.self_node_id(), "error while reporting membership change event.")
             }
         }
 
         // Perform garbage collection.
         let garbage_collected_nodes = self.failure_detector.garbage_collect();
         for node_id in garbage_collected_nodes.iter() {
-            self.cluster_state.remove_node(node_id)
+            self.cluster_state.remove_node(node_id);
         }
     }
 
@@ -252,7 +244,7 @@ impl Chitchat {
     }
 
     pub fn self_node_state(&mut self) -> &mut NodeState {
-        self.cluster_state.node_state_mut(&self.self_node_id)
+        self.cluster_state.node_state_mut(&self.config.node_id)
     }
 
     /// Retrieves the list of all live nodes.
@@ -266,16 +258,16 @@ impl Chitchat {
     }
 
     /// Retrieve a list of seed nodes.
-    pub fn seed_nodes(&self) -> impl Iterator<Item = &str> {
-        self.cluster_state.seed_nodes()
+    pub fn seed_nodes(&self) -> HashSet<SocketAddr> {
+        self.cluster_state.seed_addrs()
     }
 
     pub fn self_node_id(&self) -> &NodeId {
-        &self.self_node_id
+        &self.config.node_id
     }
 
     pub fn cluster_id(&self) -> &str {
-        &self.cluster_id
+        &self.config.cluster_id
     }
 
     /// Computes digest.
@@ -292,8 +284,8 @@ impl Chitchat {
         self.cluster_state.compute_digest(dead_nodes)
     }
 
-    pub fn cluster_state(&self) -> ClusterState {
-        self.cluster_state.clone()
+    pub fn cluster_state(&self) -> &ClusterState {
+        &self.cluster_state
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.
@@ -317,7 +309,7 @@ mod tests {
     use super::*;
     use crate::server::ChitchatServer;
 
-    const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(25);
+    const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
     fn run_chitchat_handshake(initiating_node: &mut Chitchat, peer_node: &mut Chitchat) {
         let syn_message = initiating_node.create_syn_message();
@@ -348,34 +340,35 @@ mod tests {
         }
     }
 
-    fn start_node(port: u32, seeds: &[String]) -> ChitchatServer {
-        let address = format!("localhost:{}", port);
-        ChitchatServer::spawn(
-            NodeId::from(address.as_str()),
-            seeds,
-            address,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig {
+    async fn start_node(node_id: NodeId, seeds: &[String]) -> ChitchatServer {
+        let config = ChitchatConfig {
+            node_id: node_id.clone(),
+            cluster_id: "default-cluster".to_string(),
+            gossip_interval: Duration::from_millis(50),
+            listen_addr: node_id.gossip_public_address,
+            seed_nodes: seeds.to_vec(),
+            mtu: 60_000,
+            failure_detector_config: FailureDetectorConfig {
                 dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
+                phi_threshold: 5.0,
                 ..Default::default()
             },
-        )
+        };
+        let initial_kvs: Vec<(String, String)> = Vec::new();
+        ChitchatServer::spawn(config, initial_kvs).await
     }
 
-    async fn setup_nodes(port_range: RangeInclusive<u32>) -> Vec<(String, ChitchatServer)> {
-        let mut tasks = Vec::new();
-        let mut ports = port_range.clone();
-        let seed_port = ports.next().unwrap();
-        tasks.push((seed_port.to_string(), start_node(seed_port, &[])));
-        for port in ports {
-            let seeds = port_range
-                .clone()
-                .filter(|peer_port| peer_port != &port)
-                .map(|peer_port| format!("localhost:{}", peer_port))
+    async fn setup_nodes(port_range: RangeInclusive<u16>) -> Vec<ChitchatServer> {
+        let node_ids: Vec<NodeId> = port_range.map(NodeId::for_test_localhost).collect();
+        let node_without_seed = start_node(node_ids[0].clone(), &[]).await;
+        let mut chitchat_servers: Vec<ChitchatServer> = vec![node_without_seed];
+        for node_id in &node_ids[1..] {
+            let seeds = node_ids
+                .iter()
+                .filter(|&peer_id| peer_id != node_id)
+                .map(|peer_id| peer_id.gossip_public_address.to_string())
                 .collect::<Vec<_>>();
-
-            tasks.push((port.to_string(), start_node(port, &seeds)));
+            chitchat_servers.push(start_node(node_id.clone(), &seeds).await);
         }
         // Make sure the failure detector's fake clock moves forward.
         tokio::spawn(async {
@@ -384,11 +377,11 @@ mod tests {
                 MockClock::advance(Duration::from_millis(50));
             }
         });
-        tasks
+        chitchat_servers
     }
 
-    async fn shutdown_nodes(nodes: Vec<(String, ChitchatServer)>) -> anyhow::Result<()> {
-        for (_, node) in nodes {
+    async fn shutdown_nodes(nodes: Vec<ChitchatServer>) -> anyhow::Result<()> {
+        for node in nodes {
             node.shutdown().await?;
         }
         Ok(())
@@ -417,25 +410,26 @@ mod tests {
 
     #[test]
     fn test_chitchat_handshake() {
+        let node_config1 = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
         let mut node1 = Chitchat::with_node_id_and_seeds(
-            NodeId::from("node1"),
-            HashSet::new(),
-            "node1".to_string(),
-            "test-cluster".to_string(),
-            vec![("key1a", "1"), ("key2a", "2")],
-            FailureDetectorConfig::default(),
+            node_config1,
+            empty_seeds.clone(),
+            vec![
+                ("key1a".to_string(), "1".to_string()),
+                ("key2a".to_string(), "2".to_string()),
+            ],
         );
+        let node_config2 = ChitchatConfig::for_test(10_002);
         let mut node2 = Chitchat::with_node_id_and_seeds(
-            NodeId::from("node2"),
-            HashSet::new(),
-            "node2".to_string(),
-            "test-cluster".to_string(),
-            vec![("key1b", "1"), ("key2b", "2")],
-            FailureDetectorConfig::default(),
+            node_config2,
+            empty_seeds,
+            vec![
+                ("key1b".to_string(), "1".to_string()),
+                ("key2b".to_string(), "2".to_string()),
+            ],
         );
         run_chitchat_handshake(&mut node1, &mut node2);
-        dbg!(&node1.cluster_state());
-        dbg!(&node2.cluster_state());
         assert_nodes_sync(&[&node1, &node2]);
         // useless handshake
         run_chitchat_handshake(&mut node1, &mut node2);
@@ -453,16 +447,16 @@ mod tests {
     async fn test_multiple_nodes() -> anyhow::Result<()> {
         let nodes = setup_nodes(20001..=20005).await;
 
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "20002");
+        let node = nodes.get(1).unwrap();
+        assert_eq!(node.node_id().public_port(), 20002);
         wait_for_chitchat_state(
             node.chitchat(),
             4,
             &[
-                NodeId::from("localhost:20001"),
-                NodeId::from("localhost:20003"),
-                NodeId::from("localhost:20004"),
-                NodeId::from("localhost:20005"),
+                NodeId::for_test_localhost(20001),
+                NodeId::for_test_localhost(20003),
+                NodeId::for_test_localhost(20004),
+                NodeId::for_test_localhost(20005),
             ],
         )
         .await;
@@ -474,59 +468,63 @@ mod tests {
     #[tokio::test]
     async fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
         let mut nodes = setup_nodes(30001..=30006).await;
-
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "30002");
+        let node = &nodes[1];
+        assert_eq!(node.node_id().gossip_public_address.port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
             5,
             &[
-                NodeId::from("localhost:30001"),
-                NodeId::from("localhost:30003"),
-                NodeId::from("localhost:30004"),
-                NodeId::from("localhost:30005"),
-                NodeId::from("localhost:30006"),
+                NodeId::for_test_localhost(30001),
+                NodeId::for_test_localhost(30003),
+                NodeId::for_test_localhost(30004),
+                NodeId::for_test_localhost(30005),
+                NodeId::for_test_localhost(30006),
             ],
         )
         .await;
 
         // Take down node at localhost:30003
-        let (id, node) = nodes.remove(2);
-        assert_eq!(id, "30003");
+        let node = nodes.remove(2);
+        assert_eq!(node.node_id().public_port(), 30003);
         node.shutdown().await.unwrap();
 
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "30002");
+        let node = nodes.get(1).unwrap();
+        assert_eq!(node.node_id().public_port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
             4,
             &[
-                NodeId::from("localhost:30001"),
-                NodeId::from("localhost:30004"),
-                NodeId::from("localhost:30005"),
-                NodeId::from("localhost:30006"),
+                NodeId::for_test_localhost(30001),
+                NodeId::for_test_localhost(30004),
+                NodeId::for_test_localhost(30005),
+                NodeId::for_test_localhost(30006),
             ],
         )
         .await;
 
         // Restart node at localhost:10003
-        let port = 30003;
-        nodes.push((
-            port.to_string(),
-            start_node(port, &["localhost:30001".to_string()]),
-        ));
+        let node_3 = NodeId::for_test_localhost(30003);
+        nodes.push(
+            start_node(
+                node_3,
+                &[NodeId::for_test_localhost(30_001)
+                    .gossip_public_address
+                    .to_string()],
+            )
+            .await,
+        );
 
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "30002");
+        let node = nodes.get(1).unwrap();
+        assert_eq!(node.node_id().public_port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
             5,
             &[
-                NodeId::from("localhost:30001"),
-                NodeId::from("localhost:30003"),
-                NodeId::from("localhost:30004"),
-                NodeId::from("localhost:30005"),
-                NodeId::from("localhost:30006"),
+                NodeId::for_test_localhost(30001),
+                NodeId::for_test_localhost(30003),
+                NodeId::for_test_localhost(30004),
+                NodeId::for_test_localhost(30005),
+                NodeId::for_test_localhost(30006),
             ],
         )
         .await;
@@ -538,79 +536,76 @@ mod tests {
     #[tokio::test]
     async fn test_dead_node_should_not_be_gossiped_when_node_joins() -> anyhow::Result<()> {
         let mut nodes = setup_nodes(40001..=40004).await;
-
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "40002");
-        wait_for_chitchat_state(
-            node.chitchat(),
-            3,
-            &[
-                NodeId::from("localhost:40001"),
-                NodeId::from("localhost:40003"),
-                NodeId::from("localhost:40004"),
-            ],
-        )
-        .await;
+        {
+            let node2 = nodes.get(1).unwrap();
+            assert_eq!(node2.node_id().public_port(), 40002);
+            wait_for_chitchat_state(
+                node2.chitchat(),
+                3,
+                &[
+                    NodeId::for_test_localhost(40001),
+                    NodeId::for_test_localhost(40003),
+                    NodeId::for_test_localhost(40004),
+                ],
+            )
+            .await;
+        }
 
         // Take down node at localhost:40003
-        let (id, node) = nodes.remove(2);
-        assert_eq!(id, "40003");
-        node.shutdown().await.unwrap();
+        let node3 = nodes.remove(2);
+        assert_eq!(node3.node_id().public_port(), 40003);
+        node3.shutdown().await.unwrap();
 
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "40002");
-        wait_for_chitchat_state(
-            node.chitchat(),
-            2,
-            &[
-                NodeId::from("localhost:40001"),
-                NodeId::from("localhost:40004"),
-            ],
-        )
-        .await;
+        {
+            let node2 = nodes.get(1).unwrap();
+            assert_eq!(node2.node_id().public_port(), 40002);
+            wait_for_chitchat_state(
+                node2.chitchat(),
+                2,
+                &[
+                    NodeId::for_test_localhost(40_001),
+                    NodeId::for_test_localhost(40_004),
+                ],
+            )
+            .await;
+        }
 
         // Restart node at localhost:40003 with new name
-        let port = 40003;
-        let address = format!("localhost:{}", port);
-        let new_node_chitchat = ChitchatServer::spawn(
-            NodeId::new("new_node".to_string(), address.clone()),
-            &["localhost:40001".to_string()],
-            address,
-            "test-cluster".to_string(),
-            Vec::<(&str, &str)>::new(),
-            FailureDetectorConfig::default(),
-        );
-        nodes.push((port.to_string(), new_node_chitchat));
+        let mut new_config = ChitchatConfig::for_test(40_003);
+        new_config.node_id.id = "new_node".to_string();
+        let seed = NodeId::for_test_localhost(40_002).gossip_public_address;
+        new_config.seed_nodes = vec![seed.to_string()];
+        let new_node_chitchat = ChitchatServer::spawn(new_config, Vec::new()).await;
 
-        let (id, node) = nodes.get(3).unwrap();
-        assert_eq!(id, "40003");
         wait_for_chitchat_state(
-            node.chitchat(),
+            new_node_chitchat.chitchat(),
             3,
             &[
-                NodeId::from("localhost:40001"),
-                NodeId::from("localhost:40002"),
-                NodeId::from("localhost:40004"),
+                NodeId::for_test_localhost(40_001),
+                NodeId::for_test_localhost(40_002),
+                NodeId::for_test_localhost(40_004),
             ],
         )
         .await;
 
+        nodes.push(new_node_chitchat);
         shutdown_nodes(nodes).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_network_partition_nodes() -> anyhow::Result<()> {
-        let nodes = setup_nodes(11001..=11006).await;
+        let port_range = 11_001u16..=11_006;
+        let nodes = setup_nodes(port_range.clone()).await;
 
         // Check nodes know each other.
-        for (id, node) in nodes.iter() {
-            let peers = (11001u32..=11006)
-                .filter(|peer_port| peer_port.to_string() != *id)
-                .map(|peer_port| NodeId::from(format!("localhost:{}", peer_port)))
+        for node in nodes.iter() {
+            let expected_peers: Vec<NodeId> = port_range
+                .clone()
+                .filter(|peer_port| *peer_port != node.node_id().public_port())
+                .map(NodeId::for_test_localhost)
                 .collect::<Vec<_>>();
-
-            wait_for_chitchat_state(node.chitchat(), 5, &peers.to_vec()).await;
+            wait_for_chitchat_state(node.chitchat(), 5, &expected_peers).await;
         }
 
         shutdown_nodes(nodes).await?;
@@ -620,44 +615,43 @@ mod tests {
     #[tokio::test]
     async fn test_dead_node_garbage_collection() -> anyhow::Result<()> {
         let mut nodes = setup_nodes(60001..=60006).await;
-
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "60002");
+        let node = nodes.get(1).unwrap();
+        assert_eq!(node.node_id().public_port(), 60002);
         wait_for_chitchat_state(
             node.chitchat(),
             5,
             &[
-                NodeId::from("localhost:60001"),
-                NodeId::from("localhost:60003"),
-                NodeId::from("localhost:60004"),
-                NodeId::from("localhost:60005"),
-                NodeId::from("localhost:60006"),
+                NodeId::for_test_localhost(60_001),
+                NodeId::for_test_localhost(60_003),
+                NodeId::for_test_localhost(60_004),
+                NodeId::for_test_localhost(60_005),
+                NodeId::for_test_localhost(60_006),
             ],
         )
         .await;
 
         // Take down node at localhost:60003
-        let (id, node) = nodes.remove(2);
-        assert_eq!(id, "60003");
+        let node = nodes.remove(2);
+        assert_eq!(node.node_id().public_port(), 60003);
         node.shutdown().await.unwrap();
 
-        let (id, node) = nodes.get(1).unwrap();
-        assert_eq!(id, "60002");
+        let node = nodes.get(1).unwrap();
+        assert_eq!(node.node_id().public_port(), 60002);
         wait_for_chitchat_state(
             node.chitchat(),
             4,
             &[
-                NodeId::from("localhost:60001"),
-                NodeId::from("localhost:60004"),
-                NodeId::from("localhost:60005"),
-                NodeId::from("localhost:60006"),
+                NodeId::for_test_localhost(60_001),
+                NodeId::for_test_localhost(60_004),
+                NodeId::for_test_localhost(60_005),
+                NodeId::for_test_localhost(60_006),
             ],
         )
         .await;
 
         // Dead node should still be known to the cluster.
-        let dead_node_id = NodeId::from("localhost:60003");
-        for (_, node) in nodes.iter() {
+        let dead_node_id = NodeId::for_test_localhost(60003);
+        for node in &nodes {
             assert!(node
                 .chitchat()
                 .lock()
@@ -668,11 +662,11 @@ mod tests {
 
         // Wait a bit more than `dead_node_grace_period` since all nodes will not
         // notice cluster change at the same time.
-        let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(15));
+        let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(20));
         time::sleep(wait_for).await;
 
         // Dead node should no longer be known to the cluster.
-        for (_, node) in nodes.iter() {
+        for node in &nodes {
             assert!(node
                 .chitchat()
                 .lock()

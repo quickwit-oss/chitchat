@@ -117,18 +117,18 @@ impl Serializable for ChitchatMessage {
 #[cfg(test)]
 mod tests {
     use crate::serialize::test_serdeser_aux;
-    use crate::{ChitchatMessage, Digest};
+    use crate::{ChitchatMessage, Digest, NodeId};
 
     #[test]
     fn test_syn() {
         let mut digest = Digest::default();
-        digest.add_node("node1".into(), 1);
-        digest.add_node("node2".into(), 2);
+        digest.add_node(NodeId::for_test_localhost(10_001), 1);
+        digest.add_node(NodeId::for_test_localhost(10_002), 2);
         let syn = ChitchatMessage::Syn {
             cluster_id: "cluster-a".to_string(),
             digest,
         };
-        test_serdeser_aux(&syn, 58);
+        test_serdeser_aux(&syn, 68);
     }
 
     #[test]
