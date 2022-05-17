@@ -180,7 +180,6 @@ impl SamplingWindow {
     pub fn phi(&self) -> f64 {
         // Ensure we don't call before any sample arrival.
         assert!(self.intervals.mean() > 0.0 && self.last_heartbeat.is_some());
-
         let elapsed_time = self.last_heartbeat.unwrap().elapsed().as_secs_f64();
         elapsed_time / self.intervals.mean()
     }

@@ -40,4 +40,4 @@ jobs:
         name: cargo test
         with:
           command: test
-          args: -- --test-threads 1
+          args: --release -- --test-threads 1
