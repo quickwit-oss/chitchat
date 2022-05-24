@@ -107,7 +107,7 @@ impl ClusterState {
         }
     }
 
-    pub fn node_state_mut(&mut self, node_id: &NodeId) -> &mut NodeState {
+    pub(crate) fn node_state_mut(&mut self, node_id: &NodeId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         self.node_states.entry(node_id.clone()).or_default()
     }
