@@ -25,8 +25,7 @@ use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
-use crate::state::NodeState;
-pub use crate::state::{ClusterState, SerializableClusterState};
+use crate::state::{ClusterState, NodeState, SerializableClusterState};
 
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
@@ -288,8 +287,13 @@ impl Chitchat {
         self.cluster_state.compute_digest(dead_nodes)
     }
 
-    pub fn cluster_state(&self) -> &ClusterState {
+    pub(crate) fn cluster_state(&self) -> &ClusterState {
         &self.cluster_state
+    }
+
+    pub fn cluster_state_json(&self) -> serde_json::Value {
+        let ser_cluster_state = SerializableClusterState::from(&self.cluster_state);
+        serde_json::to_value(&ser_cluster_state).expect("Failed to serialize cluster state")
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.

@@ -2,12 +2,15 @@
 
 mod helpers;
 
+use std::collections::HashMap;
 use std::process::Child;
 use std::thread;
 use std::time::Duration;
 
+use chitchat::VersionedValue;
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use helpers::spawn_command;
+use serde::Deserialize;
 
 struct KillOnDrop(Child);
 
@@ -57,6 +60,16 @@ fn set_kv(node_api_endpoint: &str, key: &str, value: &str) -> anyhow::Result<Set
     Ok(response)
 }
 
+#[derive(Deserialize)]
+struct NodeState {
+    key_values: HashMap<String, VersionedValue>,
+}
+
+#[derive(Deserialize)]
+struct ClusterState {
+    node_states: HashMap<String, NodeState>,
+}
+
 #[test]
 fn test_multiple_nodes() {
     let child_handles = setup_nodes(13_000, 5, 5, false);
@@ -69,15 +82,16 @@ fn test_multiple_nodes() {
 
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:13001").unwrap();
-    assert!(info.cluster_state.node_states.get("node_3").is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 
+    let cluster_state: ClusterState = serde_json::from_value(info.cluster_state).unwrap();
+    assert!(cluster_state.node_states.get("node_3").is_some());
     // Check that "some_key" we set on this local node (localhost:10001) is
     // indeed set to be "some_value"
-    let ns = info.cluster_state.node_states.get("node_1").unwrap();
-    let v = ns.get_versioned("some_key").unwrap();
+    let ns = cluster_state.node_states.get("node_1").unwrap();
+    let v = ns.key_values.get("some_key").unwrap();
     assert_eq!(v.value, "some_value");
 }
 
@@ -86,7 +100,8 @@ fn test_multiple_nodes_with_dns_resolution_for_seed() {
     let _child_handles = setup_nodes(12_000, 5, 5, true);
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:12001").unwrap();
-    assert!(info.cluster_state.node_states.get("node_3").is_some());
+    let cluster_state: ClusterState = serde_json::from_value(info.cluster_state).unwrap();
+    assert!(cluster_state.node_states.get("node_3").is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
