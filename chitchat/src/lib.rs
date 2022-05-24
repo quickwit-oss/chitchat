@@ -23,13 +23,24 @@ use tracing::{debug, error, warn};
 pub use self::configuration::ChitchatConfig;
 pub use self::state::ClusterStateSnapshot;
 use crate::digest::Digest;
+use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
-use crate::serialize::Serializable;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::{ClusterState, NodeState};
 
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
+
+/// Maximum payload size (in bytes) for UDP.
+///
+/// Note 60KB typically won't fit in a UDP frame,
+/// so long message will be sent over several frame.
+///
+/// We pick a large MTU because at the moment
+/// we send the self digest "in full".
+/// A frame of 1400B would limit us to 20 nodes
+/// or so.
+const MTU: usize = 60_000;
 
 pub type Version = u64;
 
@@ -165,24 +176,24 @@ impl Chitchat {
                 }
                 let self_digest = self.compute_digest();
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
-                let delta = self.cluster_state.compute_delta(
-                    &digest,
-                    self.config.mtu - 1 - self_digest.serialized_len(),
-                    dead_nodes,
-                );
+                let empty_delta = Delta::default();
+                let delta_mtu = MTU - syn_ack_serialized_len(&self_digest, &empty_delta);
+                let delta = self
+                    .cluster_state
+                    .compute_delta(&digest, delta_mtu, dead_nodes);
                 self.report_to_failure_detector(&delta);
                 Some(ChitchatMessage::SynAck {
-                    delta,
                     digest: self_digest,
+                    delta,
                 })
             }
             ChitchatMessage::SynAck { digest, delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
-                let delta =
-                    self.cluster_state
-                        .compute_delta(&digest, self.config.mtu - 1, dead_nodes);
+                let delta = self
+                    .cluster_state
+                    .compute_delta(&digest, MTU - 1, dead_nodes);
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
@@ -361,7 +372,6 @@ mod tests {
             gossip_interval: Duration::from_millis(100),
             listen_addr: node_id.gossip_public_address,
             seed_nodes: seeds.to_vec(),
-            mtu: 60_000,
             failure_detector_config: FailureDetectorConfig {
                 dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
                 phi_threshold: 5.0,

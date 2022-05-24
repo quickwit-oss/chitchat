@@ -21,7 +21,6 @@ async fn spawn_one(node_id: u16, transport: &dyn Transport) -> ChitchatHandle {
         gossip_interval,
         listen_addr,
         seed_nodes: vec!["127.0.0.1:10000".to_string()],
-        mtu: 60_000,
         failure_detector_config: FailureDetectorConfig {
             initial_interval: gossip_interval,
             ..Default::default()

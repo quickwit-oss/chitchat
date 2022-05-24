@@ -1,15 +1,12 @@
 use std::net::SocketAddr;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use async_trait::async_trait;
 use tracing::warn;
 
 use crate::serialize::Serializable;
 use crate::transport::{Socket, Transport};
-use crate::ChitchatMessage;
-
-/// Maximum payload size (in bytes) for UDP.
-const UDP_MTU: usize = 1_400;
+use crate::{ChitchatMessage, MTU};
 
 pub struct UdpTransport;
 
@@ -20,8 +17,8 @@ impl Transport for UdpTransport {
             .await
             .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
         Ok(Box::new(UdpSocket {
-            buf_send: Vec::with_capacity(UDP_MTU),
-            buf_recv: Box::new([0u8; UDP_MTU]),
+            buf_send: Vec::with_capacity(MTU),
+            buf_recv: Box::new([0u8; MTU]),
             socket,
         }))
     }
@@ -29,7 +26,7 @@ impl Transport for UdpTransport {
 
 struct UdpSocket {
     buf_send: Vec<u8>,
-    buf_recv: Box<[u8; UDP_MTU]>,
+    buf_recv: Box<[u8; MTU]>,
     socket: tokio::net::UdpSocket,
 }
 
@@ -38,10 +35,6 @@ impl Socket for UdpSocket {
     async fn send(&mut self, to_addr: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
         self.buf_send.clear();
         message.serialize(&mut self.buf_send);
-        let buf_send_len = self.buf_send.len();
-        if buf_send_len > UDP_MTU {
-            bail!("Message larger ({buf_send_len} bytes) than mtu ({UDP_MTU} bytes)");
-        }
         self.send_bytes(to_addr, &self.buf_send).await?;
         Ok(())
     }

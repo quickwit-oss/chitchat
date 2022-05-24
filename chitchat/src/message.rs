@@ -105,13 +105,15 @@ impl Serializable for ChitchatMessage {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 1 + cluster_id.serialized_len() + digest.serialized_len()
             }
-            ChitchatMessage::SynAck { digest, delta } => {
-                1 + digest.serialized_len() + delta.serialized_len()
-            }
+            ChitchatMessage::SynAck { digest, delta } => syn_ack_serialized_len(digest, delta),
             ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
             ChitchatMessage::BadCluster => 1,
         }
     }
+}
+
+pub(crate) fn syn_ack_serialized_len(digest: &Digest, delta: &Delta) -> usize {
+    1 + digest.serialized_len() + delta.serialized_len()
 }
 
 #[cfg(test)]
