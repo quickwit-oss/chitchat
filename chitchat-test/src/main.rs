@@ -3,10 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chitchat::transport::UdpTransport;
-use chitchat::{
-    spawn_chitchat, Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId,
-    SerializableClusterState,
-};
+use chitchat::{spawn_chitchat, Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId};
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use cool_id_generator::Size;
 use poem::listener::TcpListener;
@@ -29,7 +26,7 @@ impl Api {
         let chitchat_guard = self.chitchat.lock().await;
         let response = ApiResponse {
             cluster_id: chitchat_guard.cluster_id().to_string(),
-            cluster_state: SerializableClusterState::from(chitchat_guard.cluster_state()),
+            cluster_state: chitchat_guard.state_snapshot(),
             live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
             dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };

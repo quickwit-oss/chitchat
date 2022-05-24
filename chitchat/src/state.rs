@@ -83,7 +83,7 @@ impl NodeState {
 }
 
 #[derive(Debug)]
-pub struct ClusterState {
+pub(crate) struct ClusterState {
     pub(crate) node_states: BTreeMap<NodeId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
 }
@@ -128,7 +128,7 @@ impl ClusterState {
         self.node_states.remove(node_id);
     }
 
-    pub fn apply_delta(&mut self, delta: Delta) {
+    pub(crate) fn apply_delta(&mut self, delta: Delta) {
         for (node_id, node_delta) in delta.node_deltas {
             let mut node_state_map = self
                 .node_states
@@ -212,14 +212,14 @@ impl ClusterState {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct SerializableClusterState {
+pub struct ClusterStateSnapshot {
     pub seed_addrs: HashSet<SocketAddr>,
     pub node_states: BTreeMap<String, NodeState>,
 }
 
-impl<'a> From<&'a ClusterState> for SerializableClusterState {
+impl<'a> From<&'a ClusterState> for ClusterStateSnapshot {
     fn from(state: &'a ClusterState) -> Self {
-        SerializableClusterState {
+        ClusterStateSnapshot {
             seed_addrs: state.seed_addrs(),
             node_states: state
                 .node_states
