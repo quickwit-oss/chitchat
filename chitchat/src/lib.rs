@@ -21,12 +21,12 @@ use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
 pub use self::configuration::ChitchatConfig;
+pub use self::state::ClusterStateSnapshot;
 use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
 use crate::serialize::Serializable;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
-use crate::state::NodeState;
-pub use crate::state::{ClusterState, SerializableClusterState};
+use crate::state::{ClusterState, NodeState};
 
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
@@ -288,8 +288,13 @@ impl Chitchat {
         self.cluster_state.compute_digest(dead_nodes)
     }
 
-    pub fn cluster_state(&self) -> &ClusterState {
+    pub(crate) fn cluster_state(&self) -> &ClusterState {
         &self.cluster_state
+    }
+
+    /// Returns a serializable snapshot of the ClusterState
+    pub fn state_snapshot(&self) -> ClusterStateSnapshot {
+        ClusterStateSnapshot::from(&self.cluster_state)
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.
