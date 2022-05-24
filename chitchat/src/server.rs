@@ -237,7 +237,6 @@ impl Server {
     ) -> anyhow::Result<()> {
         // Handle gossip from other servers.
         let response = self.chitchat.lock().await.process_message(message);
-
         // Send reply if necessary.
         if let Some(message) = response {
             self.transport.send(from_addr, message).await?;

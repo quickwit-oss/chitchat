@@ -10,7 +10,6 @@ pub struct ChitchatConfig {
     pub gossip_interval: Duration,
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
-    pub mtu: usize,
     pub failure_detector_config: FailureDetectorConfig,
 }
 
@@ -25,7 +24,6 @@ impl ChitchatConfig {
             gossip_interval: Duration::from_millis(50),
             listen_addr,
             seed_nodes: Vec::new(),
-            mtu: 60_000,
             failure_detector_config: Default::default(),
         }
     }
@@ -41,7 +39,6 @@ impl Default for ChitchatConfig {
             gossip_interval: Duration::from_millis(1_000),
             listen_addr,
             seed_nodes: Vec::new(),
-            mtu: 60_000,
             failure_detector_config: Default::default(),
         }
     }
