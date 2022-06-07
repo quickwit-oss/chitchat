@@ -170,7 +170,7 @@ impl Chitchat {
                 if cluster_id != self.config.cluster_id {
                     warn!(
                         cluster_id = %cluster_id,
-                        "rejecting syn message with mismatching cluster name"
+                        "Rejecting syn message with mismatching cluster name."
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
@@ -190,6 +190,7 @@ impl Chitchat {
             ChitchatMessage::SynAck { digest, delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
+                println!("Node state: {:?}", self.cluster_state());
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self
                     .cluster_state
@@ -199,6 +200,7 @@ impl Chitchat {
             ChitchatMessage::Ack { delta } => {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
+                println!("Node state: {:?}", self.cluster_state());
                 None
             }
             ChitchatMessage::BadCluster => {

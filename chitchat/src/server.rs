@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::Permissions;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,12 +54,14 @@ async fn dns_refresh_loop(
 }
 
 async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>) {
+    println!("DNS lookup: {}", seed_host);
     if let Ok(resolved_seed_addrs) = lookup_host(seed_host).await {
         for seed_addr in resolved_seed_addrs {
             if seed_addrs.contains(&seed_addr) {
                 continue;
             }
-            debug!(seed_host=seed_host, seed_addr=%seed_addr, "seed-addr-from_dns");
+            info!(seed_host=seed_host, seed_addr=%seed_addr, "seed-addr-from_dns");
+            println!("Seed addr from DNS: host={}, addr={}", seed_host, seed_addr);
             seed_addrs.insert(seed_addr);
         }
     } else {
@@ -103,6 +106,7 @@ async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<Soc
         .collect();
 
     info!(initial_seed_addrs=?initial_seed_addrs);
+    println!("Initial seed addresses: {:?}", initial_seed_addrs);
 
     let (seed_addrs_tx, seed_addrs_rx) = watch::channel(initial_seed_addrs);
     if !seed_requiring_dns.is_empty() {
@@ -235,6 +239,7 @@ impl Server {
         from_addr: SocketAddr,
         message: ChitchatMessage,
     ) -> anyhow::Result<()> {
+        println!("Received {:?} message from {:?}.", message, from_addr);
         // Handle gossip from other servers.
         let response = self.chitchat.lock().await.process_message(message);
         // Send reply if necessary.
@@ -255,15 +260,19 @@ impl Server {
             .filter(|node_id| *node_id != chitchat_guard.self_node_id())
             .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
+        println!("Peer nodes: {:?}", peer_nodes);
         let live_nodes = chitchat_guard
             .live_nodes()
             .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
+        println!("Live nodes: {:?}", live_nodes);
         let dead_nodes = chitchat_guard
             .dead_nodes()
             .map(|node_id| node_id.gossip_public_address)
             .collect::<HashSet<_>>();
+        println!("Dead nodes: {:?}", dead_nodes);
         let seed_nodes: HashSet<SocketAddr> = chitchat_guard.seed_nodes();
+        println!("Seed nodes: {:?}", seed_nodes);
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) = select_nodes_for_gossip(
             &mut self.rng,
             peer_nodes,
@@ -277,23 +286,32 @@ impl Server {
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(chitchat_guard);
 
+        println!("Live nodes randomly selected nodes: {:?}", selected_nodes);
         for node in selected_nodes {
-            let result = self.gossip(node).await;
-            if result.is_err() {
-                error!(node = ?node, "Gossip error with a live node.");
+            if let Err(error) = self.gossip(node).await {
+                println!("Error: {:?}, node: {:?}", error, node);
+                error!(error = ?error, node = ?node, "Gossip error with a live node.");
             }
         }
 
         if let Some(random_dead_node) = random_dead_node_opt {
-            let result = self.gossip(random_dead_node).await;
-            if result.is_err() {
-                error!(node = ?random_dead_node, "Gossip error with a dead node.")
+            println!(
+                "Dead node randomly selected for gossip: {:?}",
+                random_dead_node
+            );
+            if let Err(error) = self.gossip(random_dead_node).await {
+                println!("Error: {:?}, node: {:?}", error, random_dead_node);
+                error!(error = ?error, node = ?random_dead_node, "Gossip error with a dead node.")
             }
         }
 
         if let Some(random_seed_node) = random_seed_node_opt {
-            let result = self.gossip(random_seed_node).await;
-            if result.is_err() {
+            println!(
+                "Seed node randomly selected for gossip: {:?}",
+                random_seed_node
+            );
+            if let Err(error) = self.gossip(random_seed_node).await {
+                println!("Error: {:?}, node: {:?}", error, random_seed_node);
                 error!(node = ?random_seed_node, "Gossip error with a seed node.")
             }
         }
@@ -305,6 +323,7 @@ impl Server {
 
     /// Gossip to one other UDP server.
     async fn gossip(&mut self, addr: SocketAddr) -> anyhow::Result<()> {
+        println!("Send SYN to {:?}", addr);
         let syn = self.chitchat.lock().await.create_syn_message();
         self.transport.send(addr, syn).await?;
         Ok(())
