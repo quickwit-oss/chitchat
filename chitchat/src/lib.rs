@@ -24,12 +24,12 @@ use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
 pub use self::configuration::ChitchatConfig;
-pub use self::state::ClusterStateSnapshot;
+pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
 use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
-use crate::state::{ClusterState, NodeState};
+use crate::state::ClusterState;
 
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
