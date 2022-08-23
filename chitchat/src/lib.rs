@@ -227,7 +227,7 @@ impl Chitchat {
         }
     }
 
-    /// Checks and marks nodes as dead or live.
+    /// Checks and marks nodes as dead / live / ready.
     pub fn update_nodes_liveliness(&mut self) {
         let cluster_nodes = self
             .cluster_state
@@ -444,13 +444,13 @@ mod tests {
         expected_node_count: usize,
         expected_nodes: &[NodeId],
     ) {
-        let mut live_nodes_watcher = chitchat
+        let mut ready_nodes_watcher = chitchat
             .lock()
             .await
             .ready_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
         tokio::time::timeout(Duration::from_secs(50), async move {
-            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            let live_nodes = ready_nodes_watcher.next().await.unwrap();
             assert_eq!(
                 live_nodes,
                 expected_nodes.iter().cloned().collect::<HashSet<_>>()

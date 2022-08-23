@@ -406,7 +406,7 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
 
-    use tokio_stream::StreamExt;
+    use tokio_stream::{Stream, StreamExt};
 
     use super::*;
     use crate::message::ChitchatMessage;
@@ -626,16 +626,23 @@ mod tests {
             .ready_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.is_empty());
 
-        tokio::time::timeout(Duration::from_secs(3), async move {
-            let live_nodes = ready_nodes_watcher.next().await.unwrap();
-            assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains(&node2_id));
-        })
-        .await
-        .unwrap();
+        {
+            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
+            assert_eq!(ready_nodes.len(), 1);
+            assert!(ready_nodes.contains(&node2_id));
+        }
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();
+    }
+
+    async fn next_ready_nodes<S: Unpin + Stream<Item = HashSet<NodeId>>>(
+        watcher: &mut S,
+    ) -> HashSet<NodeId> {
+        tokio::time::timeout(Duration::from_secs(3), watcher.next())
+            .await
+            .expect("No Change within 3s")
+            .expect("Channel was closed")
     }
 
     #[tokio::test]
@@ -675,11 +682,7 @@ mod tests {
             .ready_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.is_empty());
         {
-            let ready_nodes =
-                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
             assert_eq!(ready_nodes.len(), 1);
             assert!(ready_nodes.contains(&node2_id));
         }
@@ -693,11 +696,7 @@ mod tests {
             .set(HEALTH_KEY, "NOT_READY");
 
         {
-            let ready_nodes =
-                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
             assert!(ready_nodes.is_empty());
         }
 
@@ -709,13 +708,9 @@ mod tests {
             .self_node_state()
             .set(HEALTH_KEY, "READY");
         {
-            let live_nodes =
-                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains(&node2_id));
+            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
+            assert_eq!(ready_nodes.len(), 1);
+            assert!(ready_nodes.contains(&node2_id));
         }
 
         node1.shutdown().await.unwrap();
