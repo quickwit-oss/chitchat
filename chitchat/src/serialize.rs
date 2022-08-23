@@ -71,7 +71,7 @@ impl Serializable for IpAddr {
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let ip_version_byte = buf
-            .get(0)
+            .first()
             .cloned()
             .context("Failed to deserialize IpAddr: empty buffer.")?;
         let ip_version = IpVersion::try_from(ip_version_byte)?;

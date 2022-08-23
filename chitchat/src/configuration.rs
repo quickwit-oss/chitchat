@@ -1,6 +1,9 @@
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use crate::state::NodeState;
 use crate::{FailureDetectorConfig, NodeId};
 
 /// A struct for configuring a Chitact instance.
@@ -11,6 +14,11 @@ pub struct ChitchatConfig {
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
     pub failure_detector_config: FailureDetectorConfig,
+    // `is_ready_predicate` makes it possible for a node to advertise itself as not "ready".
+    // For instance, if it is `starting` or if it lost connection to a third-party service.
+    //
+    // If `None`, a node is ready as long as it is alive.
+    pub is_ready_predicate: Option<Box<dyn Fn(&NodeState) -> bool + Send>>,
 }
 
 impl ChitchatConfig {
@@ -25,7 +33,12 @@ impl ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
+            is_ready_predicate: None,
         }
+    }
+
+    pub fn set_is_ready_predicate(&mut self, pred: impl Fn(&NodeState) -> bool + Send + 'static) {
+        self.is_ready_predicate = Some(Box::new(pred));
     }
 }
 
@@ -40,6 +53,7 @@ impl Default for ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
+            is_ready_predicate: None,
         }
     }
 }
