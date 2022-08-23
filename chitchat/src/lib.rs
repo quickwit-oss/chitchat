@@ -273,15 +273,15 @@ impl Chitchat {
     /// defined in the Chitchat configuration.
     pub fn ready_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.live_nodes().filter(|&node_id| {
-            if let Some(is_ready_pred) = self.config.is_ready_predicate.as_ref() {
-                if let Some(node_state) = self.node_state(node_id) {
-                    (*is_ready_pred)(node_state)
-                } else {
-                    false
-                }
+            let is_ready_pred = if let Some(pred) = self.config.is_ready_predicate.as_ref() {
+                pred
             } else {
-                true
-            }
+                // No predicate means that we consider all nodes as ready.
+                return true;
+            };
+            self.node_state(node_id)
+                .map(is_ready_pred)
+                .unwrap_or(false)
         })
     }
 
