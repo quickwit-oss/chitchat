@@ -279,9 +279,7 @@ impl Chitchat {
                 // No predicate means that we consider all nodes as ready.
                 return true;
             };
-            self.node_state(node_id)
-                .map(is_ready_pred)
-                .unwrap_or(false)
+            self.node_state(node_id).map(is_ready_pred).unwrap_or(false)
         })
     }
 
