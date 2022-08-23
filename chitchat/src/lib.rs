@@ -269,7 +269,7 @@ impl Chitchat {
     }
 
     /// Retrieves the list of nodes that are ready.
-    /// To be ready, a node has to be live and pass the `is_ready_filter` as
+    /// To be ready, a node has to be alive and pass the `is_ready_predicate` as
     /// defined in the Chitchat configuration.
     pub fn ready_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.live_nodes().filter(|&node_id| {

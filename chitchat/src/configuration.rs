@@ -14,8 +14,8 @@ pub struct ChitchatConfig {
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
     pub failure_detector_config: FailureDetectorConfig,
-    // `is_ready_predicate` makes it possible for node to advertise themselves as not "ready",
-    // for instance if they are `starting` or if they lost connection to a third-part service.
+    // `is_ready_predicate` makes it possible for a node to advertise itself as not "ready".
+    // For instance, if it is `starting` or if it lost connection to a third-party service.
     //
     // If `None`, a node is ready as long as it is alive.
     pub is_ready_predicate: Option<Box<dyn Fn(&NodeState) -> bool + Send>>,
