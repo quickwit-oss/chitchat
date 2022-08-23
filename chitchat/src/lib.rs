@@ -1,3 +1,6 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 mod server;
 
 mod configuration;
@@ -121,9 +124,9 @@ pub struct Chitchat {
     /// The failure detector instance.
     failure_detector: FailureDetector,
     /// A notification channel (sender) for sending live nodes change feed.
-    live_nodes_watcher_tx: watch::Sender<HashSet<NodeId>>,
-    /// A notification channel (receiver) for receiving live nodes change feed.
-    live_nodes_watcher_rx: watch::Receiver<HashSet<NodeId>>,
+    ready_nodes_watcher_tx: watch::Sender<HashSet<NodeId>>,
+    /// A notification channel (receiver) for receiving `ready` nodes change feed.
+    ready_nodes_watcher_rx: watch::Receiver<HashSet<NodeId>>,
 }
 
 impl Chitchat {
@@ -132,15 +135,15 @@ impl Chitchat {
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
         initial_key_values: Vec<(String, String)>,
     ) -> Self {
-        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
+        let (ready_nodes_watcher_tx, ready_nodes_watcher_rx) = watch::channel(HashSet::new());
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let mut chitchat = Chitchat {
             config,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
             heartbeat: 0,
             failure_detector,
-            live_nodes_watcher_tx,
-            live_nodes_watcher_rx,
+            ready_nodes_watcher_tx,
+            ready_nodes_watcher_rx,
         };
 
         let self_node_state = chitchat.self_node_state();
@@ -226,20 +229,21 @@ impl Chitchat {
 
     /// Checks and marks nodes as dead or live.
     pub fn update_nodes_liveliness(&mut self) {
-        let live_nodes_before = self.live_nodes().cloned().collect::<HashSet<_>>();
         let cluster_nodes = self
             .cluster_state
             .nodes()
-            .filter(|node_id| *node_id != self.self_node_id())
+            .filter(|&node_id| node_id != self.self_node_id())
             .collect::<Vec<_>>();
-        for node_id in &cluster_nodes {
+        for &node_id in &cluster_nodes {
             self.failure_detector.update_node_liveliness(node_id);
         }
 
-        let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
-        if live_nodes_before != live_nodes_after {
-            debug!(current_node = ?self.self_node_id(), live_nodes = ?live_nodes_after, "nodes status changed");
-            if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
+        let ready_nodes_before = self.ready_nodes_watcher_rx.borrow().clone();
+        let ready_nodes_after = self.ready_nodes().cloned().collect::<HashSet<_>>();
+
+        if ready_nodes_before != ready_nodes_after {
+            debug!(current_node = ?self.self_node_id(), live_nodes = ?ready_nodes_after, "nodes status changed");
+            if self.ready_nodes_watcher_tx.send(ready_nodes_after).is_err() {
                 error!(current_node = ?self.self_node_id(), "error while reporting membership change event.")
             }
         }
@@ -262,6 +266,23 @@ impl Chitchat {
     /// Retrieves the list of all live nodes.
     pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.failure_detector.live_nodes()
+    }
+
+    /// Retrieves the list of nodes that are ready.
+    /// To be ready, a node has to be live and pass the `is_ready_filter` as
+    /// defined in the Chitchat configuration.
+    pub fn ready_nodes(&self) -> impl Iterator<Item = &NodeId> {
+        self.live_nodes().filter(|&node_id| {
+            if let Some(is_ready_pred) = self.config.is_ready_predicate.as_ref() {
+                if let Some(node_state) = self.node_state(node_id) {
+                    (*is_ready_pred)(node_state)
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        })
     }
 
     /// Retrieve the list of all dead nodes.
@@ -309,8 +330,8 @@ impl Chitchat {
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.
-    pub fn live_nodes_watcher(&self) -> WatchStream<HashSet<NodeId>> {
-        WatchStream::new(self.live_nodes_watcher_rx.clone())
+    pub fn ready_nodes_watcher(&self) -> WatchStream<HashSet<NodeId>> {
+        WatchStream::new(self.ready_nodes_watcher_rx.clone())
     }
 }
 
@@ -378,6 +399,7 @@ mod tests {
                 initial_interval: Duration::from_millis(100),
                 ..Default::default()
             },
+            is_ready_predicate: None,
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
         spawn_chitchat(config, initial_kvs, transport)
@@ -425,7 +447,7 @@ mod tests {
         let mut live_nodes_watcher = chitchat
             .lock()
             .await
-            .live_nodes_watcher()
+            .ready_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
         tokio::time::timeout(Duration::from_secs(50), async move {
             let live_nodes = live_nodes_watcher.next().await.unwrap();

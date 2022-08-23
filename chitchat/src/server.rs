@@ -410,6 +410,7 @@ mod tests {
 
     use super::*;
     use crate::message::ChitchatMessage;
+    use crate::state::NodeState;
     use crate::transport::{ChannelTransport, Transport};
     use crate::HEARTBEAT_KEY;
 
@@ -618,20 +619,104 @@ mod tests {
         let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
             .await
             .unwrap();
-        let mut live_nodes_watcher = node1
+        let mut ready_nodes_watcher = node1
             .chitchat()
             .lock()
             .await
-            .live_nodes_watcher()
+            .ready_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.is_empty());
 
         tokio::time::timeout(Duration::from_secs(3), async move {
-            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            let live_nodes = ready_nodes_watcher.next().await.unwrap();
             assert_eq!(live_nodes.len(), 1);
             assert!(live_nodes.contains(&node2_id));
         })
         .await
         .unwrap();
+
+        node1.shutdown().await.unwrap();
+        node2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_is_ready_predicate() {
+        const HEALTH_KEY: &str = "HEALTH";
+        let is_ready_pred = |node_state: &NodeState| {
+            node_state
+                .get(HEALTH_KEY)
+                .map(|health_val| health_val == "READY")
+                .unwrap_or(false)
+        };
+        let transport = ChannelTransport::default();
+        let mut node1_config = ChitchatConfig::for_test(6663);
+        node1_config.set_is_ready_predicate(is_ready_pred);
+
+        let node1_addr = node1_config.node_id.gossip_public_address;
+        let node1 = spawn_chitchat(node1_config, vec![], &transport)
+            .await
+            .unwrap();
+
+        let mut node2_config = ChitchatConfig::for_test(6664);
+        node2_config.set_is_ready_predicate(is_ready_pred);
+
+        node2_config.seed_nodes = vec![node1_addr.to_string()];
+        let node2_id = node2_config.node_id.clone();
+        let node2 = spawn_chitchat(
+            node2_config,
+            vec![(HEALTH_KEY.to_string(), "READY".to_string())],
+            &transport,
+        )
+        .await
+        .unwrap();
+        let mut ready_nodes_watcher = node1
+            .chitchat()
+            .lock()
+            .await
+            .ready_nodes_watcher()
+            .skip_while(|live_nodes| live_nodes.is_empty());
+        {
+            let ready_nodes =
+                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(ready_nodes.len(), 1);
+            assert!(ready_nodes.contains(&node2_id));
+        }
+
+        // node2 advertises itself as not ready.
+        node2
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set(HEALTH_KEY, "NOT_READY");
+
+        {
+            let ready_nodes =
+                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(ready_nodes.is_empty());
+        }
+
+        // node2 goes back up.
+        node2
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set(HEALTH_KEY, "READY");
+        {
+            let live_nodes =
+                tokio::time::timeout(Duration::from_secs(3), ready_nodes_watcher.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(live_nodes.len(), 1);
+            assert!(live_nodes.contains(&node2_id));
+        }
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();

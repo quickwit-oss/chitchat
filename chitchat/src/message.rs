@@ -76,7 +76,7 @@ impl Serializable for ChitchatMessage {
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
-            .get(0)
+            .first()
             .cloned()
             .and_then(MessageType::from_code)
             .context("Invalid message type")?;

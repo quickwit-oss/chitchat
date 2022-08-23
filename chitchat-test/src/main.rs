@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         listen_addr: opt.listen_addr,
         seed_nodes: opt.seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
+        is_ready_predicate: None,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();
