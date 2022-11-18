@@ -8,7 +8,7 @@ use crate::{NodeId, Version};
 ///
 /// It is equivalent to a map
 /// peer -> max version.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Digest {
     pub(crate) node_max_version: BTreeMap<NodeId, Version>,
 }

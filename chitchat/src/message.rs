@@ -12,7 +12,7 @@ use crate::serialize::Serializable;
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ChitchatMessage {
     /// Node A initiates handshakes.
     Syn { cluster_id: String, digest: Digest },
