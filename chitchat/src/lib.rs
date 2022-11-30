@@ -8,7 +8,8 @@ mod delta;
 mod digest;
 mod failure_detector;
 mod message;
-pub(crate) mod serialize;
+// TODO: Remove or put in separate PR...
+pub mod serialize;
 mod state;
 pub mod transport;
 
