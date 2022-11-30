@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 
 use crate::message::ChitchatMessage;
-use crate::transport::{Socket, Transport};
+use crate::transport::{Socket, Transport, TransportError};
 use crate::{Chitchat, ChitchatConfig, NodeId};
 
 /// Number of nodes picked for random gossip.
@@ -26,7 +27,7 @@ pub struct ChitchatHandle {
     node_id: NodeId,
     command_tx: UnboundedSender<Command>,
     chitchat: Arc<Mutex<Chitchat>>,
-    join_handle: JoinHandle<Result<(), anyhow::Error>>,
+    join_handle: JoinHandle<Result<(), TransportError>>,
 }
 
 const DNS_POLLING_DURATION: Duration = Duration::from_secs(60);
@@ -168,9 +169,9 @@ impl ChitchatHandle {
     }
 
     /// Shut the server down.
-    pub async fn shutdown(self) -> Result<(), anyhow::Error> {
+    pub async fn shutdown(self) -> Result<(), TransportError> {
         let _ = self.command_tx.send(Command::Shutdown);
-        self.join_handle.await?
+        self.join_handle.await.expect("Join task.")
     }
 
     /// Perform a Chitchat "handshake" with another UDP server.
@@ -204,7 +205,7 @@ impl Server {
     }
 
     /// Listen for new Chitchat messages.
-    async fn run(&mut self) -> anyhow::Result<()> {
+    async fn run(&mut self) -> Result<(), TransportError> {
         let gossip_interval = self.chitchat.lock().await.config.gossip_interval;
         let mut gossip_interval = time::interval(gossip_interval);
         loop {
@@ -278,23 +279,24 @@ impl Server {
         drop(chitchat_guard);
 
         for node in selected_nodes {
-            let result = self.gossip(node).await;
-            if result.is_err() {
-                error!(node = ?node, "Gossip error with a live node.");
+            if let Err(e) = self.gossip(node).await {
+                error!(node = ?node, error = ?e, "Gossip error with a live node.");
             }
         }
 
         if let Some(random_dead_node) = random_dead_node_opt {
-            let result = self.gossip(random_dead_node).await;
-            if result.is_err() {
-                error!(node = ?random_dead_node, "Gossip error with a dead node.")
+            match self.gossip(random_dead_node).await {
+                Ok(()) => {}
+                Err(TransportError::IoError(e)) if check_connection_error(e.kind()) => {}
+                Err(e) => {
+                    error!(node = ?random_dead_node, error = ?e, "Gossip error with a dead node.");
+                }
             }
         }
 
         if let Some(random_seed_node) = random_seed_node_opt {
-            let result = self.gossip(random_seed_node).await;
-            if result.is_err() {
-                error!(node = ?random_seed_node, "Gossip error with a seed node.")
+            if let Err(e) = self.gossip(random_seed_node).await {
+                error!(node = ?random_seed_node, error = ?e, "Gossip error with a seed node.")
             }
         }
 
@@ -304,11 +306,14 @@ impl Server {
     }
 
     /// Gossip to one other UDP server.
-    async fn gossip(&mut self, addr: SocketAddr) -> anyhow::Result<()> {
+    async fn gossip(&mut self, addr: SocketAddr) -> Result<(), TransportError> {
         let syn = self.chitchat.lock().await.create_syn_message();
-        self.transport.send(addr, syn).await?;
-        Ok(())
+        self.transport.send(addr, syn).await
     }
+}
+
+fn check_connection_error(kind: ErrorKind) -> bool {
+    [ErrorKind::NotConnected, ErrorKind::ConnectionRefused].contains(&kind)
 }
 
 #[derive(Debug)]

@@ -1,21 +1,18 @@
 use std::net::SocketAddr;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use tracing::warn;
 
 use crate::serialize::Serializable;
-use crate::transport::{Socket, Transport};
+use crate::transport::{Socket, Transport, TransportError};
 use crate::{ChitchatMessage, MTU};
 
 pub struct UdpTransport;
 
 #[async_trait]
 impl Transport for UdpTransport {
-    async fn open(&self, bind_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
-        let socket = tokio::net::UdpSocket::bind(bind_addr)
-            .await
-            .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
+    async fn open(&self, bind_addr: SocketAddr) -> Result<Box<dyn Socket>, TransportError> {
+        let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
         Ok(Box::new(UdpSocket {
             buf_send: Vec::with_capacity(MTU),
             buf_recv: Box::new([0u8; MTU]),
@@ -32,7 +29,11 @@ struct UdpSocket {
 
 #[async_trait]
 impl Socket for UdpSocket {
-    async fn send(&mut self, to_addr: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
+    async fn send(
+        &mut self,
+        to_addr: SocketAddr,
+        message: ChitchatMessage,
+    ) -> Result<(), TransportError> {
         self.buf_send.clear();
         message.serialize(&mut self.buf_send);
         self.send_bytes(to_addr, &self.buf_send).await?;
@@ -40,7 +41,7 @@ impl Socket for UdpSocket {
     }
 
     /// Recv needs to be cancellable.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)> {
+    async fn recv(&mut self) -> Result<(SocketAddr, ChitchatMessage), TransportError> {
         loop {
             if let Some(message) = self.receive_one().await? {
                 return Ok(message);
@@ -50,12 +51,10 @@ impl Socket for UdpSocket {
 }
 
 impl UdpSocket {
-    async fn receive_one(&mut self) -> anyhow::Result<Option<(SocketAddr, ChitchatMessage)>> {
-        let (len, from_addr) = self
-            .socket
-            .recv_from(&mut self.buf_recv[..])
-            .await
-            .context("Error while receiving UDP message")?;
+    async fn receive_one(
+        &mut self,
+    ) -> Result<Option<(SocketAddr, ChitchatMessage)>, TransportError> {
+        let (len, from_addr) = self.socket.recv_from(&mut self.buf_recv[..]).await?;
         let mut buf = &self.buf_recv[..len];
         match ChitchatMessage::deserialize(&mut buf) {
             Ok(msg) => Ok(Some((from_addr, msg))),
@@ -70,11 +69,8 @@ impl UdpSocket {
         &self,
         to_addr: SocketAddr,
         payload: &[u8],
-    ) -> anyhow::Result<()> {
-        self.socket
-            .send_to(payload, to_addr)
-            .await
-            .context("Failed to send chitchat message to target")?;
+    ) -> Result<(), TransportError> {
+        self.socket.send_to(payload, to_addr).await?;
         Ok(())
     }
 }

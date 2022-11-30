@@ -1,14 +1,15 @@
 use std::collections::HashMap;
+use std::io;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context};
 use async_trait::async_trait;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info};
 
 use crate::serialize::Serializable;
-use crate::transport::{Socket, Transport};
+use crate::transport::{Socket, Transport, TransportError};
 use crate::ChitchatMessage;
 
 const MAX_MESSAGE_PER_CHANNEL: usize = 100;
@@ -39,11 +40,14 @@ pub struct ChannelTransport {
 
 #[async_trait]
 impl Transport for ChannelTransport {
-    async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
+    async fn open(&self, listen_addr: SocketAddr) -> Result<Box<dyn Socket>, TransportError> {
         let mut inner_lock = self.inner.lock().unwrap();
         let (message_tx, message_rx) = tokio::sync::mpsc::channel(MAX_MESSAGE_PER_CHANNEL);
         if inner_lock.send_channels.contains_key(&listen_addr) {
-            bail!("Address not available `{listen_addr}`");
+            return Err(TransportError::IoError(io::Error::new(
+                ErrorKind::AddrInUse,
+                format!("Address already in use available `{listen_addr}`",),
+            )));
         }
         inner_lock.send_channels.insert(listen_addr, message_tx);
         Ok(Box::new(InProcessSocket {
@@ -70,7 +74,7 @@ impl ChannelTransport {
         from_addr: SocketAddr,
         to_addr: SocketAddr,
         message: ChitchatMessage,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TransportError> {
         let num_bytes = message.serialized_len();
         debug!(num_bytes = num_bytes, "send");
         let mut inner_lock = self.inner.lock().unwrap();
@@ -91,14 +95,22 @@ struct InProcessSocket {
 
 #[async_trait]
 impl Socket for InProcessSocket {
-    async fn send(&mut self, to_addr: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
+    async fn send(
+        &mut self,
+        to_addr: SocketAddr,
+        message: ChitchatMessage,
+    ) -> Result<(), TransportError> {
         self.broker.send(self.listen_addr, to_addr, message).await?;
         Ok(())
     }
 
     /// Recv needs to be cancellable.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)> {
-        let (from_addr, message) = self.message_rx.recv().await.context("Channel closed")?;
+    async fn recv(&mut self) -> Result<(SocketAddr, ChitchatMessage), TransportError> {
+        let (from_addr, message) = self
+            .message_rx
+            .recv()
+            .await
+            .ok_or_else(|| io::Error::new(ErrorKind::NotConnected, "Client disconnected"))?;
         Ok((from_addr, message))
     }
 }

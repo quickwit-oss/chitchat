@@ -1,3 +1,4 @@
+use std::io;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
@@ -12,19 +13,28 @@ pub use channel::{ChannelTransport, Statistics};
 pub use udp::UdpTransport;
 pub use utils::TransportExt;
 
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    #[error("Io Error: {0}")]
+    IoError(#[from] io::Error),
+
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
+
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>>;
+    async fn open(&self, listen_addr: SocketAddr) -> Result<Box<dyn Socket>, TransportError>;
 }
 
 #[async_trait]
 pub trait Socket: Send + Sync + 'static {
     // Only returns an error if the transport is broken and may not emit message
     // in the future.
-    async fn send(&mut self, to: SocketAddr, msg: ChitchatMessage) -> anyhow::Result<()>;
+    async fn send(&mut self, to: SocketAddr, msg: ChitchatMessage) -> Result<(), TransportError>;
     // Only returns an error if the transport is broken and may not receive message
     // in the future.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)>;
+    async fn recv(&mut self) -> Result<(SocketAddr, ChitchatMessage), TransportError>;
 }
 
 #[cfg(test)]
