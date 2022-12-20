@@ -75,7 +75,7 @@ pub type Version = u64;
 /// `{node_unique_id}/{node_generation}/`.
 /// - node_unique_id: a static unique name for the node.
 /// - node_generation: a monotonically increasing value (timestamp on every run)
-/// More details at https://github.com/quickwit-oss/chitchat/issues/1#issuecomment-1059029051
+/// More details at <https://github.com/quickwit-oss/chitchat/issues/1#issuecomment-1059029051>
 ///
 /// Note: using timestamp to make the `id` dynamic has the potential of reusing
 /// a previously used `id` in cases where the clock is reset in the past. We believe this
@@ -159,7 +159,7 @@ impl Chitchat {
         chitchat
     }
 
-    pub fn create_syn_message(&mut self) -> ChitchatMessage {
+    pub(crate) fn create_syn_message(&mut self) -> ChitchatMessage {
         let digest = self.compute_digest();
         ChitchatMessage::Syn {
             cluster_id: self.config.cluster_id.clone(),
@@ -167,7 +167,7 @@ impl Chitchat {
         }
     }
 
-    pub fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
+    pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 if cluster_id != self.config.cluster_id {
@@ -228,7 +228,7 @@ impl Chitchat {
     }
 
     /// Checks and marks nodes as dead / live / ready.
-    pub fn update_nodes_liveliness(&mut self) {
+    pub(crate) fn update_nodes_liveliness(&mut self) {
         let cluster_nodes = self
             .cluster_state
             .nodes()
