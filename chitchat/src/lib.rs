@@ -34,16 +34,16 @@ use crate::state::ClusterState;
 /// Map key for the heartbeat node value.
 pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 
-/// Maximum payload size (in bytes) for UDP.
+/// Maximum UDP datagram payload size (in bytes).
 ///
-/// Note 60KB typically won't fit in a UDP frame,
-/// so long message will be sent over several frame.
+/// Note that 65KB typically won't fit in a single IP packet,
+/// so long messages will be sent over several IP fragments of MTU size.
 ///
-/// We pick a large MTU because at the moment
+/// We pick a large payload size because at the moment because
 /// we send the self digest "in full".
-/// A frame of 1400B would limit us to 20 nodes
+/// An Ethernet frame size of 1400B would limit us to 20 nodes
 /// or so.
-const MTU: usize = 60_000;
+const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 
 pub type Version = u64;
 
@@ -159,8 +159,9 @@ impl Chitchat {
         chitchat
     }
 
-    pub(crate) fn create_syn_message(&mut self) -> ChitchatMessage {
-        let digest = self.compute_digest();
+    pub(crate) fn create_syn_message(&self) -> ChitchatMessage {
+        let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+        let digest = self.compute_digest(&dead_nodes);
         ChitchatMessage::Syn {
             cluster_id: self.config.cluster_id.clone(),
             digest,
@@ -177,10 +178,12 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-                let self_digest = self.compute_digest();
-                let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
+                // Ensure for every reply from this node, at least the heartbeat is changed.
+                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+                let self_digest = self.compute_digest(&dead_nodes);
                 let empty_delta = Delta::default();
-                let delta_mtu = MTU - syn_ack_serialized_len(&self_digest, &empty_delta);
+                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE
+                    - syn_ack_serialized_len(&self_digest, &empty_delta);
                 let delta = self
                     .cluster_state
                     .compute_delta(&digest, delta_mtu, dead_nodes);
@@ -194,9 +197,11 @@ impl Chitchat {
                 self.report_to_failure_detector(&delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
-                let delta = self
-                    .cluster_state
-                    .compute_delta(&digest, MTU - 1, dead_nodes);
+                let delta = self.cluster_state.compute_delta(
+                    &digest,
+                    MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
+                    dead_nodes,
+                );
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
@@ -312,9 +317,7 @@ impl Chitchat {
     /// This method also increments the heartbeat, to force the presence
     /// of at least one update, and have the node liveliness propagated
     /// through the cluster.
-    fn compute_digest(&mut self) -> Digest {
-        // Ensure for every reply from this node, at least the heartbeat is changed.
-        let dead_nodes: HashSet<_> = self.dead_nodes().collect();
+    fn compute_digest(&self, dead_nodes: &HashSet<&NodeId>) -> Digest {
         self.cluster_state.compute_digest(dead_nodes)
     }
 

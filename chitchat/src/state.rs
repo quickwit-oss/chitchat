@@ -158,7 +158,7 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self, dead_nodes: HashSet<&NodeId>) -> Digest {
+    pub fn compute_digest(&self, dead_nodes: &HashSet<&NodeId>) -> Digest {
         Digest {
             node_max_version: self
                 .node_states
@@ -420,15 +420,16 @@ mod tests {
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set("key_a", "");
 
-        let digest = cluster_state.compute_digest(HashSet::new());
+        let dead_nodes = HashSet::new();
+        let digest = cluster_state.compute_digest(&dead_nodes);
         let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert(node1.clone(), 2);
         node_max_version_map.insert(node2.clone(), 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
 
         // exclude node1
-        let dead_nodes = vec![node1];
-        let digest = cluster_state.compute_digest(dead_nodes.iter().collect());
+        let dead_nodes = HashSet::from_iter([&node1]);
+        let digest = cluster_state.compute_digest(&dead_nodes);
         let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert(node2, 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);

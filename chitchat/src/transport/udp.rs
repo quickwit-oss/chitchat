@@ -6,7 +6,7 @@ use tracing::warn;
 
 use crate::serialize::Serializable;
 use crate::transport::{Socket, Transport};
-use crate::{ChitchatMessage, MTU};
+use crate::{ChitchatMessage, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
 pub struct UdpTransport;
 
@@ -17,8 +17,8 @@ impl Transport for UdpTransport {
             .await
             .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
         Ok(Box::new(UdpSocket {
-            buf_send: Vec::with_capacity(MTU),
-            buf_recv: Box::new([0u8; MTU]),
+            buf_send: Vec::with_capacity(MAX_UDP_DATAGRAM_PAYLOAD_SIZE),
+            buf_recv: Box::new([0u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]),
             socket,
         }))
     }
@@ -26,7 +26,7 @@ impl Transport for UdpTransport {
 
 struct UdpSocket {
     buf_send: Vec<u8>,
-    buf_recv: Box<[u8; MTU]>,
+    buf_recv: Box<[u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]>,
     socket: tokio::net::UdpSocket,
 }
 

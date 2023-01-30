@@ -467,7 +467,7 @@ mod tests {
                 assert_eq!(cluster_id, "default-cluster");
                 assert_eq!(digest.node_max_version.len(), 1);
             }
-            message => panic!("unexpected message: {:?}", message),
+            message => panic!("unexpected message: {message:?}"),
         }
     }
 
@@ -489,7 +489,7 @@ mod tests {
         let config1 = ChitchatConfig::for_test(1);
         let addr1 = config1.node_id.gossip_public_address;
 
-        let mut chitchat = Chitchat::with_node_id_and_seeds(config2, empty_seeds(), Vec::new());
+        let chitchat = Chitchat::with_node_id_and_seeds(config2, empty_seeds(), Vec::new());
         let _handler = spawn_chitchat(config1, Vec::new(), &transport)
             .await
             .unwrap();
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(from1, addr1);
         match msg {
             ChitchatMessage::SynAck { .. } => (),
-            message => panic!("unexpected message: {:?}", message),
+            message => panic!("unexpected message: {message:?}"),
         }
     }
 
@@ -514,8 +514,7 @@ mod tests {
             .open(outsider_config.node_id.gossip_public_address)
             .await
             .unwrap();
-        let mut outsider =
-            Chitchat::with_node_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
+        let outsider = Chitchat::with_node_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
 
         let server_config = ChitchatConfig::for_test(2223);
         let server_addr = server_config.node_id.gossip_public_address;
@@ -529,7 +528,7 @@ mod tests {
         let (_from_addr, syn_ack) = timeout(outsider_transport.recv()).await.unwrap();
         match syn_ack {
             ChitchatMessage::BadCluster => (),
-            message => panic!("unexpected message: {:?}", message),
+            message => panic!("unexpected message: {message:?}"),
         }
     }
 
@@ -552,7 +551,7 @@ mod tests {
 
         match message {
             ChitchatMessage::Syn { .. } => (),
-            message => panic!("unexpected message: {:?}", message),
+            message => panic!("unexpected message: {message:?}"),
         }
     }
 

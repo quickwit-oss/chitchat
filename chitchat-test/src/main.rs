@@ -73,14 +73,14 @@ struct Opt {
 
 fn generate_server_id(public_addr: SocketAddr) -> String {
     let cool_id = cool_id_generator::get_id(Size::Medium);
-    format!("server:{}-{}", public_addr, cool_id)
+    format!("server:{public_addr}-{cool_id}")
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
-    println!("{:?}", opt);
+    println!("{opt:?}");
     let public_addr = opt.public_addr.unwrap_or(opt.listen_addr);
     let node_id_str = opt
         .node_id
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     let chitchat = chitchat_handler.chitchat();
     let api = Api { chitchat };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")
-        .server(&format!("http://{}/", opt.listen_addr));
+        .server(format!("http://{}/", opt.listen_addr));
     let docs = api_service.swagger_ui();
     let app = Route::new().nest("/", api_service).nest("/docs", docs);
     Server::new(TcpListener::bind(&opt.listen_addr))
