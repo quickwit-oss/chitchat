@@ -26,6 +26,7 @@ async fn spawn_one(node_id: u16, transport: &dyn Transport) -> ChitchatHandle {
             ..Default::default()
         },
         is_ready_predicate: None,
+        marked_for_deletion_grace_period: 10_000,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
 }

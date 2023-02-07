@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         seed_nodes: opt.seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
         is_ready_predicate: None,
+        marked_for_deletion_grace_period: 10_000,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();

@@ -115,6 +115,7 @@ impl NodeId {
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
+    pub marked_for_deletion: bool,
 }
 
 pub struct Chitchat {
@@ -184,9 +185,12 @@ impl Chitchat {
                 let empty_delta = Delta::default();
                 let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE
                     - syn_ack_serialized_len(&self_digest, &empty_delta);
-                let delta = self
-                    .cluster_state
-                    .compute_delta(&digest, delta_mtu, dead_nodes);
+                let delta = self.cluster_state.compute_delta(
+                    &digest,
+                    delta_mtu,
+                    dead_nodes,
+                    self.config.marked_for_deletion_grace_period,
+                );
                 self.report_to_failure_detector(&delta);
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
@@ -201,6 +205,7 @@ impl Chitchat {
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
                     dead_nodes,
+                    self.config.marked_for_deletion_grace_period,
                 );
                 Some(ChitchatMessage::Ack { delta })
             }
@@ -214,6 +219,12 @@ impl Chitchat {
                 None
             }
         }
+    }
+
+    fn gc_keys_marked_for_deletion(&mut self) {
+        let dead_nodes = self.dead_nodes().cloned().collect::<HashSet<_>>();
+        self.cluster_state
+            .gc_keys_marked_for_deletion(self.config.marked_for_deletion_grace_period, &dead_nodes);
     }
 
     fn report_to_failure_detector(&mut self, delta: &Delta) {
@@ -401,6 +412,7 @@ mod tests {
                 ..Default::default()
             },
             is_ready_predicate: None,
+            marked_for_deletion_grace_period: 10_000,
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
         spawn_chitchat(config, initial_kvs, transport)
