@@ -273,6 +273,7 @@ impl Server {
         );
 
         chitchat_guard.update_heartbeat();
+        chitchat_guard.gc_keys_marked_for_deletion();
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
         drop(chitchat_guard);

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +30,7 @@ impl Statistics {
 struct ChannelTransportInner {
     send_channels: HashMap<SocketAddr, Sender<(SocketAddr, ChitchatMessage)>>,
     statistics: Statistics,
+    pub removed_links: HashMap<SocketAddr, HashSet<SocketAddr>>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +60,30 @@ impl ChannelTransport {
         self.inner.lock().unwrap().statistics
     }
 
+    pub async fn remove_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
+        let mut inner_lock = self.inner.lock().unwrap();
+        let from_addr_entry = inner_lock
+            .removed_links
+            .entry(from_addr)
+            .or_insert_with(HashSet::new);
+        from_addr_entry.insert(to_addr);
+        let to_addr_entry = inner_lock
+            .removed_links
+            .entry(to_addr)
+            .or_insert_with(HashSet::new);
+        to_addr_entry.insert(from_addr);
+    }
+
+    pub async fn add_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
+        let mut inner_lock = self.inner.lock().unwrap();
+        if let Some(from_addr_entry) = inner_lock.removed_links.get_mut(&from_addr) {
+            from_addr_entry.remove(&to_addr);
+        }
+        if let Some(to_addr_entry) = inner_lock.removed_links.get_mut(&to_addr) {
+            to_addr_entry.remove(&from_addr);
+        }
+    }
+
     fn close(&self, addr: SocketAddr) {
         info!(addr=%addr, "close");
         let mut inner_lock = self.inner.lock().unwrap();
@@ -75,6 +100,11 @@ impl ChannelTransport {
         debug!(num_bytes = num_bytes, "send");
         let mut inner_lock = self.inner.lock().unwrap();
         inner_lock.statistics.record_message_len(num_bytes);
+        if let Some(to_addrs) = inner_lock.removed_links.get(&from_addr) {
+            if to_addrs.contains(&to_addr) {
+                return Ok(());
+            }
+        }
         if let Some(message_tx) = inner_lock.send_channels.get(&to_addr) {
             // if the channel is saturated, we start dropping messages.
             let _ = message_tx.try_send((from_addr, message));

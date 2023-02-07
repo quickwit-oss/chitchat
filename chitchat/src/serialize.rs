@@ -35,6 +35,30 @@ impl Serializable for u64 {
     }
 }
 
+impl Serializable for bool {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        let bool_bytes = if *self { [1u8] } else { [0u8] };
+        bool_bytes.serialize(buf);
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let bool_bytes: [u8; 1] = Serializable::deserialize(buf)?;
+        if bool_bytes[0] == 0 {
+            return Ok(false);
+        } else if bool_bytes[0] == 1 {
+            return Ok(true);
+        }
+        anyhow::bail!(
+            "Invalid bool bytes: must be either 0 or 1, got {}",
+            bool_bytes[0]
+        )
+    }
+
+    fn serialized_len(&self) -> usize {
+        1
+    }
+}
+
 #[repr(u8)]
 enum IpVersion {
     V4 = 4u8,
@@ -210,5 +234,10 @@ mod tests {
             ])),
             17,
         );
+    }
+
+    #[test]
+    fn test_serialize_bool() {
+        test_serdeser_aux(&true, 1);
     }
 }
