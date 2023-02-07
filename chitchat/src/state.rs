@@ -12,9 +12,6 @@ use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
 use crate::{NodeId, Version, VersionedValue};
 
-/// Maximum value size (in bytes) for a key-value item.
-const MAX_KV_VALUE_SIZE: usize = 500;
-
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
@@ -68,14 +65,6 @@ impl NodeState {
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
         assert!(version > self.max_version);
-        let value_size = value.bytes().len();
-        assert!(
-            value_size <= MAX_KV_VALUE_SIZE,
-            "Value for key `{}` is too large (actual: {}, maximum: {})",
-            key,
-            value_size,
-            MAX_KV_VALUE_SIZE
-        );
         self.max_version = version;
         self.key_values
             .insert(key, VersionedValue { version, value });
@@ -158,7 +147,7 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self, dead_nodes: HashSet<&NodeId>) -> Digest {
+    pub fn compute_digest(&self, dead_nodes: &HashSet<&NodeId>) -> Digest {
         Digest {
             node_max_version: self
                 .node_states
@@ -378,15 +367,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Value for key `text` is too large (actual: 528, maximum: 500)")]
-    fn test_cluster_state_set_with_large_value() {
-        let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
-        let large_value = "The quick brown fox jumps over the lazy dog.".repeat(12);
-        node_state.set("text", large_value);
-    }
-
-    #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
         let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
@@ -420,15 +400,16 @@ mod tests {
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set("key_a", "");
 
-        let digest = cluster_state.compute_digest(HashSet::new());
+        let dead_nodes = HashSet::new();
+        let digest = cluster_state.compute_digest(&dead_nodes);
         let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert(node1.clone(), 2);
         node_max_version_map.insert(node2.clone(), 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);
 
         // exclude node1
-        let dead_nodes = vec![node1];
-        let digest = cluster_state.compute_digest(dead_nodes.iter().collect());
+        let dead_nodes = HashSet::from_iter([&node1]);
+        let digest = cluster_state.compute_digest(&dead_nodes);
         let mut node_max_version_map = BTreeMap::default();
         node_max_version_map.insert(node2, 1);
         assert_eq!(&digest.node_max_version, &node_max_version_map);

@@ -52,7 +52,7 @@ fn get_node_info(node_api_endpoint: &str) -> anyhow::Result<ApiResponse> {
 }
 
 fn set_kv(node_api_endpoint: &str, key: &str, value: &str) -> anyhow::Result<SetKeyValueResponse> {
-    let simple_set_kv = format!("{}?key={}&value={}", node_api_endpoint, key, value);
+    let simple_set_kv = format!("{node_api_endpoint}?key={key}&value={value}");
     let response = reqwest::blocking::get(simple_set_kv)?.json::<SetKeyValueResponse>()?;
     Ok(response)
 }

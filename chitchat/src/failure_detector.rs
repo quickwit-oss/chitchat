@@ -83,7 +83,7 @@ impl FailureDetector {
 
     /// Returns a list of dead nodes.
     pub fn dead_nodes(&self) -> impl Iterator<Item = &NodeId> {
-        self.dead_nodes.iter().map(|(node_id, _)| node_id)
+        self.dead_nodes.keys()
     }
 
     /// Returns the current phi value of a node.
@@ -131,7 +131,7 @@ impl Default for FailureDetectorConfig {
     fn default() -> Self {
         Self {
             phi_threshold: 8.0,
-            sampling_window_size: 1000,
+            sampling_window_size: 1_000,
             max_interval: Duration::from_secs(10),
             initial_interval: Duration::from_secs(5),
             dead_node_grace_period: Duration::from_secs(24 * 60 * 60), // 24 hours

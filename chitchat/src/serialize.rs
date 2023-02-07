@@ -105,7 +105,7 @@ impl Serializable for String {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let len: usize = u16::deserialize(buf)? as usize;
         let s = std::str::from_utf8(&buf[..len])?.to_string();
-        buf.consume(len as usize);
+        buf.consume(len);
         Ok(s)
     }
 
