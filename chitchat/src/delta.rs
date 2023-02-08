@@ -116,9 +116,8 @@ impl DeltaWriter {
         assert!(Some(&node_id) != self.current_node_id.as_ref());
         assert!(!self.delta.node_deltas.contains_key(&node_id));
         self.flush();
-        if !self.attempt_add_bytes(
-            2 + node_id.id.len() + node_id.gossip_public_address.serialized_len() + 2,
-        ) {
+        // Reserve bytes for [`NodeId`] and for an empty [`NodeDelta`] which has a size of 2 bytes.
+        if !self.attempt_add_bytes(node_id.serialized_len() + 2) {
             return false;
         }
         self.current_node_id = Some(node_id);
@@ -139,7 +138,12 @@ impl DeltaWriter {
     /// Returns false if the KV could not be added because mtu was reached.
     pub fn add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
         assert!(!self.current_node_delta.key_values.contains_key(key));
-        if !self.attempt_add_bytes(2 + key.len() + 2 + versioned_value.value.len() + 8) {
+        // Reserve bytes for the key (2 bytes are used to store the key length) and versioned value.
+        if !self.attempt_add_bytes(
+            2 + key.len()
+                + versioned_value.value.serialized_len()
+                + versioned_value.version.serialized_len(),
+        ) {
             return false;
         }
         self.current_node_delta
