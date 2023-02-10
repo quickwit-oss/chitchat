@@ -19,6 +19,16 @@ pub struct ChitchatConfig {
     //
     // If `None`, a node is ready as long as it is alive.
     pub is_ready_predicate: Option<Box<dyn Fn(&NodeState) -> bool + Send>>,
+    // Marked for deletion grace period expressed as a number of version threshold.
+    // Chitchat ensures a marked for deletion key is eventually deleted by three mecanisms:
+    // - Garbage collection: each heartbeat, marked for deletion keys with `key_version +
+    //   marked_for_deletion_grace_period < node.max_version` are deleted.
+    // - Compute delta: for a given node, if `digest_node_max_version +
+    //   marked_for_deletion_grace_period < node_max_version`, the node is flagged "to be reset"
+    //   and the delta is populated with all keys and values.
+    // - Apply delta: for a node flagged "to be reset", Chitchat will remove the node state and
+    //   populate a fresh new node state with the keys and values present in the delta.
+    pub marked_for_deletion_grace_period: usize,
 }
 
 impl ChitchatConfig {
@@ -34,6 +44,7 @@ impl ChitchatConfig {
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
             is_ready_predicate: None,
+            marked_for_deletion_grace_period: 10_000,
         }
     }
 
@@ -54,6 +65,9 @@ impl Default for ChitchatConfig {
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
             is_ready_predicate: None,
+            // Each heartbeat increments the version, with one heartbeat each second
+            // 43200 ~ 12h.
+            marked_for_deletion_grace_period: 43200,
         }
     }
 }

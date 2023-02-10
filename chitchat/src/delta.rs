@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
 use crate::serialize::*;
@@ -7,14 +7,23 @@ use crate::{NodeId, Version, VersionedValue};
 #[derive(Default, Eq, PartialEq, Debug)]
 pub struct Delta {
     pub(crate) node_deltas: BTreeMap<NodeId, NodeDelta>,
+    pub(crate) nodes_to_reset: HashSet<NodeId>,
 }
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        (self.node_deltas.len() as u16).serialize(buf);
+        u16::try_from(self.node_deltas.len())
+            .unwrap()
+            .serialize(buf);
         for (node_id, node_delta) in &self.node_deltas {
             node_id.serialize(buf);
             node_delta.serialize(buf);
+        }
+        u16::try_from(self.nodes_to_reset.len())
+            .unwrap()
+            .serialize(buf);
+        for node_id in &self.nodes_to_reset {
+            node_id.serialize(buf);
         }
     }
 
@@ -26,7 +35,16 @@ impl Serializable for Delta {
             let node_delta = NodeDelta::deserialize(buf)?;
             node_deltas.insert(node_id, node_delta);
         }
-        Ok(Delta { node_deltas })
+        let num_nodes_to_reset = u16::deserialize(buf)?;
+        let mut nodes_to_reset = HashSet::new();
+        for _ in 0..num_nodes_to_reset {
+            let node_id = NodeId::deserialize(buf)?;
+            nodes_to_reset.insert(node_id);
+        }
+        Ok(Delta {
+            node_deltas,
+            nodes_to_reset,
+        })
     }
 
     fn serialized_len(&self) -> usize {
@@ -34,6 +52,10 @@ impl Serializable for Delta {
         for (node_id, node_delta) in &self.node_deltas {
             len += node_id.serialized_len();
             len += node_delta.serialized_len();
+        }
+        len += 2;
+        for node_id in &self.nodes_to_reset {
+            len += node_id.serialized_len();
         }
         len
     }
@@ -47,7 +69,19 @@ impl Delta {
             .map(|node_delta| node_delta.num_tuples())
             .sum()
     }
-    pub fn add_node_delta(&mut self, node_id: NodeId, key: &str, value: &str, version: Version) {
+
+    pub fn add_node_to_reset(&mut self, node_id: NodeId) {
+        self.nodes_to_reset.insert(node_id);
+    }
+
+    pub fn add_node_delta(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        value: &str,
+        version: Version,
+        marked_for_deletion: bool,
+    ) {
         self.node_deltas
             .entry(node_id)
             .or_default()
@@ -57,6 +91,7 @@ impl Delta {
                 VersionedValue {
                     value: value.to_string(),
                     version,
+                    marked_for_deletion,
                 },
             );
     }
@@ -98,7 +133,8 @@ impl DeltaWriter {
         DeltaWriter {
             delta: Delta::default(),
             mtu,
-            num_bytes: 2,
+            num_bytes: 2 + 2, /* 2 bytes for `nodes_to_reset.len()` + 2 bytes for
+                               * `node_deltas.len()` */
             current_node_id: None,
             current_node_delta: NodeDelta::default(),
             reached_capacity: false,
@@ -110,6 +146,15 @@ impl DeltaWriter {
         if let Some(node_id) = node_id_opt {
             self.delta.node_deltas.insert(node_id, node_delta);
         }
+    }
+
+    pub fn add_node_to_reset(&mut self, node_id: NodeId) -> bool {
+        assert!(!self.delta.nodes_to_reset.contains(&node_id));
+        if !self.attempt_add_bytes(node_id.serialized_len()) {
+            return false;
+        }
+        self.delta.nodes_to_reset.insert(node_id);
+        true
     }
 
     pub fn add_node(&mut self, node_id: NodeId) -> bool {
@@ -142,7 +187,8 @@ impl DeltaWriter {
         if !self.attempt_add_bytes(
             2 + key.len()
                 + versioned_value.value.serialized_len()
-                + versioned_value.version.serialized_len(),
+                + versioned_value.version.serialized_len()
+                + versioned_value.marked_for_deletion.serialized_len(),
         ) {
             return false;
         }
@@ -169,10 +215,19 @@ impl From<DeltaWriter> for Delta {
 impl Serializable for NodeDelta {
     fn serialize(&self, buf: &mut Vec<u8>) {
         (self.key_values.len() as u16).serialize(buf);
-        for (key, VersionedValue { value, version }) in &self.key_values {
+        for (
+            key,
+            VersionedValue {
+                value,
+                version,
+                marked_for_deletion,
+            },
+        ) in &self.key_values
+        {
             key.serialize(buf);
             value.serialize(buf);
             version.serialize(buf);
+            marked_for_deletion.serialize(buf);
         }
     }
 
@@ -183,17 +238,34 @@ impl Serializable for NodeDelta {
             let key = String::deserialize(buf)?;
             let value = String::deserialize(buf)?;
             let version = u64::deserialize(buf)?;
-            key_values.insert(key, VersionedValue { value, version });
+            let marked_for_deletion = bool::deserialize(buf)?;
+            key_values.insert(
+                key,
+                VersionedValue {
+                    value,
+                    version,
+                    marked_for_deletion,
+                },
+            );
         }
         Ok(NodeDelta { key_values })
     }
 
     fn serialized_len(&self) -> usize {
         let mut len = 2;
-        for (key, VersionedValue { value, version }) in &self.key_values {
+        for (
+            key,
+            VersionedValue {
+                value,
+                version,
+                marked_for_deletion,
+            },
+        ) in &self.key_values
+        {
             len += key.serialized_len();
             len += value.serialized_len();
             len += version.serialized_len();
+            len += marked_for_deletion.serialized_len();
         }
         len
     }
@@ -205,17 +277,18 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_default() {
-        test_serdeser_aux(&Delta::default(), 2);
+        test_serdeser_aux(&Delta::default(), 4);
     }
     #[test]
     fn test_delta_serialization_simple() {
-        let mut delta_writer = DeltaWriter::with_mtu(132);
+        let mut delta_writer = DeltaWriter::with_mtu(138);
         delta_writer.add_node(NodeId::for_test_localhost(10_001));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
+                marked_for_deletion: false,
             },
         ));
         assert!(delta_writer.add_kv(
@@ -223,6 +296,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
+                marked_for_deletion: false,
             },
         ));
         assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
@@ -231,6 +305,7 @@ mod tests {
             VersionedValue {
                 value: "val21".to_string(),
                 version: 2,
+                marked_for_deletion: false,
             },
         ));
         assert!(delta_writer.add_kv(
@@ -238,10 +313,11 @@ mod tests {
             VersionedValue {
                 value: "val22".to_string(),
                 version: 3,
+                marked_for_deletion: false,
             },
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 132);
+        test_serdeser_aux(&delta, 138);
     }
 
     #[test]
@@ -252,19 +328,47 @@ mod tests {
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
-                version: 1
+                version: 1,
+                marked_for_deletion: false,
             }
         ));
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
-                version: 2
+                version: 2,
+                marked_for_deletion: false,
             }
         ));
         assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 88);
+        test_serdeser_aux(&delta, 92);
+    }
+
+    #[test]
+    fn test_delta_serialization_simple_with_nodes_to_reset() {
+        let mut delta_writer = DeltaWriter::with_mtu(120);
+        assert!(delta_writer.add_node_to_reset(NodeId::for_test_localhost(10_000))); // Node ID takes 19 bytes
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_kv(
+            "key11",
+            VersionedValue {
+                value: "val11".to_string(),
+                version: 1,
+                marked_for_deletion: false,
+            }
+        ));
+        assert!(delta_writer.add_kv(
+            "key12",
+            VersionedValue {
+                value: "val12".to_string(),
+                version: 2,
+                marked_for_deletion: false,
+            }
+        ));
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        let delta: Delta = delta_writer.into();
+        test_serdeser_aux(&delta, 111);
     }
 
     #[test]
@@ -275,19 +379,46 @@ mod tests {
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
-                version: 1
+                version: 1,
+                marked_for_deletion: false,
             }
         ));
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
-                version: 2
+                version: 2,
+                marked_for_deletion: false,
             }
         ));
         assert!(!delta_writer.add_node(NodeId::for_test_localhost(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 67);
+        test_serdeser_aux(&delta, 71);
+    }
+
+    #[test]
+    fn test_delta_serialization_exceed_mtu_on_add_node_to_reset() {
+        let mut delta_writer = DeltaWriter::with_mtu(87);
+        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_kv(
+            "key11",
+            VersionedValue {
+                value: "val11".to_string(),
+                version: 1,
+                marked_for_deletion: false,
+            }
+        ));
+        assert!(delta_writer.add_kv(
+            "key12",
+            VersionedValue {
+                value: "val12".to_string(),
+                version: 2,
+                marked_for_deletion: false,
+            }
+        ));
+        assert!(!delta_writer.add_node_to_reset(NodeId::for_test_localhost(10_002)));
+        let delta: Delta = delta_writer.into();
+        test_serdeser_aux(&delta, 71);
     }
 
     #[test]
@@ -298,18 +429,20 @@ mod tests {
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
-                version: 1
+                version: 1,
+                marked_for_deletion: false,
             }
         ));
         assert!(!delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
-                version: 2
+                version: 2,
+                marked_for_deletion: false,
             }
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 45);
+        test_serdeser_aux(&delta, 48);
     }
 
     #[test]
@@ -321,14 +454,16 @@ mod tests {
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
-                version: 1
+                version: 1,
+                marked_for_deletion: false,
             }
         ));
         assert!(!delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
-                version: 2
+                version: 2,
+                marked_for_deletion: false,
             }
         ));
         delta_writer.add_kv(
@@ -336,6 +471,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
+                marked_for_deletion: false,
             },
         );
     }
