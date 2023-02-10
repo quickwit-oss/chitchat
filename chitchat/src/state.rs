@@ -33,7 +33,18 @@ impl Default for NodeState {
 
 impl NodeState {
     /// Returns an iterator over keys matching the given predicate.
+    /// Keys marked for deletion are not returned.
     pub fn iter_key_values(
+        &self,
+        predicate: impl Fn(&String, &VersionedValue) -> bool,
+    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
+        self.internal_iter_key_values(predicate)
+            .filter(|&(_, versioned_value)| !versioned_value.marked_for_deletion)
+    }
+
+    /// Returns an iterator over keys matching the given predicate.
+    /// Not public as it returns also keys marked for deletion.
+    fn internal_iter_key_values(
         &self,
         predicate: impl Fn(&String, &VersionedValue) -> bool,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
@@ -49,7 +60,9 @@ impl NodeState {
         floor_version: u64,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
         // TODO optimize by checking the max version.
-        self.iter_key_values(move |_key, versioned_value| versioned_value.version > floor_version)
+        self.internal_iter_key_values(move |_key, versioned_value| {
+            versioned_value.version > floor_version
+        })
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

@@ -422,14 +422,13 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
 }
 
 // Playground.
-#[tokio::test]
-#[allow(dead_code)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_simple_simulation_heavy_insert_delete() {
     let _ = tracing_subscriber::fmt::try_init();
     let mut rng = thread_rng();
-    let mut simulator = Simulator::new(Duration::from_millis(100));
+    let mut simulator = Simulator::new(Duration::from_millis(1000));
     let mut node_ids = Vec::new();
-    for i in 0..30 {
+    for i in 0..50 {
         node_ids.push(create_node_id(&format!("node-{}", i)));
     }
     let seeds = vec![
@@ -447,19 +446,17 @@ async fn test_simple_simulation_heavy_insert_delete() {
         .collect();
     simulator.execute(add_node_operations).await;
 
-    let key_names: Vec<_> = (0..1000).map(|idx| format!("key_{}", idx)).collect();
+    let key_names: Vec<_> = (0..50).map(|idx| format!("key_{}", idx)).collect();
     let mut keys_values_inserted_per_node_id: HashMap<NodeId, HashSet<String>> = HashMap::new();
-    for _ in 0..10 {
-        let node_id = node_ids.choose(&mut rng).unwrap();
+    for node_id in node_ids.iter() {
         let mut keys_values = Vec::new();
-        for _ in 0..100 {
-            let key = key_names.choose(&mut rng).unwrap().to_string();
+        for key in key_names.iter() {
             let value: u64 = rng.gen();
             keys_values.push((key.to_string(), value.to_string()));
             let keys_entry = keys_values_inserted_per_node_id
                 .entry(node_id.clone())
                 .or_insert_with(HashSet::new);
-            keys_entry.insert(key);
+            keys_entry.insert(key.to_string());
         }
         simulator
             .execute(vec![Operation::InsertKeysValues {
@@ -467,10 +464,9 @@ async fn test_simple_simulation_heavy_insert_delete() {
                 keys_values,
             }])
             .await;
-        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    tokio::time::sleep(Duration::from_millis(5000)).await;
     for (node_id, keys) in keys_values_inserted_per_node_id.clone().into_iter() {
         info!(node_id=?node_id.id, keys=?keys, "check");
         for key in keys {
@@ -479,7 +475,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
                 server_node_id,
                 node_id: node_id.clone(),
                 predicate: NodeStatePredicate::KeyPresent(key.to_string(), true),
-                timeout_opt: Some(Duration::from_secs(1)),
+                timeout_opt: None,
             };
             simulator.execute(vec![check_operation]).await;
         }
@@ -497,7 +493,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     }
 
     // Wait for garbage collection to kick in.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(10000)).await;
     for (node_id, keys) in keys_values_inserted_per_node_id.clone().into_iter() {
         for key in keys {
             let server_node_id = node_ids.choose(&mut rng).unwrap().clone();
@@ -505,7 +501,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
                 server_node_id,
                 node_id: node_id.clone(),
                 predicate: NodeStatePredicate::KeyPresent(key.to_string(), false),
-                timeout_opt: Some(Duration::from_secs(5)),
+                timeout_opt: None,
             };
             simulator.execute(vec![check_operation]).await;
         }

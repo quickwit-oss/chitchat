@@ -12,12 +12,16 @@ pub struct Delta {
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        (self.node_deltas.len() as u16).serialize(buf);
+        u16::try_from(self.node_deltas.len())
+            .unwrap()
+            .serialize(buf);
         for (node_id, node_delta) in &self.node_deltas {
             node_id.serialize(buf);
             node_delta.serialize(buf);
         }
-        (self.nodes_to_reset.len() as u16).serialize(buf);
+        u16::try_from(self.nodes_to_reset.len())
+            .unwrap()
+            .serialize(buf);
         for node_id in &self.nodes_to_reset {
             node_id.serialize(buf);
         }
