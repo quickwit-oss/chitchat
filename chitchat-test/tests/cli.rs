@@ -21,23 +21,26 @@ fn setup_nodes(
     port_offset: usize,
     num_nodes: usize,
     wait_stabilization_secs: u64,
-    dns_required_for_seed: bool,
+    seed_requires_dns: bool,
 ) -> Vec<KillOnDrop> {
     let seed_port = port_offset;
-    let seed_node =
-        spawn_command(format!("--listen_addr 127.0.0.1:{seed_port} --interval_ms 120").as_str())
-            .unwrap();
+    let command_args =
+        format!("--listen_addr 127.0.0.1:{seed_port} --node_id node_0 --interval_ms 120");
+    let seed_node = spawn_command(&command_args).unwrap();
+
     let mut child_process_handles = vec![KillOnDrop(seed_node)];
+
     for i in 1..num_nodes {
-        let node_port = seed_port + i;
-        let seed_host_name = if dns_required_for_seed {
+        let node_id = format!("node_{i}");
+        let node_port = port_offset + i;
+        let seed_host_name = if seed_requires_dns {
             "localhost"
         } else {
             "127.0.0.1"
         };
         let command_args = format!(
             "--listen_addr 127.0.0.1:{node_port} --seed {seed_host_name}:{seed_port} --node_id \
-             node_{i} --interval_ms 50"
+             {node_id} --interval_ms 50"
         );
         let node = spawn_command(&command_args).unwrap();
         child_process_handles.push(KillOnDrop(node));
@@ -72,12 +75,14 @@ fn test_multiple_nodes() {
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);
 
-    assert!(info.cluster_state.node_states.get("node_3").is_some());
-    // Check that "some_key" we set on this local node (localhost:10001) is
+    assert!(info.cluster_state.node_states.get(3).is_some());
+    println!("node_states: {:?}", info.cluster_state.node_states);
+    // Check that "some_key" we set on this local node (localhost:13001) is
     // indeed set to be "some_value"
-    let ns = info.cluster_state.node_states.get("node_1").unwrap();
-    let v = ns.get_versioned("some_key").unwrap();
-    assert_eq!(v.value, "some_value");
+    let node = info.cluster_state.node_states.get(1).unwrap();
+    println!("node: {:?}", node);
+    let versioned_value = node.node_state.get_versioned("some_key").unwrap();
+    assert_eq!(versioned_value.value, "some_value");
 }
 
 #[test]
@@ -85,7 +90,7 @@ fn test_multiple_nodes_with_dns_resolution_for_seed() {
     let _child_handles = setup_nodes(12_000, 5, 5, true);
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:12001").unwrap();
-    assert!(info.cluster_state.node_states.get("node_3").is_some());
+    assert!(info.cluster_state.node_states.get(3).is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 4);
     assert_eq!(info.dead_nodes.len(), 0);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chitchat::transport::UdpTransport;
-use chitchat::{spawn_chitchat, Chitchat, ChitchatConfig, FailureDetectorConfig, NodeId};
+use chitchat::{spawn_chitchat, Chitchat, ChitchatConfig, ChitchatId, FailureDetectorConfig};
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use cool_id_generator::Size;
 use poem::listener::TcpListener;
@@ -33,7 +33,7 @@ impl Api {
         Json(serde_json::to_value(&response).unwrap())
     }
 
-    /// Set a key & value on this node (with no validation).
+    /// Sets a key-value pair on this node (without validation).
     #[oai(path = "/set_kv/", method = "get")]
     async fn set_kv(&self, key: Query<String>, value: Query<String>) -> Json<serde_json::Value> {
         let mut chitchat_guard = self.chitchat.lock().await;
@@ -59,7 +59,7 @@ struct Opt {
     #[structopt(long = "public_addr")]
     public_addr: Option<SocketAddr>,
 
-    /// Node id. Has to be unique. If None, the node_id will be generated from
+    /// Node ID. Must be unique. If None, the node ID will be generated from
     /// the public_addr and a random suffix.
     #[structopt(long = "node_id")]
     node_id: Option<String>,
@@ -82,13 +82,13 @@ async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
     println!("{opt:?}");
     let public_addr = opt.public_addr.unwrap_or(opt.listen_addr);
-    let node_id_str = opt
+    let node_id = opt
         .node_id
         .unwrap_or_else(|| generate_server_id(public_addr));
-    let node_id = NodeId::new(node_id_str, public_addr);
+    let chitchat_id = ChitchatId::new(node_id, 0, public_addr);
     let config = ChitchatConfig {
-        node_id,
         cluster_id: "testing".to_string(),
+        chitchat_id,
         gossip_interval: Duration::from_millis(opt.interval),
         listen_addr: opt.listen_addr,
         seed_nodes: opt.seeds.clone(),

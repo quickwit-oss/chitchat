@@ -10,23 +10,23 @@ use tokio::sync::watch;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::Digest;
-use crate::{NodeId, Version, VersionedValue};
+use crate::{ChitchatId, Version, VersionedValue};
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeState {
     pub(crate) key_values: BTreeMap<String, VersionedValue>,
+    pub(crate) max_version: u64,
     #[serde(skip)]
     #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
-    pub(crate) max_version: u64,
 }
 
 impl Default for NodeState {
     fn default() -> Self {
         Self {
-            last_heartbeat: Instant::now(),
-            max_version: Default::default(),
             key_values: Default::default(),
+            max_version: Default::default(),
+            last_heartbeat: Instant::now(),
         }
     }
 }
@@ -117,7 +117,7 @@ impl NodeState {
 
 #[derive(Debug)]
 pub(crate) struct ClusterState {
-    pub(crate) node_states: BTreeMap<NodeId, NodeState>,
+    pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
 }
 
@@ -140,16 +140,16 @@ impl ClusterState {
         }
     }
 
-    pub(crate) fn node_state_mut(&mut self, node_id: &NodeId) -> &mut NodeState {
+    pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
-        self.node_states.entry(node_id.clone()).or_default()
+        self.node_states.entry(chitchat_id.clone()).or_default()
     }
 
-    pub fn node_state(&self, node_id: &NodeId) -> Option<&NodeState> {
-        self.node_states.get(node_id)
+    pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
+        self.node_states.get(chitchat_id)
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
+    pub fn nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.node_states.keys()
     }
 
@@ -157,19 +157,19 @@ impl ClusterState {
         self.seed_addrs.borrow().clone()
     }
 
-    pub(crate) fn remove_node(&mut self, node_id: &NodeId) {
-        self.node_states.remove(node_id);
+    pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
+        self.node_states.remove(chitchat_id);
     }
 
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
         // Remove nodes to reset.
         self.node_states
-            .retain(|node_id, _| !delta.nodes_to_reset.contains(node_id));
+            .retain(|chitchat_id, _| !delta.nodes_to_reset.contains(chitchat_id));
         // And apply delta.
-        for (node_id, node_delta) in delta.node_deltas {
+        for (chitchat_id, node_delta) in delta.node_deltas {
             let mut node_state_map = self
                 .node_states
-                .entry(node_id)
+                .entry(chitchat_id)
                 .or_insert_with(NodeState::default);
 
             for (key, versioned_value) in node_delta.key_values {
@@ -195,13 +195,13 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self, dead_nodes: &HashSet<&NodeId>) -> Digest {
+    pub fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
         Digest {
             node_max_version: self
                 .node_states
                 .iter()
-                .filter(|(node_id, _)| !dead_nodes.contains(node_id))
-                .map(|(node_id, node_state)| (node_id.clone(), node_state.max_version))
+                .filter(|(chitchat_id, _)| !dead_nodes.contains(chitchat_id))
+                .map(|(chitchat_id, node_state)| (chitchat_id.clone(), node_state.max_version))
                 .collect(),
         }
     }
@@ -209,10 +209,10 @@ impl ClusterState {
     pub fn gc_keys_marked_for_deletion(
         &mut self,
         marked_for_deletion_grace_period: usize,
-        dead_nodes: &HashSet<NodeId>,
+        dead_nodes: &HashSet<ChitchatId>,
     ) {
-        for (node_id, node_state_map) in &mut self.node_states {
-            if dead_nodes.contains(node_id) {
+        for (chitchat_id, node_state_map) in &mut self.node_states {
+            if dead_nodes.contains(chitchat_id) {
                 continue;
             }
             node_state_map.gc_keys_marked_for_deletion(marked_for_deletion_grace_period);
@@ -224,17 +224,21 @@ impl ClusterState {
         &self,
         digest: &Digest,
         mtu: usize,
-        dead_nodes: HashSet<&NodeId>,
+        dead_nodes: HashSet<&ChitchatId>,
         marked_for_deletion_grace_period: usize,
     ) -> Delta {
         let mut delta_writer = DeltaWriter::with_mtu(mtu);
 
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        for (node_id, node_state_map) in &self.node_states {
-            if dead_nodes.contains(node_id) {
+        for (chitchat_id, node_state_map) in &self.node_states {
+            if dead_nodes.contains(chitchat_id) {
                 continue;
             }
-            let mut floor_version = digest.node_max_version.get(node_id).cloned().unwrap_or(0);
+            let mut floor_version = digest
+                .node_max_version
+                .get(chitchat_id)
+                .cloned()
+                .unwrap_or(0);
             // Node needs to be reset if `digest.node_max_version +
             // marked_for_deletion_grace_period` is inferior to
             // `node_state_map.max_version`.
@@ -245,20 +249,24 @@ impl ClusterState {
             {
                 // `floor_version` is set to 0 so the delta is populated with all keys and values.
                 floor_version = 0;
-                delta_writer.add_node_to_reset(node_id.clone());
+                delta_writer.add_node_to_reset(chitchat_id.clone());
             }
             let stale_kv_count = node_state_map.iter_stale_key_values(floor_version).count();
             if stale_kv_count > 0 {
-                node_sorted_by_stale_length.insert(node_id, stale_kv_count);
+                node_sorted_by_stale_length.insert(chitchat_id, stale_kv_count);
             }
         }
 
-        for node_id in node_sorted_by_stale_length.into_iter() {
-            if !delta_writer.add_node(node_id.clone()) {
+        for chitchat_id in node_sorted_by_stale_length.into_iter() {
+            if !delta_writer.add_node(chitchat_id.clone()) {
                 break;
             }
-            let node_state_map = self.node_states.get(node_id).unwrap();
-            let mut floor_version = digest.node_max_version.get(node_id).cloned().unwrap_or(0);
+            let node_state_map = self.node_states.get(chitchat_id).unwrap();
+            let mut floor_version = digest
+                .node_max_version
+                .get(chitchat_id)
+                .cloned()
+                .unwrap_or(0);
             if node_state_map.max_version
                 > floor_version + (marked_for_deletion_grace_period as u64)
             {
@@ -281,43 +289,57 @@ impl ClusterState {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ClusterStateSnapshot {
-    pub seed_addrs: HashSet<SocketAddr>,
-    pub node_states: BTreeMap<String, NodeState>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NodeStateSnapshot {
+    pub node_id: String,
+    pub generation_id: u64,
+    pub gossip_advertise_addr: SocketAddr,
+    pub node_state: NodeState,
 }
 
-impl<'a> From<&'a ClusterState> for ClusterStateSnapshot {
-    fn from(state: &'a ClusterState) -> Self {
-        ClusterStateSnapshot {
-            seed_addrs: state.seed_addrs(),
-            node_states: state
-                .node_states
-                .iter()
-                .map(|(node_id, node_state)| (node_id.id.clone(), node_state.clone()))
-                .collect(),
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClusterStateSnapshot {
+    pub node_states: Vec<NodeStateSnapshot>,
+    pub seed_addrs: HashSet<SocketAddr>,
+}
+
+impl From<&ClusterState> for ClusterStateSnapshot {
+    fn from(cluster_state: &ClusterState) -> Self {
+        let node_states = cluster_state
+            .node_states
+            .iter()
+            .map(|(chitchat_id, node_state)| NodeStateSnapshot {
+                node_id: chitchat_id.node_id.clone(),
+                generation_id: chitchat_id.generation_id,
+                gossip_advertise_addr: chitchat_id.gossip_advertise_address,
+                node_state: node_state.clone(),
+            })
+            .collect();
+        Self {
+            node_states,
+            seed_addrs: cluster_state.seed_addrs(),
         }
     }
 }
 
 #[derive(Default)]
 struct NodeSortedByStaleLength<'a> {
-    node_per_stale_length: BTreeMap<usize, Vec<&'a NodeId>>,
+    node_per_stale_length: BTreeMap<usize, Vec<&'a ChitchatId>>,
     stale_lengths: BinaryHeap<usize>,
 }
 
 impl<'a> NodeSortedByStaleLength<'a> {
-    fn insert(&mut self, node_id: &'a NodeId, stale_length: usize) {
+    fn insert(&mut self, chitchat_id: &'a ChitchatId, stale_length: usize) {
         self.node_per_stale_length
             .entry(stale_length)
             .or_insert_with(|| {
                 self.stale_lengths.push(stale_length);
                 Vec::new()
             })
-            .push(node_id);
+            .push(chitchat_id);
     }
 
-    fn into_iter(mut self) -> impl Iterator<Item = &'a NodeId> {
+    fn into_iter(mut self) -> impl Iterator<Item = &'a ChitchatId> {
         let mut rng = random_generator();
         std::iter::from_fn(move || self.stale_lengths.pop()).flat_map(move |length| {
             let mut nodes = self.node_per_stale_length.remove(&length).unwrap();
@@ -355,17 +377,17 @@ mod tests {
     #[test]
     fn test_node_sorted_by_stale_length_simple() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        let node_ids = vec![(10_001, 1), (10_002, 2), (10_003, 3)]
+        let chitchat_ids = vec![(10_001, 1), (10_002, 2), (10_003, 3)]
             .into_iter()
-            .map(|(port, state_length)| (NodeId::for_test_localhost(port), state_length))
+            .map(|(port, state_length)| (ChitchatId::for_local_test(port), state_length))
             .collect::<Vec<_>>();
-        for (node_id, state_length) in node_ids.iter() {
-            node_sorted_by_stale_length.insert(node_id, *state_length);
+        for (chitchat_id, state_length) in chitchat_ids.iter() {
+            node_sorted_by_stale_length.insert(chitchat_id, *state_length);
         }
-        let nodes: Vec<&NodeId> = node_sorted_by_stale_length.into_iter().collect();
-        let expected_nodes: Vec<NodeId> = [10_003, 10_002, 10_001]
+        let nodes: Vec<&ChitchatId> = node_sorted_by_stale_length.into_iter().collect();
+        let expected_nodes: Vec<ChitchatId> = [10_003, 10_002, 10_001]
             .into_iter()
-            .map(NodeId::for_test_localhost)
+            .map(ChitchatId::for_local_test)
             .collect();
         assert_eq!(nodes, expected_nodes.iter().collect::<Vec<_>>());
     }
@@ -373,19 +395,19 @@ mod tests {
     #[test]
     fn test_node_sorted_by_stale_length_doubles() {
         let mut node_sorted_by_stale_length = NodeSortedByStaleLength::default();
-        let node_ids = vec![(10_001, 1), (20_001, 2), (20_002, 2), (20_003, 2)]
+        let chitchat_ids = vec![(10_001, 1), (20_001, 2), (20_002, 2), (20_003, 2)]
             .into_iter()
-            .map(|(port, state_length)| (NodeId::for_test_localhost(port), state_length))
+            .map(|(port, state_length)| (ChitchatId::for_local_test(port), state_length))
             .collect::<Vec<_>>();
 
-        for (node_id, state_length) in node_ids.iter() {
-            node_sorted_by_stale_length.insert(node_id, *state_length);
+        for (chitchat_id, state_length) in chitchat_ids.iter() {
+            node_sorted_by_stale_length.insert(chitchat_id, *state_length);
         }
 
-        let nodes: Vec<NodeId> = node_sorted_by_stale_length.into_iter().cloned().collect();
-        let expected_nodes: Vec<NodeId> = vec![20_002, 20_001, 20_003, 10_001]
+        let nodes: Vec<ChitchatId> = node_sorted_by_stale_length.into_iter().cloned().collect();
+        let expected_nodes: Vec<ChitchatId> = vec![20_002, 20_001, 20_003, 10_001]
             .into_iter()
-            .map(NodeId::for_test_localhost)
+            .map(ChitchatId::for_local_test)
             .collect();
         assert_eq!(nodes, expected_nodes);
     }
@@ -393,14 +415,14 @@ mod tests {
     #[test]
     fn test_cluster_state_missing_node() {
         let cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state(&NodeId::for_test_localhost(10_001));
+        let node_state = cluster_state.node_state(&ChitchatId::for_local_test(10_001));
         assert!(node_state.is_none());
     }
 
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
+        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -415,7 +437,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
+        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -456,7 +478,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
+        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
@@ -480,7 +502,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&NodeId::for_test_localhost(10_001));
+        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
         node_state.set("key", "1");
         node_state.mark_for_deletion("key");
         assert_eq!(
@@ -505,12 +527,12 @@ mod tests {
     #[test]
     fn test_cluster_state_compute_digest() {
         let mut cluster_state = ClusterState::default();
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set("key_a", "");
         node1_state.set("key_b", "");
 
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set("key_a", "");
 
@@ -532,7 +554,7 @@ mod tests {
     #[test]
     fn test_cluster_state_gc_keys_marked_for_deletion() {
         let mut cluster_state = ClusterState::default();
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.mark_for_deletion("key_a"); // 2
@@ -572,11 +594,11 @@ mod tests {
     fn test_cluster_state_apply_delta() {
         let mut cluster_state = ClusterState::default();
 
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 3); // 2
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 1); // 1
 
@@ -624,16 +646,17 @@ mod tests {
     fn test_with_varying_max_transmitted_kv_helper(
         cluster_state: &ClusterState,
         digest: &Digest,
-        exclude_node_ids: HashSet<&NodeId>,
-        expected_delta_atoms: &[(&NodeId, &str, &str, Version, bool)],
+        exclude_chitchat_ids: HashSet<&ChitchatId>,
+        expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, bool)],
     ) {
         let max_delta =
-            cluster_state.compute_delta(digest, usize::MAX, exclude_node_ids.clone(), 10_000);
+            cluster_state.compute_delta(digest, usize::MAX, exclude_chitchat_ids.clone(), 10_000);
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
         for mtu in 2..buf.len() {
-            let delta = cluster_state.compute_delta(digest, mtu, exclude_node_ids.clone(), 10_000);
+            let delta =
+                cluster_state.compute_delta(digest, mtu, exclude_chitchat_ids.clone(), 10_000);
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -651,12 +674,16 @@ mod tests {
             }
             {
                 let delta =
-                    cluster_state.compute_delta(digest, mtu, exclude_node_ids.clone(), 10_000);
+                    cluster_state.compute_delta(digest, mtu, exclude_chitchat_ids.clone(), 10_000);
                 assert_eq!(&delta, &expected_delta);
             }
             {
-                let delta =
-                    cluster_state.compute_delta(digest, mtu + 1, exclude_node_ids.clone(), 10_000);
+                let delta = cluster_state.compute_delta(
+                    digest,
+                    mtu + 1,
+                    exclude_chitchat_ids.clone(),
+                    10_000,
+                );
                 assert_eq!(&delta, &expected_delta);
             }
         }
@@ -665,12 +692,12 @@ mod tests {
     fn test_cluster_state() -> ClusterState {
         let mut cluster_state = ClusterState::default();
 
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 3
 
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
@@ -685,8 +712,8 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_single_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        let node1 = NodeId::for_test_localhost(10_001);
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let node2 = ChitchatId::for_local_test(10_002);
         digest.add_node(node1.clone(), 1);
         digest.add_node(node2.clone(), 2);
         test_with_varying_max_transmitted_kv_helper(
@@ -705,8 +732,8 @@ mod tests {
     fn test_cluster_state_compute_delta_depth_first_chitchat() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        let node1 = NodeId::for_test_localhost(10_001);
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let node2 = ChitchatId::for_local_test(10_002);
         digest.add_node(node1.clone(), 1);
         digest.add_node(node2.clone(), 2);
         test_with_varying_max_transmitted_kv_helper(
@@ -725,8 +752,8 @@ mod tests {
     fn test_cluster_state_compute_delta_missing_node() {
         let cluster_state = test_cluster_state();
         let mut digest = Digest::default();
-        let node1 = NodeId::for_test_localhost(10_001);
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let node2 = ChitchatId::for_local_test(10_002);
         digest.add_node(node2.clone(), 3);
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -744,8 +771,8 @@ mod tests {
     fn test_cluster_state_compute_delta_should_ignore_dead_nodes() {
         let cluster_state = test_cluster_state();
         let digest = Digest::default();
-        let node1 = NodeId::for_test_localhost(10_001);
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let node2 = ChitchatId::for_local_test(10_002);
         let dead_nodes = vec![node2];
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -762,17 +789,17 @@ mod tests {
     fn test_cluster_state_compute_delta_with_old_node_state_that_needs_reset() {
         let mut cluster_state = ClusterState::default();
 
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 10_003); // 10_003
 
-        let node2 = NodeId::for_test_localhost(10_002);
+        let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2); // 2
 
         let mut digest = Digest::default();
-        let node1 = NodeId::for_test_localhost(10_001);
+        let node1 = ChitchatId::for_local_test(10_001);
         digest.add_node(node1.clone(), 1);
         {
             let delta = cluster_state.compute_delta(

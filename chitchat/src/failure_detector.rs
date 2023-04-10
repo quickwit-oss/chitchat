@@ -8,18 +8,18 @@ use mock_instant::Instant;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::NodeId;
+use crate::ChitchatId;
 
 /// A phi accrual failure detector implementation.
 pub struct FailureDetector {
     /// Heartbeat samples for each node.
-    node_samples: HashMap<NodeId, SamplingWindow>,
+    node_samples: HashMap<ChitchatId, SamplingWindow>,
     /// Failure detector configuration.
     config: FailureDetectorConfig,
     /// Denotes live nodes.
-    live_nodes: HashSet<NodeId>,
+    live_nodes: HashSet<ChitchatId>,
     /// Denotes dead nodes.
-    dead_nodes: HashMap<NodeId, Instant>,
+    dead_nodes: HashMap<ChitchatId, Instant>,
 }
 
 impl FailureDetector {
@@ -33,69 +33,72 @@ impl FailureDetector {
     }
 
     /// Reports node heartbeat.
-    pub fn report_heartbeat(&mut self, node_id: &NodeId) {
-        debug!(node_id = ?node_id, "reporting node heartbeat.");
-        let heartbeat_window = self.node_samples.entry(node_id.clone()).or_insert_with(|| {
-            SamplingWindow::new(
-                self.config.sampling_window_size,
-                self.config.max_interval,
-                self.config.initial_interval,
-            )
-        });
+    pub fn report_heartbeat(&mut self, chitchat_id: &ChitchatId) {
+        debug!(node_id=%chitchat_id.node_id, "reporting node heartbeat.");
+        let heartbeat_window = self
+            .node_samples
+            .entry(chitchat_id.clone())
+            .or_insert_with(|| {
+                SamplingWindow::new(
+                    self.config.sampling_window_size,
+                    self.config.max_interval,
+                    self.config.initial_interval,
+                )
+            });
         heartbeat_window.report_heartbeat();
     }
 
     /// Marks a node as dead or live.
-    pub fn update_node_liveliness(&mut self, node_id: &NodeId) {
-        if let Some(phi) = self.phi(node_id) {
-            debug!(node_id = ?node_id, phi = phi, "updating node liveliness");
+    pub fn update_node_liveliness(&mut self, chitchat_id: &ChitchatId) {
+        if let Some(phi) = self.phi(chitchat_id) {
+            debug!(node_id=%chitchat_id.node_id, phi=phi, "updating node liveliness");
             if phi > self.config.phi_threshold {
-                self.live_nodes.remove(node_id);
-                self.dead_nodes.insert(node_id.clone(), Instant::now());
+                self.live_nodes.remove(chitchat_id);
+                self.dead_nodes.insert(chitchat_id.clone(), Instant::now());
                 // Remove current sampling window so that when the node
                 // comes back online, we start with a fresh sampling window.
-                self.node_samples.remove(node_id);
+                self.node_samples.remove(chitchat_id);
             } else {
-                self.live_nodes.insert(node_id.clone());
-                self.dead_nodes.remove(node_id);
+                self.live_nodes.insert(chitchat_id.clone());
+                self.dead_nodes.remove(chitchat_id);
             }
         }
     }
 
     /// Removes and returns the list of garbage collectible nodes.
-    pub fn garbage_collect(&mut self) -> Vec<NodeId> {
+    pub fn garbage_collect(&mut self) -> Vec<ChitchatId> {
         let mut garbage_collected_nodes = Vec::new();
-        for (node_id, instant) in self.dead_nodes.iter() {
+        for (chitchat_id, instant) in self.dead_nodes.iter() {
             if instant.elapsed() >= self.config.dead_node_grace_period {
-                garbage_collected_nodes.push(node_id.clone())
+                garbage_collected_nodes.push(chitchat_id.clone())
             }
         }
-        for node_id in garbage_collected_nodes.iter() {
-            self.dead_nodes.remove(node_id);
+        for chitchat_id in garbage_collected_nodes.iter() {
+            self.dead_nodes.remove(chitchat_id);
         }
         garbage_collected_nodes
     }
 
-    /// Returns a list of live nodes.
-    pub fn live_nodes(&self) -> impl Iterator<Item = &NodeId> {
+    /// Returns the list of nodes considered live by the failure detector.
+    pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.live_nodes.iter()
     }
 
-    /// Returns a list of dead nodes.
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &NodeId> {
+    /// Returns the list of nodes considered dead by the failure detector.
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.dead_nodes.keys()
     }
 
     /// Returns the current phi value of a node.
-    fn phi(&mut self, node_id: &NodeId) -> Option<f64> {
+    fn phi(&mut self, chitchat_id: &ChitchatId) -> Option<f64> {
         self.node_samples
-            .get(node_id)
+            .get(chitchat_id)
             .map(|sampling_window| sampling_window.phi())
     }
 }
 
 /// The failure detector config struct.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailureDetectorConfig {
     /// Phi threshold value above which a node is flagged as faulty.
     pub phi_threshold: f64,
@@ -254,7 +257,7 @@ mod tests {
 
     use super::{BoundedArrayStats, SamplingWindow};
     use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
-    use crate::NodeId;
+    use crate::ChitchatId;
 
     #[test]
     fn test_failure_detector() {
@@ -262,42 +265,42 @@ mod tests {
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
         let intervals_choices = vec![1u64, 2];
-        let node_ids_choices = vec![
-            NodeId::for_test_localhost(10_001),
-            NodeId::for_test_localhost(10_002),
-            NodeId::for_test_localhost(10_003),
+        let chitchat_ids_choices = vec![
+            ChitchatId::for_local_test(10_001),
+            ChitchatId::for_local_test(10_002),
+            ChitchatId::for_local_test(10_003),
         ];
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
-            let node_id = node_ids_choices.choose(&mut rng).unwrap();
+            let chitchat_id = chitchat_ids_choices.choose(&mut rng).unwrap();
             MockClock::advance(Duration::from_secs(*time_offset));
-            failure_detector.report_heartbeat(node_id);
+            failure_detector.report_heartbeat(chitchat_id);
         }
 
-        for node_id in &node_ids_choices {
-            failure_detector.update_node_liveliness(node_id);
+        for chitchat_id in &chitchat_ids_choices {
+            failure_detector.update_node_liveliness(chitchat_id);
         }
 
         let mut live_nodes = failure_detector
             .live_nodes()
-            .map(|node_id| node_id.id.as_str())
+            .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         live_nodes.sort_unstable();
         assert_eq!(live_nodes, vec!["node-10001", "node-10002", "node-10003"]);
-        assert_eq!(failure_detector.garbage_collect(), vec![]);
+        assert_eq!(failure_detector.garbage_collect(), Vec::new());
 
         // stop reporting heartbeat for few seconds
         MockClock::advance(Duration::from_secs(50));
-        for node_id in &node_ids_choices {
-            failure_detector.update_node_liveliness(node_id);
+        for chitchat_id in &chitchat_ids_choices {
+            failure_detector.update_node_liveliness(chitchat_id);
         }
         let mut dead_nodes = failure_detector
             .dead_nodes()
-            .map(|node_id| node_id.id.as_str())
+            .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         dead_nodes.sort_unstable();
         assert_eq!(dead_nodes, vec!["node-10001", "node-10002", "node-10003"]);
-        assert_eq!(failure_detector.garbage_collect(), vec![]);
+        assert_eq!(failure_detector.garbage_collect(), Vec::new());
 
         // Wait for dead_node_grace_period & garbage collect.
         MockClock::advance(Duration::from_secs(25 * 60 * 60));
@@ -305,20 +308,20 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|node_id| node_id.id.as_str())
+                .map(|chitchat_id| chitchat_id.node_id.as_str())
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
         assert_eq!(
             failure_detector
                 .dead_nodes()
-                .map(|node_id| node_id.id.as_str())
+                .map(|chitchat_id| chitchat_id.node_id.as_str())
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
         let mut removed_nodes = garbage_collected_nodes
             .iter()
-            .map(|node_id| node_id.id.as_str())
+            .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         removed_nodes.sort_unstable();
         assert_eq!(
@@ -332,7 +335,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
         let intervals_choices = vec![1u64, 2];
-        let node_1 = NodeId::for_test_localhost(10_001);
+        let node_1 = ChitchatId::for_local_test(10_001);
 
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
@@ -344,7 +347,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|node_id| node_id.id.as_str())
+                .map(|chitchat_id| chitchat_id.node_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["node-10001"]
         );
@@ -355,7 +358,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|node_id| node_id.id.as_str())
+                .map(|chitchat_id| chitchat_id.node_id.as_str())
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
@@ -370,7 +373,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|node_id| node_id.id.as_str())
+                .map(|chitchat_id| chitchat_id.node_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["node-10001"]
         );
@@ -380,23 +383,23 @@ mod tests {
     fn test_failure_detector_node_state_after_initial_interval() {
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
-        let node_id = NodeId::for_test_localhost(10_001);
-        failure_detector.report_heartbeat(&node_id);
+        let chitchat_id = ChitchatId::for_local_test(10_001);
+        failure_detector.report_heartbeat(&chitchat_id);
 
         MockClock::advance(Duration::from_secs(1));
-        failure_detector.update_node_liveliness(&node_id);
+        failure_detector.update_node_liveliness(&chitchat_id);
 
         let live_nodes = failure_detector
             .live_nodes()
-            .map(|node_id| node_id.id.as_str())
+            .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, vec!["node-10001"]);
         MockClock::advance(Duration::from_secs(40));
-        failure_detector.update_node_liveliness(&node_id);
+        failure_detector.update_node_liveliness(&chitchat_id);
 
         let live_nodes = failure_detector
             .live_nodes()
-            .map(|node_id| node_id.id.as_str())
+            .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, Vec::<&str>::new());
     }

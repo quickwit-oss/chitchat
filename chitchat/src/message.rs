@@ -12,7 +12,7 @@ use crate::serialize::Serializable;
 /// between node A and node B.
 /// The names {Syn, SynAck, Ack} of the different steps are borrowed from
 /// TCP Handshake.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ChitchatMessage {
     /// Node A initiates handshakes.
     Syn { cluster_id: String, digest: Digest },
@@ -119,18 +119,18 @@ pub(crate) fn syn_ack_serialized_len(digest: &Digest, delta: &Delta) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::serialize::test_serdeser_aux;
-    use crate::{ChitchatMessage, Digest, NodeId};
+    use crate::{ChitchatId, ChitchatMessage, Digest};
 
     #[test]
     fn test_syn() {
         let mut digest = Digest::default();
-        digest.add_node(NodeId::for_test_localhost(10_001), 1);
-        digest.add_node(NodeId::for_test_localhost(10_002), 2);
+        digest.add_node(ChitchatId::for_local_test(10_001), 1);
+        digest.add_node(ChitchatId::for_local_test(10_002), 2);
         let syn = ChitchatMessage::Syn {
             cluster_id: "cluster-a".to_string(),
             digest,
         };
-        test_serdeser_aux(&syn, 68);
+        test_serdeser_aux(&syn, 84);
     }
 
     #[test]
