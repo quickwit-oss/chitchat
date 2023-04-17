@@ -1,16 +1,16 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::derive_partial_eq_without_eq)]
 
-mod server;
-
 mod configuration;
 mod delta;
 mod digest;
 mod failure_detector;
 mod message;
 pub(crate) mod serialize;
+mod server;
 mod state;
 pub mod transport;
+mod types;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -18,7 +18,6 @@ use std::net::SocketAddr;
 use delta::Delta;
 use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
-use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
@@ -30,9 +29,7 @@ use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::ClusterState;
-
-/// Map key for the heartbeat node value.
-pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
+pub use crate::types::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
 
 /// Maximum UDP datagram payload size (in bytes).
 ///
@@ -45,64 +42,9 @@ pub(crate) const HEARTBEAT_KEY: &str = "heartbeat";
 /// or so.
 const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 
-pub type Version = u64;
-
-/// For the lifetime of a cluster, nodes can go down and come back up multiple times. They may also
-/// die permanently. A [`ChitchatId`] is composed of three components:
-/// - `node_id`: an identifier unique across the cluster.
-/// - `generation_id`: a numeric identifier that distinguishes a node's states between restarts.
-/// - `gossip_advertise_address`: the socket address peers should use to gossip with the node.
-///
-/// The `generation_id` is used to detect when a node has restarted. It must be monotonically
-/// increasing to differentiate the most recent state and must be incremented every time a node
-/// leaves and rejoins the cluster. Backends such as Cassandra or Quickwit typically use the node's
-/// startup time as the `generation_id`. Applications with stable state across restarts can use a
-/// constant `generation_id`, for instance, `0`.
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct ChitchatId {
-    /// An identifier unique across the cluster.
-    pub node_id: String,
-    /// A numeric identifier incremented every time the node leaves and rejoins the cluster.
-    pub generation_id: u64,
-    /// The socket address peers should use to gossip with the node.
-    pub gossip_advertise_address: SocketAddr,
-}
-
-impl ChitchatId {
-    pub fn new(node_id: String, generation_id: u64, gossip_advertise_address: SocketAddr) -> Self {
-        Self {
-            node_id,
-            generation_id,
-            gossip_advertise_address,
-        }
-    }
-}
-
-#[cfg(test)]
-impl ChitchatId {
-    /// Returns the gossip advertise port for performing assertions during tests.
-    pub fn advertise_port(&self) -> u16 {
-        self.gossip_advertise_address.port()
-    }
-
-    /// Creates a new [`ChitchatId`] for local testing.
-    pub fn for_local_test(port: u16) -> Self {
-        Self::new(format!("node-{port}"), 0, ([127, 0, 0, 1], port).into())
-    }
-}
-
-/// A versioned key-value pair.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct VersionedValue {
-    pub value: String,
-    pub version: Version,
-    pub marked_for_deletion: bool,
-}
-
 pub struct Chitchat {
     config: ChitchatConfig,
     cluster_state: ClusterState,
-    heartbeat: u64,
     /// The failure detector instance.
     failure_detector: FailureDetector,
     /// A notification channel (sender) for sending live nodes change feed.
@@ -122,7 +64,6 @@ impl Chitchat {
         let mut chitchat = Chitchat {
             config,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
-            heartbeat: 0,
             failure_detector,
             ready_nodes_watcher_tx,
             ready_nodes_watcher_rx,
@@ -131,7 +72,7 @@ impl Chitchat {
         let self_node_state = chitchat.self_node_state();
 
         // Immediately mark node as alive to ensure it responds to SYNs.
-        self_node_state.set(HEARTBEAT_KEY, 0);
+        self_node_state.update_heartbeat();
 
         // Set initial key/value pairs.
         for (key, value) in initial_key_values {
@@ -153,10 +94,11 @@ impl Chitchat {
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
-                if cluster_id != self.config.cluster_id {
+                if cluster_id != self.cluster_id() {
                     warn!(
-                        cluster_id = %cluster_id,
-                        "rejecting syn message with mismatching cluster name"
+                        our_cluster_id=%self.cluster_id(),
+                        their_cluster_id=%cluster_id,
+                        "Received SYN message addressed to a different cluster."
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
@@ -169,34 +111,34 @@ impl Chitchat {
                 let delta = self.cluster_state.compute_delta(
                     &digest,
                     delta_mtu,
-                    dead_nodes,
-                    self.config.marked_for_deletion_grace_period,
+                    &dead_nodes,
+                    self.config.marked_for_deletion_grace_period as u64,
                 );
-                self.report_to_failure_detector(&delta);
+                self.report_heartbeats(&delta);
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
                     delta,
                 })
             }
             ChitchatMessage::SynAck { digest, delta } => {
-                self.report_to_failure_detector(&delta);
+                self.report_heartbeats(&delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
-                    dead_nodes,
-                    self.config.marked_for_deletion_grace_period,
+                    &dead_nodes,
+                    self.config.marked_for_deletion_grace_period as u64,
                 );
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
-                self.report_to_failure_detector(&delta);
+                self.report_heartbeats(&delta);
                 self.cluster_state.apply_delta(delta);
                 None
             }
             ChitchatMessage::BadCluster => {
-                warn!("message rejected by peer: cluster name mismatch");
+                warn!("Message rejected by peer: wrong cluster.");
                 None
             }
         }
@@ -208,18 +150,16 @@ impl Chitchat {
             .gc_keys_marked_for_deletion(self.config.marked_for_deletion_grace_period, &dead_nodes);
     }
 
-    fn report_to_failure_detector(&mut self, delta: &Delta) {
+    /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
+    /// update.
+    fn report_heartbeats(&mut self, delta: &Delta) {
         for (chitchat_id, node_delta) in &delta.node_deltas {
-            let local_max_version = self
-                .cluster_state
-                .node_states
-                .get(chitchat_id)
-                .map(|node_state| node_state.max_version)
-                .unwrap_or(0);
-
-            let delta_max_version = node_delta.max_version();
-            if local_max_version < delta_max_version {
-                self.failure_detector.report_heartbeat(chitchat_id);
+            if let Some(node_state) = self.cluster_state.node_states.get(chitchat_id) {
+                if node_state.heartbeat < node_delta.heartbeat
+                    || node_state.max_version < node_delta.max_version
+                {
+                    self.failure_detector.report_heartbeat(chitchat_id);
+                }
             }
         }
     }
@@ -231,10 +171,10 @@ impl Chitchat {
             .nodes()
             .filter(|&chitchat_id| chitchat_id != self.self_chitchat_id())
             .collect::<Vec<_>>();
-        for &chitchat_id in &cluster_nodes {
+
+        for chitchat_id in cluster_nodes {
             self.failure_detector.update_node_liveliness(chitchat_id);
         }
-
         let ready_nodes_before = self.ready_nodes_watcher_rx.borrow().clone();
         let ready_nodes_after = self.ready_nodes().cloned().collect::<HashSet<_>>();
 
@@ -301,9 +241,7 @@ impl Chitchat {
     }
 
     pub fn update_heartbeat(&mut self) {
-        self.heartbeat += 1;
-        let heartbeat = self.heartbeat;
-        self.self_node_state().set(HEARTBEAT_KEY, heartbeat);
+        self.self_node_state().update_heartbeat();
     }
 
     /// Computes digest.
@@ -358,10 +296,6 @@ mod tests {
     fn assert_cluster_state_eq(lhs: &NodeState, rhs: &NodeState) {
         assert_eq!(lhs.key_values.len(), rhs.key_values.len());
         for (key, value) in &lhs.key_values {
-            if key == HEARTBEAT_KEY {
-                // we ignore the heartbeat key
-                continue;
-            }
             assert_eq!(rhs.key_values.get(key), Some(value));
         }
     }

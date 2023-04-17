@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::message::ChitchatMessage;
 use crate::transport::{Socket, Transport};
@@ -37,11 +37,13 @@ async fn dns_refresh_loop(
     seed_addrs_tx: watch::Sender<HashSet<SocketAddr>>,
 ) {
     let mut interval = time::interval(DNS_POLLING_DURATION);
-    // We actually do not want to run the polling loop right away,
+    // We actually DO want to run the polling loop right away,
     // hence this tick.
     interval.tick().await;
-    while seed_addrs_tx.receiver_count() > 0 {
+
+    loop {
         interval.tick().await;
+
         let mut seed_addrs = seed_addrs_not_requiring_resolution.clone();
         for seed_host in &seed_hosts_requiring_dns {
             resolve_seed_host(seed_host, &mut seed_addrs).await;
@@ -53,27 +55,28 @@ async fn dns_refresh_loop(
 }
 
 async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>) {
-    if let Ok(resolved_seed_addrs) = lookup_host(seed_host).await {
-        for seed_addr in resolved_seed_addrs {
-            if seed_addrs.contains(&seed_addr) {
-                continue;
+    match lookup_host(seed_host).await {
+        Ok(resolved_seed_addrs) => {
+            for seed_addr in resolved_seed_addrs {
+                if seed_addrs.insert(seed_addr) {
+                    info!(seed_host=%seed_host, seed_addr=%seed_addr, "Resolved peer seed host.");
+                }
             }
-            debug!(seed_host=seed_host, seed_addr=%seed_addr, "seed-addr-from_dns");
-            seed_addrs.insert(seed_addr);
         }
-    } else {
-        warn!(seed_host=%seed_host, "Failed to lookup host");
-    }
+        Err(error) => {
+            warn!(seed_host=%seed_host, error=?error, "Failed to lookup host.");
+        }
+    };
 }
 
-// The seed nodes address can be string representing a
-// socket addr directly, or hostnames:port.
+// A seed node address can be a string representing a
+// socket addr directly, or hostname:port.
 //
 // The latter is especially important when relying on
 // a headless service in k8s or when using DNS in general.
 //
 // In that case, we do not want to perform the resolution
-// once and forall.
+// once and for all.
 // We want to periodically retry DNS resolution,
 // in order to avoid having a split cluster.
 //
@@ -115,9 +118,9 @@ async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<Soc
     seed_addrs_rx
 }
 
-/// Launch a new server.
+/// Launches a new Chitchat server.
 ///
-/// This will start the Chitchat server as a new Tokio background task.
+/// This will start the server as a new Tokio background task.
 pub async fn spawn_chitchat(
     config: ChitchatConfig,
     initial_key_values: Vec<(String, String)>,
@@ -160,20 +163,20 @@ impl ChitchatHandle {
         self.chitchat.clone()
     }
 
-    /// Call a function with mutable access to the [`Chitchat`].
+    /// Calls a function with mutable access to the [`Chitchat`].
     pub async fn with_chitchat<F, T>(&self, mut fun: F) -> T
     where F: FnMut(&mut Chitchat) -> T {
         let mut chitchat = self.chitchat.lock().await;
         fun(&mut chitchat)
     }
 
-    /// Shut the server down.
+    /// Shuts the server down.
     pub async fn shutdown(self) -> Result<(), anyhow::Error> {
         let _ = self.command_tx.send(Command::Shutdown);
         self.join_handle.await?
     }
 
-    /// Perform a Chitchat "handshake" with another UDP server.
+    /// Performs a Chitchat "handshake" with another UDP server.
     pub fn gossip(&self, addr: SocketAddr) -> Result<(), anyhow::Error> {
         self.command_tx.send(Command::Gossip(addr))?;
         Ok(())
@@ -229,13 +232,13 @@ impl Server {
         Ok(())
     }
 
-    /// Process a single UDP packet.
+    /// Processes a single UDP datagram.
     async fn handle_message(
         &mut self,
         from_addr: SocketAddr,
         message: ChitchatMessage,
     ) -> anyhow::Result<()> {
-        // Handle gossip from other servers.
+        // Handle gossip message from other servers.
         let response = self.chitchat.lock().await.process_message(message);
         // Send reply if necessary.
         if let Some(message) = response {
@@ -301,7 +304,7 @@ impl Server {
         chitchat_guard.update_nodes_liveliness();
     }
 
-    /// Gossip to one other UDP server.
+    /// Gossip with another peer.
     async fn gossip(&mut self, addr: SocketAddr) -> anyhow::Result<()> {
         let syn = self.chitchat.lock().await.create_syn_message();
         self.transport.send(addr, syn).await?;
@@ -410,7 +413,7 @@ mod tests {
     use crate::message::ChitchatMessage;
     use crate::state::NodeState;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::HEARTBEAT_KEY;
+    use crate::Heartbeat;
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -463,7 +466,7 @@ mod tests {
         match message {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 assert_eq!(cluster_id, "default-cluster");
-                assert_eq!(digest.node_max_version.len(), 1);
+                assert_eq!(digest.node_digests.len(), 1);
             }
             message => panic!("unexpected message: {message:?}"),
         }
@@ -581,10 +584,10 @@ mod tests {
             .await;
 
         // Wait for syn, with updated heartbeat
-        let (_, syn_message) = timeout(test_transport.recv()).await.unwrap();
+        let (_, syn) = timeout(test_transport.recv()).await.unwrap();
 
         // Reply.
-        let syn_ack = test_chitchat.process_message(syn_message).unwrap();
+        let syn_ack = test_chitchat.process_message(syn).unwrap();
         test_transport.send(server_addr, syn_ack).await.unwrap();
 
         // Wait for delta to ensure heartbeat key was incremented.
@@ -595,9 +598,9 @@ mod tests {
             panic!("Expected ack");
         };
 
-        let node_delta = &delta.node_deltas.get(&server_id).unwrap().key_values;
-        let heartbeat = &node_delta.get(HEARTBEAT_KEY).unwrap().value;
-        assert_eq!(heartbeat, "2");
+        let node_delta = &delta.node_deltas.get(&server_id).unwrap();
+        let heartbeat = node_delta.heartbeat;
+        assert_eq!(heartbeat, Heartbeat(3));
 
         server_handle.shutdown().await.unwrap();
     }
