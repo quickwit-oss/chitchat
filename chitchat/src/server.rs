@@ -9,11 +9,11 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::message::ChitchatMessage;
 use crate::transport::{Socket, Transport};
-use crate::{Chitchat, ChitchatConfig, NodeId};
+use crate::{Chitchat, ChitchatConfig, ChitchatId};
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
@@ -23,7 +23,7 @@ const GOSSIP_COUNT: usize = 3;
 /// It is necessary to hold (and not drop) the handler
 /// for the server to keep running.
 pub struct ChitchatHandle {
-    node_id: NodeId,
+    chitchat_id: ChitchatId,
     command_tx: UnboundedSender<Command>,
     chitchat: Arc<Mutex<Chitchat>>,
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
@@ -130,9 +130,9 @@ pub async fn spawn_chitchat(
 
     let socket = transport.open(config.listen_addr).await?;
 
-    let node_id = config.node_id.clone();
+    let chitchat_id = config.chitchat_id.clone();
 
-    let chitchat = Chitchat::with_node_id_and_seeds(config, seed_addrs, initial_key_values);
+    let chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs, initial_key_values);
     let chitchat_arc = Arc::new(Mutex::new(chitchat));
     let chitchat_arc_clone = chitchat_arc.clone();
 
@@ -144,7 +144,7 @@ pub async fn spawn_chitchat(
     });
 
     Ok(ChitchatHandle {
-        node_id,
+        chitchat_id,
         command_tx,
         chitchat: chitchat_arc,
         join_handle,
@@ -152,8 +152,8 @@ pub async fn spawn_chitchat(
 }
 
 impl ChitchatHandle {
-    pub fn node_id(&self) -> &NodeId {
-        &self.node_id
+    pub fn chitchat_id(&self) -> &ChitchatId {
+        &self.chitchat_id
     }
 
     pub fn chitchat(&self) -> Arc<Mutex<Chitchat>> {
@@ -252,16 +252,16 @@ impl Server {
 
         let peer_nodes = cluster_state
             .nodes()
-            .filter(|node_id| *node_id != chitchat_guard.self_node_id())
-            .map(|node_id| node_id.gossip_public_address)
+            .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
+            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect::<HashSet<_>>();
         let live_nodes = chitchat_guard
             .live_nodes()
-            .map(|node_id| node_id.gossip_public_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect::<HashSet<_>>();
         let dead_nodes = chitchat_guard
             .dead_nodes()
-            .map(|node_id| node_id.gossip_public_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect::<HashSet<_>>();
         let seed_nodes: HashSet<SocketAddr> = chitchat_guard.seed_nodes();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) = select_nodes_for_gossip(
@@ -279,23 +279,20 @@ impl Server {
         drop(chitchat_guard);
 
         for node in selected_nodes {
-            let result = self.gossip(node).await;
-            if result.is_err() {
-                error!(node = ?node, "Gossip error with a live node.");
+            if let Err(error) = self.gossip(node).await {
+                warn!(error=?error, node_address=%node, "Failed to gossip with live node.");
             }
         }
 
         if let Some(random_dead_node) = random_dead_node_opt {
-            let result = self.gossip(random_dead_node).await;
-            if result.is_err() {
-                error!(node = ?random_dead_node, "Gossip error with a dead node.")
+            if let Err(error) = self.gossip(random_dead_node).await {
+                warn!(error=?error, node_address=%random_dead_node, "Failed to gossip with dead node.");
             }
         }
 
         if let Some(random_seed_node) = random_seed_node_opt {
-            let result = self.gossip(random_seed_node).await;
-            if result.is_err() {
-                error!(node = ?random_seed_node, "Gossip error with a seed node.")
+            if let Err(error) = self.gossip(random_seed_node).await {
+                warn!(error=?error, node_address=%random_seed_node, "Failed to gossip with seed node.");
             }
         }
 
@@ -343,8 +340,8 @@ where
     .choose_multiple(rng, GOSSIP_COUNT);
 
     let mut has_gossiped_with_a_seed_node = false;
-    for node_id in &nodes {
-        if seed_nodes.contains(node_id) {
+    for chitchat_id in &nodes {
+        if seed_nodes.contains(chitchat_id) {
             has_gossiped_with_a_seed_node = true;
             break;
         }
@@ -440,8 +437,8 @@ mod tests {
         }
     }
 
-    fn to_hash_set<T: Eq + std::hash::Hash>(node_ids: Vec<T>) -> std::collections::HashSet<T> {
-        node_ids.into_iter().collect()
+    fn to_hash_set<T: Eq + std::hash::Hash>(chitchat_ids: Vec<T>) -> std::collections::HashSet<T> {
+        chitchat_ids.into_iter().collect()
     }
 
     async fn timeout<O>(future: impl Future<Output = O>) -> O {
@@ -454,7 +451,7 @@ mod tests {
     async fn test_syn() {
         let transport = ChannelTransport::default();
         let test_config = ChitchatConfig::for_test(1112);
-        let test_addr = test_config.node_id.gossip_public_address;
+        let test_addr = test_config.chitchat_id.gossip_advertise_address;
         let peer_addr: SocketAddr = ([127u8, 0u8, 0u8, 1u8], 1111u16).into();
         let mut peer_transport = transport.open(peer_addr).await.unwrap();
         let server = spawn_chitchat(test_config, Vec::new(), &transport)
@@ -483,14 +480,14 @@ mod tests {
 
         let config2 = ChitchatConfig::for_test(2);
         let mut transport2 = transport
-            .open(config2.node_id.gossip_public_address)
+            .open(config2.chitchat_id.gossip_advertise_address)
             .await
             .unwrap();
 
         let config1 = ChitchatConfig::for_test(1);
-        let addr1 = config1.node_id.gossip_public_address;
+        let addr1 = config1.chitchat_id.gossip_advertise_address;
 
-        let chitchat = Chitchat::with_node_id_and_seeds(config2, empty_seeds(), Vec::new());
+        let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds(), Vec::new());
         let _handler = spawn_chitchat(config1, Vec::new(), &transport)
             .await
             .unwrap();
@@ -512,13 +509,14 @@ mod tests {
         let mut outsider_config = ChitchatConfig::for_test(2224);
         outsider_config.cluster_id = "another-cluster".to_string();
         let mut outsider_transport = transport
-            .open(outsider_config.node_id.gossip_public_address)
+            .open(outsider_config.chitchat_id.gossip_advertise_address)
             .await
             .unwrap();
-        let outsider = Chitchat::with_node_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
+        let outsider =
+            Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
 
         let server_config = ChitchatConfig::for_test(2223);
-        let server_addr = server_config.node_id.gossip_public_address;
+        let server_addr = server_config.chitchat_id.gossip_advertise_address;
         let _handler = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -537,11 +535,11 @@ mod tests {
     async fn test_seeding() {
         let transport = ChannelTransport::default();
         let seed_config = ChitchatConfig::for_test(5551);
-        let seed_addr = seed_config.node_id.gossip_public_address;
+        let seed_addr = seed_config.chitchat_id.gossip_advertise_address;
         let mut seed_transport = transport.open(seed_addr).await.unwrap();
 
         let mut client_config = ChitchatConfig::for_test(5552);
-        let client_addr = client_config.node_id.gossip_public_address;
+        let client_addr = client_config.chitchat_id.gossip_advertise_address;
         client_config.seed_nodes = vec![seed_addr.to_string()];
         let _handler = spawn_chitchat(client_config, Vec::new(), &transport)
             .await
@@ -560,14 +558,14 @@ mod tests {
     async fn test_heartbeat() {
         let transport = ChannelTransport::default();
         let test_config = ChitchatConfig::for_test(1);
-        let test_addr = test_config.node_id.gossip_public_address;
+        let test_addr = test_config.chitchat_id.gossip_advertise_address;
         let mut test_chitchat =
-            Chitchat::with_node_id_and_seeds(test_config, empty_seeds(), Vec::new());
+            Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds(), Vec::new());
         let mut test_transport = transport.open(test_addr).await.unwrap();
 
         let server_config = ChitchatConfig::for_test(2);
-        let server_id = server_config.node_id.clone();
-        let server_addr = server_config.node_id.gossip_public_address;
+        let server_id = server_config.chitchat_id.clone();
+        let server_addr = server_config.chitchat_id.gossip_advertise_address;
         let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -608,14 +606,14 @@ mod tests {
     async fn test_member_change_event_is_broadcasted() {
         let transport = ChannelTransport::default();
         let node1_config = ChitchatConfig::for_test(6663);
-        let node1_addr = node1_config.node_id.gossip_public_address;
+        let node1_addr = node1_config.chitchat_id.gossip_advertise_address;
         let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
             .await
             .unwrap();
 
         let mut node2_config = ChitchatConfig::for_test(6664);
         node2_config.seed_nodes = vec![node1_addr.to_string()];
-        let node2_id = node2_config.node_id.clone();
+        let node2_id = node2_config.chitchat_id.clone();
         let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -636,9 +634,9 @@ mod tests {
         node2.shutdown().await.unwrap();
     }
 
-    async fn next_ready_nodes<S: Unpin + Stream<Item = HashSet<NodeId>>>(
+    async fn next_ready_nodes<S: Unpin + Stream<Item = HashSet<ChitchatId>>>(
         watcher: &mut S,
-    ) -> HashSet<NodeId> {
+    ) -> HashSet<ChitchatId> {
         tokio::time::timeout(Duration::from_secs(3), watcher.next())
             .await
             .expect("No Change within 3s")
@@ -658,8 +656,8 @@ mod tests {
         let mut node1_config = ChitchatConfig::for_test(6663);
         node1_config.set_is_ready_predicate(is_ready_pred);
 
-        let node1_addr = node1_config.node_id.gossip_public_address;
-        let node1 = spawn_chitchat(node1_config, vec![], &transport)
+        let node1_addr = node1_config.chitchat_id.gossip_advertise_address;
+        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
             .await
             .unwrap();
 
@@ -667,7 +665,7 @@ mod tests {
         node2_config.set_is_ready_predicate(is_ready_pred);
 
         node2_config.seed_nodes = vec![node1_addr.to_string()];
-        let node2_id = node2_config.node_id.clone();
+        let node2_id = node2_config.chitchat_id.clone();
         let node2 = spawn_chitchat(
             node2_config,
             vec![(HEALTH_KEY.to_string(), "READY".to_string())],
@@ -719,26 +717,26 @@ mod tests {
 
     #[test]
     fn test_select_nodes_for_gossip() {
-        let node1 = NodeId::for_test_localhost(10_001);
-        let node2 = NodeId::for_test_localhost(10_002);
-        let node3 = NodeId::for_test_localhost(10_003);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let node2 = ChitchatId::for_local_test(10_002);
+        let node3 = ChitchatId::for_local_test(10_003);
         let mut rng = RngForTest::default();
         let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
             &mut rng,
             to_hash_set(vec![
-                node1.gossip_public_address,
-                node2.gossip_public_address,
-                node3.gossip_public_address,
+                node1.gossip_advertise_address,
+                node2.gossip_advertise_address,
+                node3.gossip_advertise_address,
             ]),
             to_hash_set(vec![
-                node1.gossip_public_address,
-                node2.gossip_public_address,
+                node1.gossip_advertise_address,
+                node2.gossip_advertise_address,
             ]),
-            to_hash_set(vec![node3.gossip_public_address]),
-            to_hash_set(vec![node2.gossip_public_address]),
+            to_hash_set(vec![node3.gossip_advertise_address]),
+            to_hash_set(vec![node2.gossip_advertise_address]),
         );
         assert_eq!(nodes.len(), 2);
-        assert_eq!(dead_node, Some(node3.gossip_public_address));
+        assert_eq!(dead_node, Some(node3.gossip_advertise_address));
         assert_eq!(
             seed_node, None,
             "Should have already gossiped with a seed node."
@@ -748,16 +746,16 @@ mod tests {
     #[test]
     fn test_gossip_no_dead_node_no_seed_nodes() {
         let nodes: HashSet<SocketAddr> = (10_001..=10_005)
-            .map(NodeId::for_test_localhost)
-            .map(|node_id| node_id.gossip_public_address)
+            .map(ChitchatId::for_local_test)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect();
         let mut rng = RngForTest::default();
         let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
             &mut rng,
             nodes.clone(),
             nodes,
-            to_hash_set(vec![]),
-            to_hash_set(vec![]),
+            to_hash_set(Vec::new()),
+            to_hash_set(Vec::new()),
         );
         assert_eq!(nodes.len(), 3);
         assert_eq!(dead_node, None);
@@ -767,8 +765,8 @@ mod tests {
     #[test]
     fn test_gossip_dead_and_seed_node() {
         let nodes: Vec<SocketAddr> = (10_001..=10_005)
-            .map(NodeId::for_test_localhost)
-            .map(|node_id| node_id.gossip_public_address)
+            .map(ChitchatId::for_local_test)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect();
         let seeds: HashSet<SocketAddr> = nodes[3..5].iter().cloned().collect();
         let mut rng = RngForTest::default();

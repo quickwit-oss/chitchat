@@ -1,9 +1,9 @@
 use std::io::BufRead;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 
-use crate::NodeId;
+use crate::ChitchatId;
 
 impl Serializable for u16 {
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -37,21 +37,12 @@ impl Serializable for u64 {
 
 impl Serializable for bool {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        let bool_bytes = if *self { [1u8] } else { [0u8] };
-        bool_bytes.serialize(buf);
+        buf.push(*self as u8);
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let bool_bytes: [u8; 1] = Serializable::deserialize(buf)?;
-        if bool_bytes[0] == 0 {
-            return Ok(false);
-        } else if bool_bytes[0] == 1 {
-            return Ok(true);
-        }
-        anyhow::bail!(
-            "Invalid bool bytes: must be either 0 or 1, got {}",
-            bool_bytes[0]
-        )
+        let bool_byte: [u8; 1] = Serializable::deserialize(buf)?;
+        Ok(bool_byte[0] != 0)
     }
 
     fn serialized_len(&self) -> usize {
@@ -74,7 +65,7 @@ impl TryFrom<u8> for IpVersion {
         } else if ip_type_byte == IpVersion::V6 as u8 {
             Ok(IpVersion::V6)
         } else {
-            bail!("Invalid ip version byte. Expected 4 or 6 and got {ip_type_byte}");
+            bail!("Invalid IP version byte. Expected `4` or `6`, got `{ip_type_byte}`.");
         }
     }
 }
@@ -94,12 +85,9 @@ impl Serializable for IpAddr {
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let ip_version_byte = buf
-            .first()
-            .cloned()
-            .context("Failed to deserialize IpAddr: empty buffer.")?;
-        let ip_version = IpVersion::try_from(ip_version_byte)?;
-        buf.consume(1);
+        let ip_version_byte: [u8; 1] = Serializable::deserialize(buf)?;
+        let ip_version = IpVersion::try_from(ip_version_byte[0])?;
+
         match ip_version {
             IpVersion::V4 => {
                 let bytes: [u8; 4] = Serializable::deserialize(buf)?;
@@ -174,23 +162,28 @@ impl Serializable for SocketAddr {
     }
 }
 
-impl Serializable for NodeId {
+impl Serializable for ChitchatId {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        self.id.serialize(buf);
-        self.gossip_public_address.serialize(buf)
+        self.node_id.serialize(buf);
+        self.generation_id.serialize(buf);
+        self.gossip_advertise_address.serialize(buf)
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let id = String::deserialize(buf)?;
+        let node_id = String::deserialize(buf)?;
+        let generation_id = u64::deserialize(buf)?;
         let gossip_public_address = SocketAddr::deserialize(buf)?;
-        Ok(NodeId {
-            id,
-            gossip_public_address,
+        Ok(Self {
+            node_id,
+            generation_id,
+            gossip_advertise_address: gossip_public_address,
         })
     }
 
     fn serialized_len(&self) -> usize {
-        self.id.serialized_len() + self.gossip_public_address.serialized_len()
+        self.node_id.serialized_len()
+            + self.generation_id.serialized_len()
+            + self.gossip_advertise_address.serialized_len()
     }
 }
 
@@ -226,6 +219,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_serialize_bool() {
+        test_serdeser_aux(&true, 1);
+    }
+
+    #[test]
+    fn test_serialize_chitchat_id() {
+        test_serdeser_aux(
+            &ChitchatId::new("node-id".to_string(), 1, "127.0.0.1:7280".parse().unwrap()),
+            24,
+        );
+    }
+
+    #[test]
     fn test_serialize_ip() {
         test_serdeser_aux(&IpAddr::from(Ipv4Addr::new(127, 1, 3, 9)), 5);
         test_serdeser_aux(
@@ -234,10 +240,5 @@ mod tests {
             ])),
             17,
         );
-    }
-
-    #[test]
-    fn test_serialize_bool() {
-        test_serdeser_aux(&true, 1);
     }
 }

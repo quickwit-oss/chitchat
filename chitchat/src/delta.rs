@@ -2,44 +2,40 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
 use crate::serialize::*;
-use crate::{NodeId, Version, VersionedValue};
+use crate::{ChitchatId, Version, VersionedValue};
 
-#[derive(Default, Eq, PartialEq, Debug)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct Delta {
-    pub(crate) node_deltas: BTreeMap<NodeId, NodeDelta>,
-    pub(crate) nodes_to_reset: HashSet<NodeId>,
+    pub(crate) node_deltas: BTreeMap<ChitchatId, NodeDelta>,
+    pub(crate) nodes_to_reset: HashSet<ChitchatId>,
 }
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        u16::try_from(self.node_deltas.len())
-            .unwrap()
-            .serialize(buf);
-        for (node_id, node_delta) in &self.node_deltas {
-            node_id.serialize(buf);
+        (self.node_deltas.len() as u16).serialize(buf);
+        for (chitchat_id, node_delta) in &self.node_deltas {
+            chitchat_id.serialize(buf);
             node_delta.serialize(buf);
         }
-        u16::try_from(self.nodes_to_reset.len())
-            .unwrap()
-            .serialize(buf);
-        for node_id in &self.nodes_to_reset {
-            node_id.serialize(buf);
+        (self.nodes_to_reset.len() as u16).serialize(buf);
+        for chitchat_id in &self.nodes_to_reset {
+            chitchat_id.serialize(buf);
         }
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut node_deltas: BTreeMap<NodeId, NodeDelta> = Default::default();
+        let mut node_deltas: BTreeMap<ChitchatId, NodeDelta> = Default::default();
         let num_nodes = u16::deserialize(buf)?;
         for _ in 0..num_nodes {
-            let node_id = NodeId::deserialize(buf)?;
+            let chitchat_id = ChitchatId::deserialize(buf)?;
             let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(node_id, node_delta);
+            node_deltas.insert(chitchat_id, node_delta);
         }
         let num_nodes_to_reset = u16::deserialize(buf)?;
-        let mut nodes_to_reset = HashSet::new();
+        let mut nodes_to_reset = HashSet::with_capacity(num_nodes_to_reset as usize);
         for _ in 0..num_nodes_to_reset {
-            let node_id = NodeId::deserialize(buf)?;
-            nodes_to_reset.insert(node_id);
+            let chitchat_id = ChitchatId::deserialize(buf)?;
+            nodes_to_reset.insert(chitchat_id);
         }
         Ok(Delta {
             node_deltas,
@@ -49,13 +45,13 @@ impl Serializable for Delta {
 
     fn serialized_len(&self) -> usize {
         let mut len = 2;
-        for (node_id, node_delta) in &self.node_deltas {
-            len += node_id.serialized_len();
+        for (chitchat_id, node_delta) in &self.node_deltas {
+            len += chitchat_id.serialized_len();
             len += node_delta.serialized_len();
         }
         len += 2;
-        for node_id in &self.nodes_to_reset {
-            len += node_id.serialized_len();
+        for chitchat_id in &self.nodes_to_reset {
+            len += chitchat_id.serialized_len();
         }
         len
     }
@@ -70,20 +66,20 @@ impl Delta {
             .sum()
     }
 
-    pub fn add_node_to_reset(&mut self, node_id: NodeId) {
-        self.nodes_to_reset.insert(node_id);
+    pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) {
+        self.nodes_to_reset.insert(chitchat_id);
     }
 
     pub fn add_node_delta(
         &mut self,
-        node_id: NodeId,
+        chitchat_id: ChitchatId,
         key: &str,
         value: &str,
         version: Version,
         marked_for_deletion: bool,
     ) {
         self.node_deltas
-            .entry(node_id)
+            .entry(chitchat_id)
             .or_default()
             .key_values
             .insert(
@@ -123,7 +119,7 @@ pub struct DeltaWriter {
     delta: Delta,
     mtu: usize,
     num_bytes: usize,
-    current_node_id: Option<NodeId>,
+    current_chitchat_id: Option<ChitchatId>,
     current_node_delta: NodeDelta,
     reached_capacity: bool,
 }
@@ -135,37 +131,38 @@ impl DeltaWriter {
             mtu,
             num_bytes: 2 + 2, /* 2 bytes for `nodes_to_reset.len()` + 2 bytes for
                                * `node_deltas.len()` */
-            current_node_id: None,
+            current_chitchat_id: None,
             current_node_delta: NodeDelta::default(),
             reached_capacity: false,
         }
     }
     fn flush(&mut self) {
-        let node_id_opt = mem::take(&mut self.current_node_id);
+        let chitchat_id_opt = mem::take(&mut self.current_chitchat_id);
         let node_delta = mem::take(&mut self.current_node_delta);
-        if let Some(node_id) = node_id_opt {
-            self.delta.node_deltas.insert(node_id, node_delta);
+        if let Some(chitchat_id) = chitchat_id_opt {
+            self.delta.node_deltas.insert(chitchat_id, node_delta);
         }
     }
 
-    pub fn add_node_to_reset(&mut self, node_id: NodeId) -> bool {
-        assert!(!self.delta.nodes_to_reset.contains(&node_id));
-        if !self.attempt_add_bytes(node_id.serialized_len()) {
+    pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) -> bool {
+        assert!(!self.delta.nodes_to_reset.contains(&chitchat_id));
+        if !self.attempt_add_bytes(chitchat_id.serialized_len()) {
             return false;
         }
-        self.delta.nodes_to_reset.insert(node_id);
+        self.delta.nodes_to_reset.insert(chitchat_id);
         true
     }
 
-    pub fn add_node(&mut self, node_id: NodeId) -> bool {
-        assert!(Some(&node_id) != self.current_node_id.as_ref());
-        assert!(!self.delta.node_deltas.contains_key(&node_id));
+    pub fn add_node(&mut self, chitchat_id: ChitchatId) -> bool {
+        assert!(self.current_chitchat_id.as_ref() != Some(&chitchat_id));
+        assert!(!self.delta.node_deltas.contains_key(&chitchat_id));
         self.flush();
-        // Reserve bytes for [`NodeId`] and for an empty [`NodeDelta`] which has a size of 2 bytes.
-        if !self.attempt_add_bytes(node_id.serialized_len() + 2) {
+        // Reserve bytes for [`ChitchatId`] and for an empty [`NodeDelta`] which has a size of 2
+        // bytes.
+        if !self.attempt_add_bytes(chitchat_id.serialized_len() + 2) {
             return false;
         }
-        self.current_node_id = Some(node_id);
+        self.current_chitchat_id = Some(chitchat_id);
         true
     }
 
@@ -281,8 +278,8 @@ mod tests {
     }
     #[test]
     fn test_delta_serialization_simple() {
-        let mut delta_writer = DeltaWriter::with_mtu(138);
-        delta_writer.add_node(NodeId::for_test_localhost(10_001));
+        let mut delta_writer = DeltaWriter::with_mtu(154);
+        delta_writer.add_node(ChitchatId::for_local_test(10_001));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -299,7 +296,7 @@ mod tests {
                 marked_for_deletion: false,
             },
         ));
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_002)));
         assert!(delta_writer.add_kv(
             "key21",
             VersionedValue {
@@ -317,13 +314,13 @@ mod tests {
             },
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 138);
+        test_serdeser_aux(&delta, 154);
     }
 
     #[test]
     fn test_delta_serialization_simple_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(110);
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        let mut delta_writer = DeltaWriter::with_mtu(118);
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -340,16 +337,16 @@ mod tests {
                 marked_for_deletion: false,
             }
         ));
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 92);
+        test_serdeser_aux(&delta, 108);
     }
 
     #[test]
     fn test_delta_serialization_simple_with_nodes_to_reset() {
-        let mut delta_writer = DeltaWriter::with_mtu(120);
-        assert!(delta_writer.add_node_to_reset(NodeId::for_test_localhost(10_000))); // Node ID takes 19 bytes
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        let mut delta_writer = DeltaWriter::with_mtu(136);
+        assert!(delta_writer.add_node_to_reset(ChitchatId::for_local_test(10_000))); // Chitchat ID takes 27 bytes
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -366,15 +363,15 @@ mod tests {
                 marked_for_deletion: false,
             }
         ));
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 111);
+        test_serdeser_aux(&delta, 135);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node() {
         let mut delta_writer = DeltaWriter::with_mtu(87);
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -391,15 +388,15 @@ mod tests {
                 marked_for_deletion: false,
             }
         ));
-        assert!(!delta_writer.add_node(NodeId::for_test_localhost(10_002)));
+        assert!(!delta_writer.add_node(ChitchatId::for_local_test(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 71);
+        test_serdeser_aux(&delta, 79);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node_to_reset() {
         let mut delta_writer = DeltaWriter::with_mtu(87);
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -416,15 +413,15 @@ mod tests {
                 marked_for_deletion: false,
             }
         ));
-        assert!(!delta_writer.add_node_to_reset(NodeId::for_test_localhost(10_002)));
+        assert!(!delta_writer.add_node_to_reset(ChitchatId::for_local_test(10_002)));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 71);
+        test_serdeser_aux(&delta, 79);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_kv() {
         let mut delta_writer = DeltaWriter::with_mtu(66);
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -442,14 +439,14 @@ mod tests {
             }
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 48);
+        test_serdeser_aux(&delta, 56);
     }
 
     #[test]
     #[should_panic]
     fn test_delta_serialization_panic_if_add_after_exceed() {
         let mut delta_writer = DeltaWriter::with_mtu(54);
-        assert!(delta_writer.add_node(NodeId::for_test_localhost(10_001)));
+        assert!(delta_writer.add_node(ChitchatId::for_local_test(10_001)));
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {

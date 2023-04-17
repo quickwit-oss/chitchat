@@ -3,20 +3,21 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
-use chitchat::{spawn_chitchat, ChitchatConfig, ChitchatHandle, FailureDetectorConfig, NodeId};
+use chitchat::{spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tracing::info;
 
-async fn spawn_one(node_id: u16, transport: &dyn Transport) -> ChitchatHandle {
-    let listen_addr: SocketAddr = ([127, 0, 0, 1], 10_000u16 + node_id).into();
-    let node_id = NodeId {
-        id: format!("node_{node_id}"),
-        gossip_public_address: listen_addr,
+async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandle {
+    let listen_addr: SocketAddr = ([127, 0, 0, 1], 10_000u16 + chitchat_id).into();
+    let chitchat_id = ChitchatId {
+        node_id: format!("node_{chitchat_id}"),
+        generation_id: 0,
+        gossip_advertise_address: listen_addr,
     };
     let gossip_interval = Duration::from_millis(300);
     let config = ChitchatConfig {
-        node_id,
+        chitchat_id,
         cluster_id: "default-cluster".to_string(),
         gossip_interval,
         listen_addr,
@@ -33,14 +34,14 @@ async fn spawn_one(node_id: u16, transport: &dyn Transport) -> ChitchatHandle {
 
 async fn spawn_nodes(num_nodes: u16, transport: &dyn Transport) -> Vec<ChitchatHandle> {
     let mut handles = Vec::new();
-    for node_id in 0..num_nodes {
-        let handle = spawn_one(node_id, transport).await;
+    for chitchat_id in 0..num_nodes {
+        let handle = spawn_one(chitchat_id, transport).await;
         handles.push(handle);
     }
     handles
 }
 
-async fn wait_until<P: Fn(&HashSet<NodeId>) -> bool>(
+async fn wait_until<P: Fn(&HashSet<ChitchatId>) -> bool>(
     handle: &ChitchatHandle,
     predicate: P,
 ) -> Duration {

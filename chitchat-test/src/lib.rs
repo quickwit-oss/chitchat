@@ -1,15 +1,15 @@
-use chitchat::{ClusterStateSnapshot, NodeId};
+use chitchat::{ChitchatId, ClusterStateSnapshot};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse {
     pub cluster_id: String,
     pub cluster_state: ClusterStateSnapshot,
-    pub live_nodes: Vec<NodeId>,
-    pub dead_nodes: Vec<NodeId>,
+    pub live_nodes: Vec<ChitchatId>,
+    pub dead_nodes: Vec<ChitchatId>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SetKeyValueResponse {
     pub status: bool,
 }

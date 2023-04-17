@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::state::NodeState;
-use crate::{FailureDetectorConfig, NodeId};
+use crate::{ChitchatId, FailureDetectorConfig};
 
-/// A struct for configuring a Chitact instance.
+/// A struct for configuring a Chitchat instance.
 pub struct ChitchatConfig {
-    pub node_id: NodeId,
+    pub chitchat_id: ChitchatId,
     pub cluster_id: String,
     pub gossip_interval: Duration,
     pub listen_addr: SocketAddr,
@@ -32,12 +32,16 @@ pub struct ChitchatConfig {
 }
 
 impl ChitchatConfig {
+    pub fn set_is_ready_predicate(&mut self, pred: impl Fn(&NodeState) -> bool + Send + 'static) {
+        self.is_ready_predicate = Some(Box::new(pred));
+    }
+
     #[cfg(test)]
     pub fn for_test(port: u16) -> Self {
-        let node_id = NodeId::for_test_localhost(port);
-        let listen_addr = node_id.gossip_public_address;
+        let chitchat_id = ChitchatId::for_local_test(port);
+        let listen_addr = chitchat_id.gossip_advertise_address;
         Self {
-            node_id,
+            chitchat_id,
             cluster_id: "default-cluster".to_string(),
             gossip_interval: Duration::from_millis(50),
             listen_addr,
@@ -47,18 +51,15 @@ impl ChitchatConfig {
             marked_for_deletion_grace_period: 10_000,
         }
     }
-
-    pub fn set_is_ready_predicate(&mut self, pred: impl Fn(&NodeState) -> bool + Send + 'static) {
-        self.is_ready_predicate = Some(Box::new(pred));
-    }
 }
 
+#[cfg(test)]
 impl Default for ChitchatConfig {
     fn default() -> Self {
-        let node_id = NodeId::for_test_localhost(10_000);
-        let listen_addr = node_id.gossip_public_address;
+        let chitchat_id = ChitchatId::for_local_test(10_000);
+        let listen_addr = chitchat_id.gossip_advertise_address;
         Self {
-            node_id,
+            chitchat_id,
             cluster_id: "default-cluster".to_string(),
             gossip_interval: Duration::from_millis(1_000),
             listen_addr,
