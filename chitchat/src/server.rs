@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use crate::message::ChitchatMessage;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::{Heartbeat, MaxVersion};
+    use crate::{Heartbeat, MaxVersion, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -449,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_syn() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let test_config = ChitchatConfig::for_test(1112);
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let peer_addr: SocketAddr = ([127u8, 0u8, 0u8, 1u8], 1111u16).into();
@@ -476,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_syn_ack() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
 
         let config2 = ChitchatConfig::for_test(2);
         let mut transport2 = transport
@@ -505,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_syn_bad_cluster() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let mut outsider_config = ChitchatConfig::for_test(2224);
         outsider_config.cluster_id = "another-cluster".to_string();
         let mut outsider_transport = transport
@@ -533,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seeding() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let seed_config = ChitchatConfig::for_test(5551);
         let seed_addr = seed_config.chitchat_id.gossip_advertise_addr;
         let mut seed_transport = transport.open(seed_addr).await.unwrap();
@@ -556,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_heartbeat() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let test_config = ChitchatConfig::for_test(1);
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let mut test_chitchat =
@@ -604,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_member_change_event_is_broadcasted() {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let node1_config = ChitchatConfig::for_test(6663);
         let node1_id = node1_config.chitchat_id.clone();
         let node1_addr = node1_config.chitchat_id.gossip_advertise_addr;

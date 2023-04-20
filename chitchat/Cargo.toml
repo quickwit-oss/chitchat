@@ -16,7 +16,7 @@ bytes = "1"
 itertools = "0.10.5"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1.14.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.28.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 

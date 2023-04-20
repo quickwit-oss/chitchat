@@ -13,16 +13,16 @@ use crate::ChitchatMessage;
 
 const MAX_MESSAGE_PER_CHANNEL: usize = 100;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Statistics {
-    pub cumulated_num_bytes: u64,
-    pub num_messages: u64,
+    pub num_bytes_total: u64,
+    pub num_messages_total: u64,
 }
 
 impl Statistics {
     pub fn record_message_len(&mut self, message_num_bytes: usize) {
-        self.num_messages += 1;
-        self.cumulated_num_bytes += message_num_bytes as u64;
+        self.num_bytes_total += message_num_bytes as u64;
+        self.num_messages_total += 1;
     }
 }
 
@@ -36,6 +36,7 @@ struct ChannelTransportInner {
 #[derive(Clone, Default)]
 pub struct ChannelTransport {
     inner: Arc<Mutex<ChannelTransportInner>>,
+    mtu_opt: Option<usize>,
 }
 
 #[async_trait]
@@ -56,8 +57,25 @@ impl Transport for ChannelTransport {
 }
 
 impl ChannelTransport {
+    pub fn with_mtu(mtu: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ChannelTransportInner::default())),
+            mtu_opt: Some(mtu),
+        }
+    }
+
     pub fn statistics(&self) -> Statistics {
         self.inner.lock().unwrap().statistics
+    }
+
+    pub async fn add_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
+        let mut inner_lock = self.inner.lock().unwrap();
+        if let Some(from_addr_entry) = inner_lock.removed_links.get_mut(&from_addr) {
+            from_addr_entry.remove(&to_addr);
+        }
+        if let Some(to_addr_entry) = inner_lock.removed_links.get_mut(&to_addr) {
+            to_addr_entry.remove(&from_addr);
+        }
     }
 
     pub async fn remove_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
@@ -74,22 +92,6 @@ impl ChannelTransport {
         to_addr_entry.insert(from_addr);
     }
 
-    pub async fn add_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
-        let mut inner_lock = self.inner.lock().unwrap();
-        if let Some(from_addr_entry) = inner_lock.removed_links.get_mut(&from_addr) {
-            from_addr_entry.remove(&to_addr);
-        }
-        if let Some(to_addr_entry) = inner_lock.removed_links.get_mut(&to_addr) {
-            to_addr_entry.remove(&from_addr);
-        }
-    }
-
-    fn close(&self, addr: SocketAddr) {
-        info!(addr=%addr, "close");
-        let mut inner_lock = self.inner.lock().unwrap();
-        inner_lock.send_channels.remove(&addr);
-    }
-
     async fn send(
         &self,
         from_addr: SocketAddr,
@@ -97,6 +99,11 @@ impl ChannelTransport {
         message: ChitchatMessage,
     ) -> anyhow::Result<()> {
         let num_bytes = message.serialized_len();
+        if let Some(mtu) = self.mtu_opt {
+            if num_bytes > mtu {
+                bail!("Serialized message size exceeds MTU.");
+            }
+        }
         debug!(num_bytes = num_bytes, "send");
         let mut inner_lock = self.inner.lock().unwrap();
         inner_lock.statistics.record_message_len(num_bytes);
@@ -110,6 +117,12 @@ impl ChannelTransport {
             let _ = message_tx.try_send((from_addr, message));
         }
         Ok(())
+    }
+
+    fn close(&self, addr: SocketAddr) {
+        info!(addr=%addr, "close");
+        let mut inner_lock = self.inner.lock().unwrap();
+        inner_lock.send_channels.remove(&addr);
     }
 }
 
