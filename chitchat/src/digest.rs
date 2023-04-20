@@ -16,6 +16,10 @@ impl NodeDigest {
             max_version,
         }
     }
+
+    pub(crate) fn virtual_max_version(&self) -> u64 {
+        self.heartbeat.0 + self.max_version
+    }
 }
 
 /// A digest represents is a piece of information summarizing

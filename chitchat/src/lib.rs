@@ -146,8 +146,10 @@ impl Chitchat {
 
     fn gc_keys_marked_for_deletion(&mut self) {
         let dead_nodes = self.dead_nodes().cloned().collect::<HashSet<_>>();
-        self.cluster_state
-            .gc_keys_marked_for_deletion(self.config.marked_for_deletion_grace_period, &dead_nodes);
+        self.cluster_state.gc_keys_marked_for_deletion(
+            self.config.marked_for_deletion_grace_period as u64,
+            &dead_nodes,
+        );
     }
 
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an

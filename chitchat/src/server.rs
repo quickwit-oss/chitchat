@@ -37,8 +37,8 @@ async fn dns_refresh_loop(
     seed_addrs_tx: watch::Sender<HashSet<SocketAddr>>,
 ) {
     let mut interval = time::interval(DNS_POLLING_DURATION);
-    // We actually DO want to run the polling loop right away,
-    // hence this tick.
+    // The first `interval.tick()` is no-op but we DO NOT want to resolve the seed hosts right away
+    // (see comment in `spawn_dns_refresh_loop`), hence this tick.
     interval.tick().await;
 
     loop {

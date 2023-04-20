@@ -8,6 +8,7 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tracing::warn;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
@@ -37,7 +38,7 @@ impl Default for NodeState {
 impl NodeState {
     /// Returns an iterator over the keys matching the given predicate, excluding keys marked for
     /// deletion.
-    pub fn iter_key_values(
+    pub fn key_values(
         &self,
         predicate: impl Fn(&String, &VersionedValue) -> bool,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
@@ -65,8 +66,9 @@ impl NodeState {
             .map(|(key, record)| (key.as_str(), record))
     }
 
-    /// Returns an iterator over the version values that are strictly older than `floor_version`.
-    fn iter_stale_key_values(
+    /// Returns an iterator over the versioned values that are strictly greater than
+    /// `floor_version`. The floor version typically comes from the max version of a digest.
+    fn stale_key_values(
         &self,
         floor_version: u64,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
@@ -100,20 +102,28 @@ impl NodeState {
     }
 
     pub fn mark_for_deletion(&mut self, key: &str) {
-        let new_version = self.max_version + 1;
-        self.max_version = new_version;
-        if let Some(versioned_value) = self.key_values.get_mut(key) {
-            versioned_value.marked_for_deletion = true;
-            versioned_value.version = new_version;
-        }
+        let Some(versioned_value) = self.key_values.get_mut(key) else {
+            warn!("Key `{}` does not exist in the node's state and could not be marked for deletion.", key);
+            return;
+        };
+        self.max_version += 1;
+        versioned_value.marked_for_deletion = true;
+        versioned_value.version = self.max_version;
     }
 
-    /// Remove the keys marked for deletion such that `version + grace_period < max_version`.
-    pub fn gc_keys_marked_for_deletion(&mut self, grace_period: usize) {
+    fn virtual_max_version(&self) -> u64 {
+        self.heartbeat.0 + self.max_version
+    }
+
+    /// Removes the keys marked for deletion such that `version + grace_period <
+    /// virtual_max_version`.
+    pub fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
+        let virtual_max_version = self.virtual_max_version();
+
         self.key_values.retain(|_, versioned_value| {
-            !(versioned_value.marked_for_deletion
-                && versioned_value.version + (grace_period as u64) < self.max_version)
-        });
+            !versioned_value.marked_for_deletion
+                || versioned_value.version + grace_period >= virtual_max_version
+        })
     }
 
     fn digest(&self) -> NodeDigest {
@@ -203,8 +213,8 @@ impl ClusterState {
                 match entry {
                     Entry::Occupied(mut occupied_entry) => {
                         let local_versioned_value = occupied_entry.get_mut();
-                        // Due to the message passing being totally asynchronous, it is not an
-                        // error to receive updates that are already obsolete.
+                        // Only update the value if the new version is higher. It is possible that
+                        // we have already received a fresher version from another node.
                         if local_versioned_value.version < versioned_value.version {
                             *local_versioned_value = versioned_value;
                         }
@@ -230,7 +240,7 @@ impl ClusterState {
 
     pub fn gc_keys_marked_for_deletion(
         &mut self,
-        marked_for_deletion_grace_period: usize,
+        marked_for_deletion_grace_period: u64,
         dead_nodes: &HashSet<ChitchatId>,
     ) {
         for (chitchat_id, node_state) in &mut self.node_states {
@@ -260,7 +270,9 @@ impl ClusterState {
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
             };
-            if node_digest.max_version + marked_for_deletion_grace_period < node_state.max_version {
+            if node_digest.virtual_max_version() + marked_for_deletion_grace_period
+                < node_state.virtual_max_version()
+            {
                 nodes_to_reset.push(chitchat_id);
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
@@ -327,7 +339,7 @@ impl<'a> SortedStaleNodes<'a> {
     ) {
         let heartbeat = node_digest.heartbeat.max(node_state.heartbeat);
         let floor_version = node_digest.max_version;
-        let mut staleness = node_state.iter_stale_key_values(floor_version).count();
+        let mut staleness = node_state.stale_key_values(floor_version).count();
 
         if heartbeat > node_digest.heartbeat {
             staleness += 1;
@@ -374,7 +386,7 @@ impl<'a> StaleNode<'a> {
     /// Iterates over the stale key-value pairs in decreasing order of staleness.
     fn stale_key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
         self.node_state
-            .iter_stale_key_values(self.floor_version)
+            .stale_key_values(self.floor_version)
             .sorted_unstable_by_key(|(_, versioned_value)| versioned_value.version)
     }
 }
@@ -756,34 +768,34 @@ mod tests {
         node1_state.mark_for_deletion("key_a"); // 2
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 13); // 3
 
-        // No gc.
+        // No GC.
         cluster_state.gc_keys_marked_for_deletion(11, &HashSet::new());
-        assert!(cluster_state
+        cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get_key_value("key_a")
-            .is_some());
-        assert!(cluster_state
+            .get("key_a")
+            .unwrap();
+        cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get_key_value("key_b")
-            .is_some());
-        // Gc.
+            .get("key_b")
+            .unwrap();
+        // GC.
         cluster_state.gc_keys_marked_for_deletion(10, &HashSet::new());
         assert!(cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get_key_value("key_a")
+            .get("key_a")
             .is_none());
-        assert!(cluster_state
+        cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get_key_value("key_b")
-            .is_some());
+            .get("key_b")
+            .unwrap();
     }
 
     #[test]
