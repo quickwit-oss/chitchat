@@ -12,7 +12,7 @@ mod state;
 pub mod transport;
 mod types;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::net::SocketAddr;
 
 use delta::Delta;
@@ -45,12 +45,10 @@ const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 pub struct Chitchat {
     config: ChitchatConfig,
     cluster_state: ClusterState,
-    /// The failure detector instance.
     failure_detector: FailureDetector,
-    /// A notification channel (sender) for sending live nodes change feed.
-    live_nodes_watcher_tx: watch::Sender<HashSet<ChitchatId>>,
-    /// A notification channel (receiver) for receiving `ready` nodes change feed.
-    live_nodes_watcher_rx: watch::Receiver<HashSet<ChitchatId>>,
+    /// Notifies listeners when a change has occurred in the set of live nodes.
+    live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, MaxVersion>>,
+    live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, MaxVersion>>,
 }
 
 impl Chitchat {
@@ -59,7 +57,7 @@ impl Chitchat {
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
         initial_key_values: Vec<(String, String)>,
     ) -> Self {
-        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
+        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(BTreeMap::new());
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let mut chitchat = Chitchat {
             config,
@@ -71,14 +69,13 @@ impl Chitchat {
 
         let self_node_state = chitchat.self_node_state();
 
-        // Immediately mark node as alive to ensure it responds to SYNs.
+        // Immediately mark the node as alive to ensure it responds to SYN messages.
         self_node_state.update_heartbeat();
 
         // Set initial key/value pairs.
         for (key, value) in initial_key_values {
             self_node_state.set(key, value);
         }
-
         chitchat
     }
 
@@ -169,28 +166,36 @@ impl Chitchat {
 
     /// Checks and marks nodes as dead / live / ready.
     pub(crate) fn update_nodes_liveness(&mut self) {
-        let cluster_nodes = self
-            .cluster_state
+        self.cluster_state
             .nodes()
-            .filter(|&chitchat_id| chitchat_id != self.self_chitchat_id())
-            .collect::<Vec<_>>();
+            .filter(|&chitchat_id| *chitchat_id != self.config.chitchat_id)
+            .for_each(|chitchat_id| {
+                self.failure_detector.update_node_liveness(chitchat_id);
+            });
 
-        for chitchat_id in cluster_nodes {
-            self.failure_detector.update_node_liveness(chitchat_id);
-        }
-        let live_nodes_before = self.live_nodes_watcher_rx.borrow().clone();
-        let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
+        let previous_live_nodes = self.live_nodes_watcher_rx.borrow();
 
-        if live_nodes_before != live_nodes_after {
-            debug!(current_node = ?self.self_chitchat_id(), live_nodes = ?live_nodes_after, "nodes status changed");
-            if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
+        let current_live_nodes = self
+            .live_nodes()
+            .map(|chitchat_id| {
+                let node_state = self
+                    .cluster_state
+                    .node_state(chitchat_id)
+                    .expect("Node state should exist.");
+                (chitchat_id.clone(), node_state.max_version)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        if *previous_live_nodes != current_live_nodes {
+            drop(previous_live_nodes); // Release the borrow so we can update the value.
+
+            if self.live_nodes_watcher_tx.send(current_live_nodes).is_err() {
                 error!(current_node = ?self.self_chitchat_id(), "error while reporting membership change event.")
             }
         }
-
         // Perform garbage collection.
         let garbage_collected_nodes = self.failure_detector.garbage_collect();
-        for chitchat_id in garbage_collected_nodes.iter() {
+        for chitchat_id in &garbage_collected_nodes {
             self.cluster_state.remove_node(chitchat_id);
         }
     }
@@ -203,38 +208,34 @@ impl Chitchat {
         self.cluster_state.node_state_mut(&self.config.chitchat_id)
     }
 
-    /// Retrieves the list of all live nodes.
+    /// Returns the list of nodes considered alive by the failure detector.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.failure_detector.live_nodes()
     }
 
-    /// Retrieve the list of all dead nodes.
+    /// Returns the list of nodes considered dead by the failure detector.
     pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.failure_detector.dead_nodes()
     }
 
-    /// Retrieve a list of seed nodes.
+    /// Returns the list of seed nodes.
     pub fn seed_nodes(&self) -> HashSet<SocketAddr> {
         self.cluster_state.seed_addrs()
-    }
-
-    pub fn self_chitchat_id(&self) -> &ChitchatId {
-        &self.config.chitchat_id
     }
 
     pub fn cluster_id(&self) -> &str {
         &self.config.cluster_id
     }
 
+    pub fn self_chitchat_id(&self) -> &ChitchatId {
+        &self.config.chitchat_id
+    }
+
     pub fn update_heartbeat(&mut self) {
         self.self_node_state().update_heartbeat();
     }
 
-    /// Computes digest.
-    ///
-    /// This method also increments the heartbeat, to force the presence
-    /// of at least one update, and have the node liveness propagated
-    /// through the cluster.
+    /// Computes the node's digest.
     fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
         self.cluster_state.compute_digest(dead_nodes)
     }
@@ -243,13 +244,20 @@ impl Chitchat {
         &self.cluster_state
     }
 
-    /// Returns a serializable snapshot of the ClusterState
+    /// Returns a serializable snapshot of the cluster state.
     pub fn state_snapshot(&self) -> ClusterStateSnapshot {
         ClusterStateSnapshot::from(&self.cluster_state)
     }
 
-    /// Returns a watch stream for monitoring changes on the cluster's live nodes.
-    pub fn live_nodes_watcher(&self) -> WatchStream<HashSet<ChitchatId>> {
+    /// Returns a watch stream for monitoring changes in the cluster.
+    ///
+    /// The stream will emit a new value whenever a node:
+    /// - joins the cluster
+    /// - leaves the cluster
+    /// - updates its max version
+    ///
+    /// Heartbeats are not notified.
+    pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatId, MaxVersion>> {
         WatchStream::new(self.live_nodes_watcher_rx.clone())
     }
 }
@@ -356,16 +364,20 @@ mod tests {
 
     async fn wait_for_chitchat_state(
         chitchat: Arc<Mutex<Chitchat>>,
-        expected_node_count: usize,
         expected_nodes: &[ChitchatId],
     ) {
         let mut live_nodes_watcher = chitchat
             .lock()
             .await
             .live_nodes_watcher()
-            .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
+            .skip_while(|live_nodes| live_nodes.len() != expected_nodes.len());
         tokio::time::timeout(Duration::from_secs(50), async move {
-            let live_nodes = live_nodes_watcher.next().await.unwrap();
+            let live_nodes = live_nodes_watcher
+                .next()
+                .await
+                .unwrap()
+                .into_keys()
+                .collect::<HashSet<_>>();
             assert_eq!(
                 live_nodes,
                 expected_nodes.iter().cloned().collect::<HashSet<_>>()
@@ -419,7 +431,6 @@ mod tests {
         assert_eq!(node.chitchat_id().advertise_port(), 20002);
         wait_for_chitchat_state(
             node.chitchat(),
-            4,
             &[
                 ChitchatId::for_local_test(20001),
                 ChitchatId::for_local_test(20003),
@@ -441,7 +452,6 @@ mod tests {
         assert_eq!(node.chitchat_id().gossip_advertise_address.port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
-            5,
             &[
                 ChitchatId::for_local_test(30001),
                 ChitchatId::for_local_test(30003),
@@ -461,7 +471,6 @@ mod tests {
         assert_eq!(node.chitchat_id().advertise_port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
-            4,
             &[
                 ChitchatId::for_local_test(30001),
                 ChitchatId::for_local_test(30004),
@@ -488,7 +497,6 @@ mod tests {
         assert_eq!(node.chitchat_id().advertise_port(), 30002);
         wait_for_chitchat_state(
             node.chitchat(),
-            5,
             &[
                 ChitchatId::for_local_test(30001),
                 ChitchatId::for_local_test(30003),
@@ -512,7 +520,6 @@ mod tests {
             assert_eq!(node2.chitchat_id().advertise_port(), 40002);
             wait_for_chitchat_state(
                 node2.chitchat(),
-                3,
                 &[
                     ChitchatId::for_local_test(40001),
                     ChitchatId::for_local_test(40003),
@@ -532,7 +539,6 @@ mod tests {
             assert_eq!(node2.chitchat_id().advertise_port(), 40002);
             wait_for_chitchat_state(
                 node2.chitchat(),
-                2,
                 &[
                     ChitchatId::for_local_test(40_001),
                     ChitchatId::for_local_test(40_004),
@@ -553,7 +559,6 @@ mod tests {
 
         wait_for_chitchat_state(
             new_node_chitchat.chitchat(),
-            3,
             &[
                 ChitchatId::for_local_test(40_001),
                 ChitchatId::for_local_test(40_002),
@@ -580,7 +585,7 @@ mod tests {
                 .filter(|peer_port| *peer_port != node.chitchat_id().advertise_port())
                 .map(ChitchatId::for_local_test)
                 .collect::<Vec<_>>();
-            wait_for_chitchat_state(node.chitchat(), 5, &expected_peers).await;
+            wait_for_chitchat_state(node.chitchat(), &expected_peers).await;
         }
 
         shutdown_nodes(nodes).await?;
@@ -595,7 +600,6 @@ mod tests {
         assert_eq!(node.chitchat_id().advertise_port(), 60002);
         wait_for_chitchat_state(
             node.chitchat(),
-            5,
             &[
                 ChitchatId::for_local_test(60_001),
                 ChitchatId::for_local_test(60_003),
@@ -615,7 +619,6 @@ mod tests {
         assert_eq!(node.chitchat_id().advertise_port(), 60002);
         wait_for_chitchat_state(
             node.chitchat(),
-            4,
             &[
                 ChitchatId::for_local_test(60_001),
                 ChitchatId::for_local_test(60_004),

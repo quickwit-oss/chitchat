@@ -404,6 +404,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::future::Future;
     use std::time::Duration;
 
@@ -411,9 +412,8 @@ mod tests {
 
     use super::*;
     use crate::message::ChitchatMessage;
-    use crate::state::NodeState;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::Heartbeat;
+    use crate::{Heartbeat, MaxVersion};
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -630,16 +630,16 @@ mod tests {
         {
             let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
             assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains(&node2_id));
+            assert!(live_nodes.contains_key(&node2_id));
         }
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();
     }
 
-    async fn next_live_nodes<S: Unpin + Stream<Item = HashSet<ChitchatId>>>(
+    async fn next_live_nodes<S: Unpin + Stream<Item = BTreeMap<ChitchatId, MaxVersion>>>(
         watcher: &mut S,
-    ) -> HashSet<ChitchatId> {
+    ) -> BTreeMap<ChitchatId, MaxVersion> {
         tokio::time::timeout(Duration::from_secs(3), watcher.next())
             .await
             .expect("No Change within 3s")

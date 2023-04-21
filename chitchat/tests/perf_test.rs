@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
-use chitchat::{spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig};
+use chitchat::{
+    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, MaxVersion,
+};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tracing::info;
@@ -40,7 +42,7 @@ async fn spawn_nodes(num_nodes: u16, transport: &dyn Transport) -> Vec<ChitchatH
     handles
 }
 
-async fn wait_until<P: Fn(&HashSet<ChitchatId>) -> bool>(
+async fn wait_until<P: Fn(&BTreeMap<ChitchatId, MaxVersion>) -> bool>(
     handle: &ChitchatHandle,
     predicate: P,
 ) -> Duration {
