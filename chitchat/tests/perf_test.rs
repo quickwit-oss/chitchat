@@ -26,7 +26,6 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
             initial_interval: gossip_interval,
             ..Default::default()
         },
-        is_ready_predicate: None,
         marked_for_deletion_grace_period: 10_000,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
@@ -46,7 +45,7 @@ async fn wait_until<P: Fn(&HashSet<ChitchatId>) -> bool>(
     predicate: P,
 ) -> Duration {
     let start = Instant::now();
-    let mut node_watcher = handle.chitchat().lock().await.ready_nodes_watcher();
+    let mut node_watcher = handle.chitchat().lock().await.live_nodes_watcher();
     while let Some(nodes) = node_watcher.next().await {
         if predicate(&nodes) {
             break;

@@ -620,102 +620,30 @@ mod tests {
         let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
             .await
             .unwrap();
-        let mut ready_nodes_watcher = node1
+        let mut live_nodes_watcher = node1
             .chitchat()
             .lock()
             .await
-            .ready_nodes_watcher()
+            .live_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.is_empty());
 
         {
-            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
-            assert_eq!(ready_nodes.len(), 1);
-            assert!(ready_nodes.contains(&node2_id));
+            let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
+            assert_eq!(live_nodes.len(), 1);
+            assert!(live_nodes.contains(&node2_id));
         }
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();
     }
 
-    async fn next_ready_nodes<S: Unpin + Stream<Item = HashSet<ChitchatId>>>(
+    async fn next_live_nodes<S: Unpin + Stream<Item = HashSet<ChitchatId>>>(
         watcher: &mut S,
     ) -> HashSet<ChitchatId> {
         tokio::time::timeout(Duration::from_secs(3), watcher.next())
             .await
             .expect("No Change within 3s")
             .expect("Channel was closed")
-    }
-
-    #[tokio::test]
-    async fn test_is_ready_predicate() {
-        const HEALTH_KEY: &str = "HEALTH";
-        let is_ready_pred = |node_state: &NodeState| {
-            node_state
-                .get(HEALTH_KEY)
-                .map(|health_val| health_val == "READY")
-                .unwrap_or(false)
-        };
-        let transport = ChannelTransport::default();
-        let mut node1_config = ChitchatConfig::for_test(6663);
-        node1_config.set_is_ready_predicate(is_ready_pred);
-
-        let node1_addr = node1_config.chitchat_id.gossip_advertise_address;
-        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
-            .await
-            .unwrap();
-
-        let mut node2_config = ChitchatConfig::for_test(6664);
-        node2_config.set_is_ready_predicate(is_ready_pred);
-
-        node2_config.seed_nodes = vec![node1_addr.to_string()];
-        let node2_id = node2_config.chitchat_id.clone();
-        let node2 = spawn_chitchat(
-            node2_config,
-            vec![(HEALTH_KEY.to_string(), "READY".to_string())],
-            &transport,
-        )
-        .await
-        .unwrap();
-        let mut ready_nodes_watcher = node1
-            .chitchat()
-            .lock()
-            .await
-            .ready_nodes_watcher()
-            .skip_while(|live_nodes| live_nodes.is_empty());
-        {
-            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
-            assert_eq!(ready_nodes.len(), 1);
-            assert!(ready_nodes.contains(&node2_id));
-        }
-
-        // node2 advertises itself as not ready.
-        node2
-            .chitchat()
-            .lock()
-            .await
-            .self_node_state()
-            .set(HEALTH_KEY, "NOT_READY");
-
-        {
-            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
-            assert!(ready_nodes.is_empty());
-        }
-
-        // node2 goes back up.
-        node2
-            .chitchat()
-            .lock()
-            .await
-            .self_node_state()
-            .set(HEALTH_KEY, "READY");
-        {
-            let ready_nodes = next_ready_nodes(&mut ready_nodes_watcher).await;
-            assert_eq!(ready_nodes.len(), 1);
-            assert!(ready_nodes.contains(&node2_id));
-        }
-
-        node1.shutdown().await.unwrap();
-        node2.shutdown().await.unwrap();
     }
 
     #[test]

@@ -220,7 +220,6 @@ impl Simulator {
                 initial_interval: self.gossip_interval * 10,
                 ..Default::default()
             },
-            is_ready_predicate: None,
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)

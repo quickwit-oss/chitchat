@@ -48,9 +48,9 @@ pub struct Chitchat {
     /// The failure detector instance.
     failure_detector: FailureDetector,
     /// A notification channel (sender) for sending live nodes change feed.
-    ready_nodes_watcher_tx: watch::Sender<HashSet<ChitchatId>>,
+    live_nodes_watcher_tx: watch::Sender<HashSet<ChitchatId>>,
     /// A notification channel (receiver) for receiving `ready` nodes change feed.
-    ready_nodes_watcher_rx: watch::Receiver<HashSet<ChitchatId>>,
+    live_nodes_watcher_rx: watch::Receiver<HashSet<ChitchatId>>,
 }
 
 impl Chitchat {
@@ -59,14 +59,14 @@ impl Chitchat {
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
         initial_key_values: Vec<(String, String)>,
     ) -> Self {
-        let (ready_nodes_watcher_tx, ready_nodes_watcher_rx) = watch::channel(HashSet::new());
+        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(HashSet::new());
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let mut chitchat = Chitchat {
             config,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
             failure_detector,
-            ready_nodes_watcher_tx,
-            ready_nodes_watcher_rx,
+            live_nodes_watcher_tx,
+            live_nodes_watcher_rx,
         };
 
         let self_node_state = chitchat.self_node_state();
@@ -178,12 +178,12 @@ impl Chitchat {
         for chitchat_id in cluster_nodes {
             self.failure_detector.update_node_liveliness(chitchat_id);
         }
-        let ready_nodes_before = self.ready_nodes_watcher_rx.borrow().clone();
-        let ready_nodes_after = self.ready_nodes().cloned().collect::<HashSet<_>>();
+        let live_nodes_before = self.live_nodes_watcher_rx.borrow().clone();
+        let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
 
-        if ready_nodes_before != ready_nodes_after {
-            debug!(current_node = ?self.self_chitchat_id(), live_nodes = ?ready_nodes_after, "nodes status changed");
-            if self.ready_nodes_watcher_tx.send(ready_nodes_after).is_err() {
+        if live_nodes_before != live_nodes_after {
+            debug!(current_node = ?self.self_chitchat_id(), live_nodes = ?live_nodes_after, "nodes status changed");
+            if self.live_nodes_watcher_tx.send(live_nodes_after).is_err() {
                 error!(current_node = ?self.self_chitchat_id(), "error while reporting membership change event.")
             }
         }
@@ -206,23 +206,6 @@ impl Chitchat {
     /// Retrieves the list of all live nodes.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.failure_detector.live_nodes()
-    }
-
-    /// Retrieves the list of nodes that are ready.
-    /// To be ready, a node has to be alive and pass the `is_ready_predicate` as
-    /// defined in the Chitchat configuration.
-    pub fn ready_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
-        self.live_nodes().filter(|&chitchat_id| {
-            let is_ready_pred = if let Some(pred) = self.config.is_ready_predicate.as_ref() {
-                pred
-            } else {
-                // No predicate means that we consider all nodes as ready.
-                return true;
-            };
-            self.node_state(chitchat_id)
-                .map(is_ready_pred)
-                .unwrap_or(false)
-        })
     }
 
     /// Retrieve the list of all dead nodes.
@@ -266,8 +249,8 @@ impl Chitchat {
     }
 
     /// Returns a watch stream for monitoring changes on the cluster's live nodes.
-    pub fn ready_nodes_watcher(&self) -> WatchStream<HashSet<ChitchatId>> {
-        WatchStream::new(self.ready_nodes_watcher_rx.clone())
+    pub fn live_nodes_watcher(&self) -> WatchStream<HashSet<ChitchatId>> {
+        WatchStream::new(self.live_nodes_watcher_rx.clone())
     }
 }
 
@@ -331,7 +314,6 @@ mod tests {
                 initial_interval: Duration::from_millis(100),
                 ..Default::default()
             },
-            is_ready_predicate: None,
             marked_for_deletion_grace_period: 10_000,
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
@@ -377,13 +359,13 @@ mod tests {
         expected_node_count: usize,
         expected_nodes: &[ChitchatId],
     ) {
-        let mut ready_nodes_watcher = chitchat
+        let mut live_nodes_watcher = chitchat
             .lock()
             .await
-            .ready_nodes_watcher()
+            .live_nodes_watcher()
             .skip_while(|live_nodes| live_nodes.len() != expected_node_count);
         tokio::time::timeout(Duration::from_secs(50), async move {
-            let live_nodes = ready_nodes_watcher.next().await.unwrap();
+            let live_nodes = live_nodes_watcher.next().await.unwrap();
             assert_eq!(
                 live_nodes,
                 expected_nodes.iter().cloned().collect::<HashSet<_>>()
