@@ -168,7 +168,7 @@ impl Chitchat {
     }
 
     /// Checks and marks nodes as dead / live / ready.
-    pub(crate) fn update_nodes_liveliness(&mut self) {
+    pub(crate) fn update_nodes_liveness(&mut self) {
         let cluster_nodes = self
             .cluster_state
             .nodes()
@@ -176,7 +176,7 @@ impl Chitchat {
             .collect::<Vec<_>>();
 
         for chitchat_id in cluster_nodes {
-            self.failure_detector.update_node_liveliness(chitchat_id);
+            self.failure_detector.update_node_liveness(chitchat_id);
         }
         let live_nodes_before = self.live_nodes_watcher_rx.borrow().clone();
         let live_nodes_after = self.live_nodes().cloned().collect::<HashSet<_>>();
@@ -233,7 +233,7 @@ impl Chitchat {
     /// Computes digest.
     ///
     /// This method also increments the heartbeat, to force the presence
-    /// of at least one update, and have the node liveliness propagated
+    /// of at least one update, and have the node liveness propagated
     /// through the cluster.
     fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
         self.cluster_state.compute_digest(dead_nodes)

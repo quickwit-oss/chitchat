@@ -299,9 +299,9 @@ impl Server {
             }
         }
 
-        // Update nodes liveliness
+        // Update nodes liveness
         let mut chitchat_guard = self.chitchat.lock().await;
-        chitchat_guard.update_nodes_liveliness();
+        chitchat_guard.update_nodes_liveness();
     }
 
     /// Gossip with another peer.
