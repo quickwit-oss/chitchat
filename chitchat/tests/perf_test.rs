@@ -60,12 +60,11 @@ async fn delay_before_detection_sample(num_nodes: usize, transport: &dyn Transpo
     assert!(num_nodes > 2);
     let mut handles = spawn_nodes(num_nodes as u16, transport).await;
     info!("spawn {num_nodes} nodes");
-    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
+    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes).await;
     info!("converged on {num_nodes} nodes");
-    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
     handles.pop();
     let time_to_death_detection =
-        wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 2).await;
+        wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
     for handle in handles {
         handle.shutdown().await.unwrap();
     }
@@ -120,7 +119,7 @@ async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
     let handles = spawn_nodes(num_nodes as u16, &transport).await;
     let instant = Instant::now();
     for handle in &handles {
-        wait_until(handle, |nodes| nodes.len() == num_nodes - 1).await;
+        wait_until(handle, |nodes| nodes.len() == num_nodes).await;
         info!("success");
     }
     let cluster_convergence = instant.elapsed();
@@ -169,11 +168,11 @@ async fn test_faulty_network_stability_aux(num_nodes: usize, transport: &dyn Tra
     let handles = spawn_nodes(num_nodes as u16, transport).await;
     let start = Instant::now();
     for handle in &handles {
-        wait_until(handle, |nodes| nodes.len() == num_nodes - 1).await;
+        wait_until(handle, |nodes| nodes.len() == num_nodes).await;
     }
     let elapsed = start.elapsed();
     info!("Convergence took {elapsed:?}");
-    let lost_one_node = wait_until(&handles[1], |nodes| nodes.len() != num_nodes - 1);
+    let lost_one_node = wait_until(&handles[1], |nodes| nodes.len() != num_nodes);
     // We want this to timeout!
     tokio::time::timeout(Duration::from_secs(30), lost_one_node)
         .await

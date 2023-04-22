@@ -260,6 +260,7 @@ impl Server {
             .collect::<HashSet<_>>();
         let live_nodes = chitchat_guard
             .live_nodes()
+            .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
             .map(|chitchat_id| chitchat_id.gossip_advertise_address)
             .collect::<HashSet<_>>();
         let dead_nodes = chitchat_guard
@@ -609,17 +610,12 @@ mod tests {
     async fn test_member_change_event_is_broadcasted() {
         let transport = ChannelTransport::default();
         let node1_config = ChitchatConfig::for_test(6663);
+        let node1_id = node1_config.chitchat_id.clone();
         let node1_addr = node1_config.chitchat_id.gossip_advertise_address;
         let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
             .await
             .unwrap();
 
-        let mut node2_config = ChitchatConfig::for_test(6664);
-        node2_config.seed_nodes = vec![node1_addr.to_string()];
-        let node2_id = node2_config.chitchat_id.clone();
-        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
-            .await
-            .unwrap();
         let mut live_nodes_watcher = node1
             .chitchat()
             .lock()
@@ -630,6 +626,17 @@ mod tests {
         {
             let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
             assert_eq!(live_nodes.len(), 1);
+            assert!(live_nodes.contains_key(&node1_id));
+        }
+        let mut node2_config = ChitchatConfig::for_test(6664);
+        node2_config.seed_nodes = vec![node1_addr.to_string()];
+        let node2_id = node2_config.chitchat_id.clone();
+        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
+            .await
+            .unwrap();
+        {
+            let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
+            assert_eq!(live_nodes.len(), 2);
             assert!(live_nodes.contains_key(&node2_id));
         }
 

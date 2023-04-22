@@ -13,6 +13,7 @@ pub mod transport;
 mod types;
 
 use std::collections::{BTreeMap, HashSet};
+use std::iter::once;
 use std::net::SocketAddr;
 
 use delta::Delta;
@@ -20,7 +21,7 @@ use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 pub use self::configuration::ChitchatConfig;
 pub use self::state::{ClusterStateSnapshot, NodeState};
@@ -208,9 +209,10 @@ impl Chitchat {
         self.cluster_state.node_state_mut(&self.config.chitchat_id)
     }
 
-    /// Returns the list of nodes considered alive by the failure detector.
+    /// Returns the list of nodes considered alive by the failure detector. The list includes the
+    /// current node (also called "self node"), which is always considered alive.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
-        self.failure_detector.live_nodes()
+        once(self.self_chitchat_id()).chain(self.failure_detector.live_nodes())
     }
 
     /// Returns the list of nodes considered dead by the failure detector.
@@ -366,22 +368,21 @@ mod tests {
         chitchat: Arc<Mutex<Chitchat>>,
         expected_nodes: &[ChitchatId],
     ) {
-        let mut live_nodes_watcher = chitchat
-            .lock()
-            .await
-            .live_nodes_watcher()
-            .skip_while(|live_nodes| live_nodes.len() != expected_nodes.len());
-        tokio::time::timeout(Duration::from_secs(50), async move {
-            let live_nodes = live_nodes_watcher
-                .next()
+        let expected_nodes = expected_nodes.iter().collect::<HashSet<_>>();
+        let mut live_nodes_watcher =
+            chitchat
+                .lock()
                 .await
-                .unwrap()
-                .into_keys()
-                .collect::<HashSet<_>>();
-            assert_eq!(
-                live_nodes,
-                expected_nodes.iter().cloned().collect::<HashSet<_>>()
-            );
+                .live_nodes_watcher()
+                .skip_while(|live_nodes| {
+                    if live_nodes.len() != expected_nodes.len() {
+                        return true;
+                    }
+                    let live_nodes = live_nodes.keys().collect::<HashSet<_>>();
+                    live_nodes != expected_nodes
+                });
+        tokio::time::timeout(Duration::from_secs(60), async move {
+            live_nodes_watcher.next().await.unwrap();
         })
         .await
         .unwrap();
@@ -427,12 +428,13 @@ mod tests {
         let transport = ChannelTransport::default();
         let nodes = setup_nodes(20001..=20005, &transport).await;
 
-        let node = nodes.get(1).unwrap();
-        assert_eq!(node.chitchat_id().advertise_port(), 20002);
+        let node2 = nodes.get(1).unwrap();
+        assert_eq!(node2.chitchat_id().advertise_port(), 20002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            node2.chitchat(),
             &[
                 ChitchatId::for_local_test(20001),
+                ChitchatId::for_local_test(20002),
                 ChitchatId::for_local_test(20003),
                 ChitchatId::for_local_test(20004),
                 ChitchatId::for_local_test(20005),
@@ -448,12 +450,11 @@ mod tests {
     async fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
         let transport = ChannelTransport::default();
         let mut nodes = setup_nodes(30001..=30006, &transport).await;
-        let node = &nodes[1];
-        assert_eq!(node.chitchat_id().gossip_advertise_address.port(), 30002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            nodes[0].chitchat(),
             &[
                 ChitchatId::for_local_test(30001),
+                ChitchatId::for_local_test(30002),
                 ChitchatId::for_local_test(30003),
                 ChitchatId::for_local_test(30004),
                 ChitchatId::for_local_test(30005),
@@ -462,17 +463,18 @@ mod tests {
         )
         .await;
 
-        // Take down node at localhost:30003
-        let node = nodes.remove(2);
-        assert_eq!(node.chitchat_id().advertise_port(), 30003);
-        node.shutdown().await.unwrap();
+        // Take node 3 down.
+        let node3 = nodes.remove(2);
+        assert_eq!(node3.chitchat_id().advertise_port(), 30003);
+        node3.shutdown().await.unwrap();
 
-        let node = nodes.get(1).unwrap();
-        assert_eq!(node.chitchat_id().advertise_port(), 30002);
+        let node2 = nodes.get(1).unwrap();
+        assert_eq!(node2.chitchat_id().advertise_port(), 30002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            node2.chitchat(),
             &[
                 ChitchatId::for_local_test(30001),
+                ChitchatId::for_local_test(30002),
                 ChitchatId::for_local_test(30004),
                 ChitchatId::for_local_test(30005),
                 ChitchatId::for_local_test(30006),
@@ -480,7 +482,7 @@ mod tests {
         )
         .await;
 
-        // Restart node at localhost:10003
+        // Restart node 3.
         let node_3 = ChitchatId::for_local_test(30003);
         nodes.push(
             start_node(
@@ -492,13 +494,11 @@ mod tests {
             )
             .await,
         );
-
-        let node = nodes.get(1).unwrap();
-        assert_eq!(node.chitchat_id().advertise_port(), 30002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            nodes[0].chitchat(),
             &[
                 ChitchatId::for_local_test(30001),
+                ChitchatId::for_local_test(30002),
                 ChitchatId::for_local_test(30003),
                 ChitchatId::for_local_test(30004),
                 ChitchatId::for_local_test(30005),
@@ -522,6 +522,7 @@ mod tests {
                 node2.chitchat(),
                 &[
                     ChitchatId::for_local_test(40001),
+                    ChitchatId::for_local_test(40002),
                     ChitchatId::for_local_test(40003),
                     ChitchatId::for_local_test(40004),
                 ],
@@ -529,7 +530,7 @@ mod tests {
             .await;
         }
 
-        // Take down node at localhost:40003
+        // Take node 3 down.
         let node3 = nodes.remove(2);
         assert_eq!(node3.chitchat_id().advertise_port(), 40003);
         node3.shutdown().await.unwrap();
@@ -541,6 +542,7 @@ mod tests {
                 node2.chitchat(),
                 &[
                     ChitchatId::for_local_test(40_001),
+                    ChitchatId::for_local_test(40002),
                     ChitchatId::for_local_test(40_004),
                 ],
             )
@@ -549,10 +551,10 @@ mod tests {
 
         // Restart node at localhost:40003 with new name
         let mut new_config = ChitchatConfig::for_test(40_003);
-
         new_config.chitchat_id.node_id = "new_node".to_string();
-        let seed = ChitchatId::for_local_test(40_002).gossip_advertise_address;
-        new_config.seed_nodes = vec![seed.to_string()];
+        let new_chitchat_id = new_config.chitchat_id.clone();
+        let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_address;
+        new_config.seed_nodes = vec![seed_addr.to_string()];
         let new_node_chitchat = spawn_chitchat(new_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -562,6 +564,7 @@ mod tests {
             &[
                 ChitchatId::for_local_test(40_001),
                 ChitchatId::for_local_test(40_002),
+                new_chitchat_id,
                 ChitchatId::for_local_test(40_004),
             ],
         )
@@ -579,15 +582,13 @@ mod tests {
         let nodes = setup_nodes(port_range.clone(), &transport).await;
 
         // Check nodes know each other.
-        for node in nodes.iter() {
+        for node in &nodes {
             let expected_peers: Vec<ChitchatId> = port_range
                 .clone()
-                .filter(|peer_port| *peer_port != node.chitchat_id().advertise_port())
                 .map(ChitchatId::for_local_test)
                 .collect::<Vec<_>>();
             wait_for_chitchat_state(node.chitchat(), &expected_peers).await;
         }
-
         shutdown_nodes(nodes).await?;
         Ok(())
     }
@@ -596,12 +597,13 @@ mod tests {
     async fn test_dead_node_garbage_collection() -> anyhow::Result<()> {
         let transport = ChannelTransport::default();
         let mut nodes = setup_nodes(60001..=60006, &transport).await;
-        let node = nodes.get(1).unwrap();
-        assert_eq!(node.chitchat_id().advertise_port(), 60002);
+        let node2 = nodes.get(1).unwrap();
+        assert_eq!(node2.chitchat_id().advertise_port(), 60002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            node2.chitchat(),
             &[
                 ChitchatId::for_local_test(60_001),
+                ChitchatId::for_local_test(60_002),
                 ChitchatId::for_local_test(60_003),
                 ChitchatId::for_local_test(60_004),
                 ChitchatId::for_local_test(60_005),
@@ -610,17 +612,18 @@ mod tests {
         )
         .await;
 
-        // Take down node at localhost:60003
-        let node = nodes.remove(2);
-        assert_eq!(node.chitchat_id().advertise_port(), 60003);
-        node.shutdown().await.unwrap();
+        // Take node 3 down.
+        let node3 = nodes.remove(2);
+        assert_eq!(node3.chitchat_id().advertise_port(), 60003);
+        node3.shutdown().await.unwrap();
 
-        let node = nodes.get(1).unwrap();
-        assert_eq!(node.chitchat_id().advertise_port(), 60002);
+        let node2 = nodes.get(1).unwrap();
+        assert_eq!(node2.chitchat_id().advertise_port(), 60002);
         wait_for_chitchat_state(
-            node.chitchat(),
+            node2.chitchat(),
             &[
                 ChitchatId::for_local_test(60_001),
+                ChitchatId::for_local_test(60_002),
                 ChitchatId::for_local_test(60_004),
                 ChitchatId::for_local_test(60_005),
                 ChitchatId::for_local_test(60_006),
@@ -638,7 +641,6 @@ mod tests {
                 .node_state(&dead_chitchat_id)
                 .is_some());
         }
-
         // Wait a bit more than `dead_node_grace_period` since all nodes will not
         // notice cluster change at the same time.
         let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(5));
@@ -653,7 +655,6 @@ mod tests {
                 .node_state(&dead_chitchat_id)
                 .is_none());
         }
-
         shutdown_nodes(nodes).await?;
         Ok(())
     }

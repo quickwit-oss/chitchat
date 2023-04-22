@@ -72,7 +72,7 @@ fn test_multiple_nodes() {
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:13001").unwrap();
     assert_eq!(info.cluster_id, "testing");
-    assert_eq!(info.live_nodes.len(), 4);
+    assert_eq!(info.live_nodes.len(), 5);
     assert_eq!(info.dead_nodes.len(), 0);
 
     assert!(info.cluster_state.node_states.get(3).is_some());
@@ -92,6 +92,6 @@ fn test_multiple_nodes_with_dns_resolution_for_seed() {
     let info = get_node_info("http://127.0.0.1:12001").unwrap();
     assert!(info.cluster_state.node_states.get(3).is_some());
     assert_eq!(info.cluster_id, "testing");
-    assert_eq!(info.live_nodes.len(), 4);
+    assert_eq!(info.live_nodes.len(), 5);
     assert_eq!(info.dead_nodes.len(), 0);
 }
