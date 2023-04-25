@@ -51,7 +51,7 @@ impl ChitchatId {
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
-    pub marked_for_deletion: bool,
+    pub tombstone: Option<u64>,
 }
 
 #[cfg(test)]
@@ -60,7 +60,7 @@ impl VersionedValue {
         Self {
             value: value.to_string(),
             version,
-            marked_for_deletion: false,
+            tombstone: None,
         }
     }
 }

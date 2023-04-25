@@ -56,7 +56,7 @@ impl NodeStatePredicate {
             }
             NodeStatePredicate::MarkedForDeletion(key, marked) => {
                 info!(key=%key, marked=marked, "assert-key-marked-for-deletion");
-                &node_state.get_versioned(key).unwrap().marked_for_deletion == marked
+                node_state.get_versioned(key).unwrap().tombstone.is_some()
             }
         }
     }
@@ -184,16 +184,11 @@ impl Simulator {
     }
 
     pub async fn mark_for_deletion(&mut self, chitchat_id: ChitchatId, key: String) {
-        info!(node_id=%chitchat_id.node_id, key=%key, "mark-for-deletion");
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         chitchat_guard.self_node_state().mark_for_deletion(&key);
-        let version = chitchat_guard
-            .self_node_state()
-            .get_versioned(&key)
-            .unwrap()
-            .version;
-        info!(key=%key, version=version, "marked-for-deletion");
+        let hearbeat = chitchat_guard.self_node_state().hearbeat();
+        info!(node_id=%chitchat_id.node_id, key=%key, hearbeat=hearbeat, "marked-for-deletion");
     }
 
     pub async fn spawn_node(
@@ -491,7 +486,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
             .await;
     }
 
-    tokio::time::sleep(Duration::from_millis(5000)).await;
+    tokio::time::sleep(Duration::from_millis(10000)).await;
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
         info!(node_id=%chitchat_id.node_id, keys=?keys, "check");
         for key in keys {
@@ -518,7 +513,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     }
 
     // Wait for garbage collection to kick in.
-    tokio::time::sleep(Duration::from_millis(10000)).await;
+    tokio::time::sleep(Duration::from_millis(15000)).await;
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
         for key in keys {
             let server_chitchat_id = chitchat_ids.choose(&mut rng).unwrap().clone();

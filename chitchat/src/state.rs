@@ -8,7 +8,7 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
@@ -43,14 +43,14 @@ impl NodeState {
         predicate: impl Fn(&String, &VersionedValue) -> bool,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
         self.internal_iter_key_values(predicate)
-            .filter(|&(_, versioned_value)| !versioned_value.marked_for_deletion)
+            .filter(|&(_, versioned_value)| versioned_value.tombstone.is_none())
     }
 
     /// Returns the number of key-value pairs, excluding keys marked for deletion.
     pub fn num_key_values(&self) -> usize {
         self.key_values
             .values()
-            .filter(|versioned_value| !versioned_value.marked_for_deletion)
+            .filter(|versioned_value| versioned_value.tombstone.is_none())
             .count()
     }
 
@@ -91,6 +91,10 @@ impl NodeState {
         self.heartbeat.inc();
     }
 
+    pub fn hearbeat(&self) -> u64 {
+        self.heartbeat.0
+    }
+
     /// Sets a new value for a given key.
     ///
     /// Setting a new value automatically increments the
@@ -107,23 +111,22 @@ impl NodeState {
             return;
         };
         self.max_version += 1;
-        versioned_value.marked_for_deletion = true;
+        versioned_value.tombstone = Some(self.heartbeat.0);
         versioned_value.version = self.max_version;
+        versioned_value.value = "".to_string();
     }
 
-    fn virtual_max_version(&self) -> u64 {
-        self.heartbeat.0 + self.max_version
-    }
-
-    /// Removes the keys marked for deletion such that `version + grace_period <
-    /// virtual_max_version`.
+    /// Removes the keys marked for deletion such that `tombstone + grace_period > heartbeat`.
     pub fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
-        let virtual_max_version = self.virtual_max_version();
+        let heartbeat = self.heartbeat.0;
 
-        self.key_values.retain(|_, versioned_value| {
-            !versioned_value.marked_for_deletion
-                || versioned_value.version + grace_period >= virtual_max_version
-        })
+        self.key_values
+            .retain(|_, versioned_value: &mut VersionedValue| {
+                versioned_value
+                    .tombstone
+                    .map(|tombstone: u64| tombstone + grace_period >= heartbeat)
+                    .unwrap_or(true)
+            })
     }
 
     fn digest(&self) -> NodeDigest {
@@ -141,7 +144,7 @@ impl NodeState {
             VersionedValue {
                 version,
                 value,
-                marked_for_deletion: false,
+                tombstone: None,
             },
         );
     }
@@ -270,9 +273,8 @@ impl ClusterState {
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
             };
-            if node_digest.virtual_max_version() + marked_for_deletion_grace_period
-                < node_state.virtual_max_version()
-            {
+            if node_digest.heartbeat.0 + marked_for_deletion_grace_period < node_state.heartbeat.0 {
+                debug!("Node to reset {chitchat_id:?}");
                 nodes_to_reset.push(chitchat_id);
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
@@ -337,10 +339,9 @@ impl<'a> SortedStaleNodes<'a> {
         node_state: &'a NodeState,
         node_digest: &NodeDigest,
     ) {
-        let heartbeat = node_digest.heartbeat.max(node_state.heartbeat);
+        let heartbeat: Heartbeat = node_digest.heartbeat.max(node_state.heartbeat);
         let floor_version = node_digest.max_version;
         let mut staleness = node_state.stale_key_values(floor_version).count();
-
         if heartbeat > node_digest.heartbeat {
             staleness += 1;
         }
@@ -633,7 +634,7 @@ mod tests {
             &VersionedValue {
                 value: "".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
     }
@@ -648,7 +649,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         node_state.set("key_b", "2");
@@ -657,7 +658,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         assert_eq!(
@@ -665,7 +666,7 @@ mod tests {
             &VersionedValue {
                 value: "2".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         node_state.set("key_a", "3");
@@ -674,7 +675,7 @@ mod tests {
             &VersionedValue {
                 value: "3".to_string(),
                 version: 3,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
     }
@@ -689,7 +690,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         node_state.set("key", "1");
@@ -698,7 +699,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
     }
@@ -707,14 +708,15 @@ mod tests {
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
         let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
         node_state.mark_for_deletion("key");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
             &VersionedValue {
-                value: "1".to_string(),
+                value: "".to_string(),
                 version: 2,
-                marked_for_deletion: true,
+                tombstone: Some(10),
             }
         );
         node_state.set("key", "2");
@@ -723,7 +725,7 @@ mod tests {
             &VersionedValue {
                 value: "2".to_string(),
                 version: 3,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
     }
@@ -764,12 +766,13 @@ mod tests {
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
+        node1_state.heartbeat = Heartbeat(100);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
-        node1_state.mark_for_deletion("key_a"); // 2
+        node1_state.mark_for_deletion("key_a"); // Version 2. Tombstone set to heartbeat 100.
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 13); // 3
-
-        // No GC.
-        cluster_state.gc_keys_marked_for_deletion(11, &HashSet::new());
+        node1_state.heartbeat = Heartbeat(110);
+        // No GC if tombstone (=100) + grace_period <= heartbeat (=110).
+        cluster_state.gc_keys_marked_for_deletion(10, &HashSet::new());
         cluster_state
             .node_state(&node1)
             .unwrap()
@@ -782,8 +785,8 @@ mod tests {
             .key_values
             .get("key_b")
             .unwrap();
-        // GC.
-        cluster_state.gc_keys_marked_for_deletion(10, &HashSet::new());
+        // GC if tombstone (=100) + grace_period > heartbeat (=110).
+        cluster_state.gc_keys_marked_for_deletion(9, &HashSet::new());
         assert!(cluster_state
             .node_state(&node1)
             .unwrap()
@@ -813,13 +816,13 @@ mod tests {
 
         let mut delta = Delta::default();
         delta.add_node(node1.clone(), Heartbeat(0));
-        delta.add_kv(&node1, "key_a", "4", 4, false);
-        delta.add_kv(&node1, "key_b", "2", 2, false);
+        delta.add_kv(&node1, "key_a", "4", 4, None);
+        delta.add_kv(&node1, "key_b", "2", 2, None);
 
         // Reset node 2.
         delta.add_node_to_reset(node2.clone());
         delta.add_node(node2.clone(), Heartbeat(0));
-        delta.add_kv(&node2, "key_d", "4", 4, false);
+        delta.add_kv(&node2, "key_d", "4", 4, None);
         cluster_state.apply_delta(delta);
 
         let node1_state = cluster_state.node_state(&node1).unwrap();
@@ -828,7 +831,7 @@ mod tests {
             &VersionedValue {
                 value: "4".to_string(),
                 version: 4,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         // We ignore stale values.
@@ -837,7 +840,7 @@ mod tests {
             &VersionedValue {
                 value: "3".to_string(),
                 version: 3,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
         // Check node 2 is reset and is only populated with the new `key_d`.
@@ -848,7 +851,7 @@ mod tests {
             &VersionedValue {
                 value: "4".to_string(),
                 version: 4,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         );
     }
@@ -859,7 +862,7 @@ mod tests {
         cluster_state: &ClusterState,
         digest: &Digest,
         dead_nodes: &HashSet<&ChitchatId>,
-        expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, bool)],
+        expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, Option<u64>)],
     ) {
         let max_delta = cluster_state.compute_delta(digest, usize::MAX, dead_nodes, 10_000);
         let mut buf = Vec::new();
@@ -877,11 +880,9 @@ mod tests {
         }
         for (num_entries, &mtu) in mtu_per_num_entries.iter().enumerate() {
             let mut expected_delta = Delta::default();
-            for &(node, key, val, version, marked_for_deletion) in
-                &expected_delta_atoms[..num_entries]
-            {
+            for &(node, key, val, version, tombstone) in &expected_delta_atoms[..num_entries] {
                 expected_delta.add_node(node.clone(), Heartbeat(0));
-                expected_delta.add_kv(node, key, val, version, marked_for_deletion);
+                expected_delta.add_kv(node, key, val, version, tombstone);
             }
             {
                 let delta = cluster_state.compute_delta(digest, mtu, dead_nodes, 10_000);
@@ -928,9 +929,9 @@ mod tests {
             &digest,
             &HashSet::new(),
             &[
-                (&node2, "key_c", "3", 3, false),
-                (&node2, "key_d", "4", 5, true),
-                (&node1, "key_b", "2", 2, false),
+                (&node2, "key_c", "3", 3, None),
+                (&node2, "key_d", "", 5, Some(0)),
+                (&node1, "key_b", "2", 2, None),
             ],
         );
     }
@@ -950,9 +951,9 @@ mod tests {
             &digest,
             &HashSet::new(),
             &[
-                (&node2, "key_c", "3", 3, false),
-                (&node2, "key_d", "4", 5, true),
-                (&node1, "key_b", "2", 2, false),
+                (&node2, "key_c", "3", 3, None),
+                (&node2, "key_d", "", 5, Some(0)),
+                (&node1, "key_b", "2", 2, None),
             ],
         );
     }
@@ -971,9 +972,9 @@ mod tests {
             &digest,
             &HashSet::new(),
             &[
-                (&node1, "key_a", "1", 1, false),
-                (&node1, "key_b", "2", 2, false),
-                (&node2, "key_d", "4", 4, false),
+                (&node1, "key_a", "1", 1, None),
+                (&node1, "key_b", "2", 2, None),
+                (&node2, "key_d", "4", 4, None),
             ],
         );
     }
@@ -993,8 +994,8 @@ mod tests {
             &digest,
             &dead_nodes,
             &[
-                (&node1, "key_a", "1", 1, false),
-                (&node1, "key_b", "2", 2, false),
+                (&node1, "key_a", "1", 1, None),
+                (&node1, "key_b", "2", 2, None),
             ],
         );
     }
@@ -1005,8 +1006,9 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
+        node1_state.heartbeat = Heartbeat(10000);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
-        node1_state.set_with_version("key_b".to_string(), "2".to_string(), 10_003); // 10_003
+        node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
         let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
@@ -1020,33 +1022,33 @@ mod tests {
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
-                10_002,
+                10_000,
             );
             assert!(delta.nodes_to_reset.is_empty());
             let mut expected_delta = Delta::default();
-            expected_delta.add_node(node1.clone(), Heartbeat(0));
-            expected_delta.add_kv(&node1, "key_b", "2", 10_003, false);
+            expected_delta.add_node(node1.clone(), Heartbeat(10_000));
+            expected_delta.add_kv(&node1, "key_b", "2", 2, None);
             expected_delta.add_node(node2.clone(), Heartbeat(0));
-            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
+            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
             assert_eq!(delta, expected_delta);
         }
         {
-            // Node 1 max_version in digest + grace period (10_000) is inferior to the
-            // node1's max_version in the cluster state. Thus we expect the cluster to compute a
+            // Node 1 heartbeat in digest + grace period (9_999) is inferior to the
+            // node1's hearbeat in the cluster state. Thus we expect the cluster to compute a
             // delta that will reset node 1.
             let delta = cluster_state.compute_delta(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
-                10_000,
+                9_999,
             );
             let mut expected_delta = Delta::default();
             expected_delta.add_node_to_reset(node1.clone());
-            expected_delta.add_node(node1.clone(), Heartbeat(0));
-            expected_delta.add_kv(&node1, "key_a", "1", 1, false);
-            expected_delta.add_kv(&node1, "key_b", "2", 10_003, false);
+            expected_delta.add_node(node1.clone(), Heartbeat(10_000));
+            expected_delta.add_kv(&node1, "key_a", "1", 1, None);
+            expected_delta.add_kv(&node1, "key_b", "2", 2, None);
             expected_delta.add_node(node2.clone(), Heartbeat(0));
-            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
+            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
             assert_eq!(delta, expected_delta);
         }
     }
