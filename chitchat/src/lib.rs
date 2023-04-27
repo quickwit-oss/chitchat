@@ -165,7 +165,8 @@ impl Chitchat {
         }
     }
 
-    /// Checks and marks nodes as dead / live / ready.
+    /// Marks the node as dead or alive depending on the new phi values and updates the live nodes
+    /// watcher accordingly.
     pub(crate) fn update_nodes_liveness(&mut self) {
         self.cluster_state
             .nodes()
@@ -201,6 +202,10 @@ impl Chitchat {
         }
     }
 
+    pub fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
+        &self.cluster_state.node_states
+    }
+
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
         self.cluster_state.node_state(chitchat_id)
     }
@@ -209,46 +214,10 @@ impl Chitchat {
         self.cluster_state.node_state_mut(&self.config.chitchat_id)
     }
 
-    /// Returns the list of nodes considered alive by the failure detector. The list includes the
+    /// Returns the set of nodes considered alive by the failure detector. It includes the
     /// current node (also called "self node"), which is always considered alive.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         once(self.self_chitchat_id()).chain(self.failure_detector.live_nodes())
-    }
-
-    /// Returns the list of nodes considered dead by the failure detector.
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
-        self.failure_detector.dead_nodes()
-    }
-
-    /// Returns the list of seed nodes.
-    pub fn seed_nodes(&self) -> HashSet<SocketAddr> {
-        self.cluster_state.seed_addrs()
-    }
-
-    pub fn cluster_id(&self) -> &str {
-        &self.config.cluster_id
-    }
-
-    pub fn self_chitchat_id(&self) -> &ChitchatId {
-        &self.config.chitchat_id
-    }
-
-    pub fn update_heartbeat(&mut self) {
-        self.self_node_state().update_heartbeat();
-    }
-
-    /// Computes the node's digest.
-    fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
-        self.cluster_state.compute_digest(dead_nodes)
-    }
-
-    pub(crate) fn cluster_state(&self) -> &ClusterState {
-        &self.cluster_state
-    }
-
-    /// Returns a serializable snapshot of the cluster state.
-    pub fn state_snapshot(&self) -> ClusterStateSnapshot {
-        ClusterStateSnapshot::from(&self.cluster_state)
     }
 
     /// Returns a watch stream for monitoring changes in the cluster.
@@ -261,6 +230,43 @@ impl Chitchat {
     /// Heartbeats are not notified.
     pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatId, MaxVersion>> {
         WatchStream::new(self.live_nodes_watcher_rx.clone())
+    }
+
+    /// Returns the set of nodes considered dead by the failure detector.
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
+        self.failure_detector.dead_nodes()
+    }
+
+    /// Returns the set of seed nodes.
+    pub fn seed_nodes(&self) -> HashSet<SocketAddr> {
+        self.cluster_state.seed_addrs()
+    }
+
+    pub fn cluster_id(&self) -> &str {
+        &self.config.cluster_id
+    }
+
+    /// Returns the current node's Chitchat ID.
+    pub fn self_chitchat_id(&self) -> &ChitchatId {
+        &self.config.chitchat_id
+    }
+
+    /// Returns a serializable snapshot of the cluster state.
+    pub fn state_snapshot(&self) -> ClusterStateSnapshot {
+        ClusterStateSnapshot::from(&self.cluster_state)
+    }
+
+    pub(crate) fn update_heartbeat(&mut self) {
+        self.self_node_state().update_heartbeat();
+    }
+
+    pub(crate) fn cluster_state(&self) -> &ClusterState {
+        &self.cluster_state
+    }
+
+    /// Computes the node's digest.
+    fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
+        self.cluster_state.compute_digest(dead_nodes)
     }
 }
 
@@ -316,7 +322,7 @@ mod tests {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
             gossip_interval: Duration::from_millis(100),
-            listen_addr: chitchat_id.gossip_advertise_address,
+            listen_addr: chitchat_id.gossip_advertise_addr,
             seed_nodes: seeds.to_vec(),
             failure_detector_config: FailureDetectorConfig {
                 dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
@@ -343,7 +349,7 @@ mod tests {
             let seeds = chitchat_ids
                 .iter()
                 .filter(|&peer_id| peer_id != chitchat_id)
-                .map(|peer_id| peer_id.gossip_advertise_address.to_string())
+                .map(|peer_id| peer_id.gossip_advertise_addr.to_string())
                 .collect::<Vec<_>>();
             chitchat_handlers.push(start_node(chitchat_id.clone(), &seeds, transport).await);
         }
@@ -488,7 +494,7 @@ mod tests {
             start_node(
                 node_3,
                 &[ChitchatId::for_local_test(30_001)
-                    .gossip_advertise_address
+                    .gossip_advertise_addr
                     .to_string()],
                 &transport,
             )
@@ -553,7 +559,7 @@ mod tests {
         let mut new_config = ChitchatConfig::for_test(40_003);
         new_config.chitchat_id.node_id = "new_node".to_string();
         let new_chitchat_id = new_config.chitchat_id.clone();
-        let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_address;
+        let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_addr;
         new_config.seed_nodes = vec![seed_addr.to_string()];
         let new_node_chitchat = spawn_chitchat(new_config, Vec::new(), &transport)
             .await

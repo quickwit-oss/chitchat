@@ -48,7 +48,7 @@ impl FailureDetector {
         heartbeat_window.report_heartbeat();
     }
 
-    /// Marks a node as dead or live.
+    /// Marks the node as dead or alive based on the current phi value.
     pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         if let Some(phi) = self.phi(chitchat_id) {
             debug!(node_id=%chitchat_id.node_id, phi=phi, "updating node liveness");

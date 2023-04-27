@@ -29,7 +29,7 @@ impl ChitchatConfig {
     #[cfg(test)]
     pub fn for_test(port: u16) -> Self {
         let chitchat_id = ChitchatId::for_local_test(port);
-        let listen_addr = chitchat_id.gossip_advertise_address;
+        let listen_addr = chitchat_id.gossip_advertise_addr;
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
@@ -46,7 +46,7 @@ impl ChitchatConfig {
 impl Default for ChitchatConfig {
     fn default() -> Self {
         let chitchat_id = ChitchatId::for_local_test(10_000);
-        let listen_addr = chitchat_id.gossip_advertise_address;
+        let listen_addr = chitchat_id.gossip_advertise_addr;
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),

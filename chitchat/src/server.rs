@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::message::ChitchatMessage;
 use crate::transport::{Socket, Transport};
@@ -69,8 +69,7 @@ async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>
     };
 }
 
-// A seed node address can be a string representing a
-// socket addr directly, or hostname:port.
+// A seed node address can be a string representing a IP address or a hostname with a port.
 //
 // The latter is especially important when relying on
 // a headless service in k8s or when using DNS in general.
@@ -256,16 +255,16 @@ impl Server {
         let peer_nodes = cluster_state
             .nodes()
             .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let live_nodes = chitchat_guard
             .live_nodes()
             .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let dead_nodes = chitchat_guard
             .dead_nodes()
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let seed_nodes: HashSet<SocketAddr> = chitchat_guard.seed_nodes();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) = select_nodes_for_gossip(
@@ -287,25 +286,22 @@ impl Server {
                 warn!(error=?error, node_address=%node, "Failed to gossip with live node.");
             }
         }
-
         if let Some(random_dead_node) = random_dead_node_opt {
             if let Err(error) = self.gossip(random_dead_node).await {
-                warn!(error=?error, node_address=%random_dead_node, "Failed to gossip with dead node.");
+                debug!(error=?error, node_address=%random_dead_node, "Failed to gossip with dead node.");
             }
         }
-
         if let Some(random_seed_node) = random_seed_node_opt {
             if let Err(error) = self.gossip(random_seed_node).await {
                 warn!(error=?error, node_address=%random_seed_node, "Failed to gossip with seed node.");
             }
         }
-
-        // Update nodes liveness
+        // Update nodes liveness.
         let mut chitchat_guard = self.chitchat.lock().await;
         chitchat_guard.update_nodes_liveness();
     }
 
-    /// Gossip with another peer.
+    /// Gossips with another peer.
     async fn gossip(&mut self, addr: SocketAddr) -> anyhow::Result<()> {
         let syn = self.chitchat.lock().await.create_syn_message();
         self.transport.send(addr, syn).await?;
@@ -455,7 +451,7 @@ mod tests {
     async fn test_syn() {
         let transport = ChannelTransport::default();
         let test_config = ChitchatConfig::for_test(1112);
-        let test_addr = test_config.chitchat_id.gossip_advertise_address;
+        let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let peer_addr: SocketAddr = ([127u8, 0u8, 0u8, 1u8], 1111u16).into();
         let mut peer_transport = transport.open(peer_addr).await.unwrap();
         let server = spawn_chitchat(test_config, Vec::new(), &transport)
@@ -484,12 +480,12 @@ mod tests {
 
         let config2 = ChitchatConfig::for_test(2);
         let mut transport2 = transport
-            .open(config2.chitchat_id.gossip_advertise_address)
+            .open(config2.chitchat_id.gossip_advertise_addr)
             .await
             .unwrap();
 
         let config1 = ChitchatConfig::for_test(1);
-        let addr1 = config1.chitchat_id.gossip_advertise_address;
+        let addr1 = config1.chitchat_id.gossip_advertise_addr;
 
         let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds(), Vec::new());
         let _handler = spawn_chitchat(config1, Vec::new(), &transport)
@@ -513,14 +509,14 @@ mod tests {
         let mut outsider_config = ChitchatConfig::for_test(2224);
         outsider_config.cluster_id = "another-cluster".to_string();
         let mut outsider_transport = transport
-            .open(outsider_config.chitchat_id.gossip_advertise_address)
+            .open(outsider_config.chitchat_id.gossip_advertise_addr)
             .await
             .unwrap();
         let outsider =
             Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
 
         let server_config = ChitchatConfig::for_test(2223);
-        let server_addr = server_config.chitchat_id.gossip_advertise_address;
+        let server_addr = server_config.chitchat_id.gossip_advertise_addr;
         let _handler = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -539,11 +535,11 @@ mod tests {
     async fn test_seeding() {
         let transport = ChannelTransport::default();
         let seed_config = ChitchatConfig::for_test(5551);
-        let seed_addr = seed_config.chitchat_id.gossip_advertise_address;
+        let seed_addr = seed_config.chitchat_id.gossip_advertise_addr;
         let mut seed_transport = transport.open(seed_addr).await.unwrap();
 
         let mut client_config = ChitchatConfig::for_test(5552);
-        let client_addr = client_config.chitchat_id.gossip_advertise_address;
+        let client_addr = client_config.chitchat_id.gossip_advertise_addr;
         client_config.seed_nodes = vec![seed_addr.to_string()];
         let _handler = spawn_chitchat(client_config, Vec::new(), &transport)
             .await
@@ -562,14 +558,14 @@ mod tests {
     async fn test_heartbeat() {
         let transport = ChannelTransport::default();
         let test_config = ChitchatConfig::for_test(1);
-        let test_addr = test_config.chitchat_id.gossip_advertise_address;
+        let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let mut test_chitchat =
             Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds(), Vec::new());
         let mut test_transport = transport.open(test_addr).await.unwrap();
 
         let server_config = ChitchatConfig::for_test(2);
         let server_id = server_config.chitchat_id.clone();
-        let server_addr = server_config.chitchat_id.gossip_advertise_address;
+        let server_addr = server_config.chitchat_id.gossip_advertise_addr;
         let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -611,7 +607,7 @@ mod tests {
         let transport = ChannelTransport::default();
         let node1_config = ChitchatConfig::for_test(6663);
         let node1_id = node1_config.chitchat_id.clone();
-        let node1_addr = node1_config.chitchat_id.gossip_advertise_address;
+        let node1_addr = node1_config.chitchat_id.gossip_advertise_addr;
         let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
             .await
             .unwrap();
@@ -662,19 +658,19 @@ mod tests {
         let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
             &mut rng,
             to_hash_set(vec![
-                node1.gossip_advertise_address,
-                node2.gossip_advertise_address,
-                node3.gossip_advertise_address,
+                node1.gossip_advertise_addr,
+                node2.gossip_advertise_addr,
+                node3.gossip_advertise_addr,
             ]),
             to_hash_set(vec![
-                node1.gossip_advertise_address,
-                node2.gossip_advertise_address,
+                node1.gossip_advertise_addr,
+                node2.gossip_advertise_addr,
             ]),
-            to_hash_set(vec![node3.gossip_advertise_address]),
-            to_hash_set(vec![node2.gossip_advertise_address]),
+            to_hash_set(vec![node3.gossip_advertise_addr]),
+            to_hash_set(vec![node2.gossip_advertise_addr]),
         );
         assert_eq!(nodes.len(), 2);
-        assert_eq!(dead_node, Some(node3.gossip_advertise_address));
+        assert_eq!(dead_node, Some(node3.gossip_advertise_addr));
         assert_eq!(
             seed_node, None,
             "Should have already gossiped with a seed node."
@@ -685,7 +681,7 @@ mod tests {
     fn test_gossip_no_dead_node_no_seed_nodes() {
         let nodes: HashSet<SocketAddr> = (10_001..=10_005)
             .map(ChitchatId::for_local_test)
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect();
         let mut rng = RngForTest::default();
         let (nodes, dead_node, seed_node) = select_nodes_for_gossip(
@@ -704,7 +700,7 @@ mod tests {
     fn test_gossip_dead_and_seed_node() {
         let nodes: Vec<SocketAddr> = (10_001..=10_005)
             .map(ChitchatId::for_local_test)
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address)
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect();
         let seeds: HashSet<SocketAddr> = nodes[3..5].iter().cloned().collect();
         let mut rng = RngForTest::default();
