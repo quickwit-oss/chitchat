@@ -305,7 +305,7 @@ mod tests {
         assert!(delta_writer.add_node(node1, heartbeat));
 
         // +23 bytes: 2 bytes (key length) + 5 bytes (key) + 7 bytes (values) + 8 bytes (version) +
-        // 8 bytes (tombstone).
+        // 1 bytes (empty tombstone).
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
@@ -314,13 +314,14 @@ mod tests {
                 tombstone: None,
             },
         ));
-        // +23 bytes.
+        // +26 bytes: 2 bytes (key length) + 5 bytes (key) + 8 bytes (version) +
+        // 9 bytes (empty tombstone).
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
-                value: "val12".to_string(),
+                value: "".to_string(),
                 version: 2,
-                tombstone: None,
+                tombstone: Some(0),
             },
         ));
 
@@ -348,7 +349,7 @@ mod tests {
             },
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 170);
+        test_serdeser_aux(&delta, 173);
     }
 
     #[test]

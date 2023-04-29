@@ -8,7 +8,7 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
@@ -105,6 +105,7 @@ impl NodeState {
         self.set_with_version(key.into(), value.into(), new_version);
     }
 
+    /// Marks key for deletion and sets the value to an empty string.
     pub fn mark_for_deletion(&mut self, key: &str) {
         let Some(versioned_value) = self.key_values.get_mut(key) else {
             warn!("Key `{}` does not exist in the node's state and could not be marked for deletion.", key);
@@ -274,7 +275,7 @@ impl ClusterState {
                 continue;
             };
             if node_digest.heartbeat.0 + marked_for_deletion_grace_period < node_state.heartbeat.0 {
-                debug!("Node to reset {chitchat_id:?}");
+                warn!("Node to reset {chitchat_id:?}");
                 nodes_to_reset.push(chitchat_id);
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;

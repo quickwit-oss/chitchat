@@ -63,11 +63,9 @@ impl Serializable for Option<u64> {
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        println!("deserializing tombstone");
-        let marked_for_deletion: bool = Serializable::deserialize(buf)?;
-        if marked_for_deletion {
+        let is_some: bool = Serializable::deserialize(buf)?;
+        if is_some {
             let u64_value = Serializable::deserialize(buf)?;
-            println!("deserializing tombstone {}", u64_value);
             return Ok(Some(u64_value));
         }
         Ok(None)

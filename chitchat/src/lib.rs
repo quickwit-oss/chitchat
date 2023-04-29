@@ -114,8 +114,6 @@ impl Chitchat {
                     &dead_nodes,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
-                // info!("SYN node {}, digest {:?}, self_digest {:?}, delta: {:?}",
-                // self.config.chitchat_id.node_id, digest, self_digest, delta);
                 self.report_heartbeats(&delta);
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
@@ -124,7 +122,6 @@ impl Chitchat {
             }
             ChitchatMessage::SynAck { digest, delta } => {
                 self.report_heartbeats(&delta);
-                // info!("SYNACK node {}, digest {:?}, apply delta: {:?}",
                 // self.config.chitchat_id.node_id, digest, delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
@@ -134,12 +131,9 @@ impl Chitchat {
                     &dead_nodes,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
-                // info!("SYNACK node {}, computed delta: {:?}", self.config.chitchat_id.node_id,
-                // delta);
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
-                // info!("ACK node {}, apply delta: {:?}", self.config.chitchat_id.node_id, delta);
                 self.report_heartbeats(&delta);
                 self.cluster_state.apply_delta(delta);
                 None
