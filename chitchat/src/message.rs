@@ -10,20 +10,19 @@ use crate::serialize::Serializable;
 ///
 /// Each variant represents a step of the gossip "handshake"
 /// between node A and node B.
-/// The names {Syn, SynAck, Ack} of the different steps are borrowed from
+/// The names {SYN, SYN-ACK, ACK} of the different steps are borrowed from
 /// TCP Handshake.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ChitchatMessage {
-    /// Node A initiates handshakes.
+    /// Node A initiates a handshake and sends its digest.
     Syn { cluster_id: String, digest: Digest },
     /// Node B returns a partial update as described
-    /// in the scuttlebutt reconcialiation algorithm,
-    /// and returns its own checksum.
+    /// in the Scuttlebutt reconciliation algorithm,
+    /// and returns its own digest.
     SynAck { digest: Digest, delta: Delta },
     /// Node A returns a partial update for B.
     Ack { delta: Delta },
-    /// Node B rejects the Syn message because of a
-    /// cluster name mismatch between the peers.
+    /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
 }
 
@@ -119,18 +118,79 @@ pub(crate) fn syn_ack_serialized_len(digest: &Digest, delta: &Delta) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::serialize::test_serdeser_aux;
-    use crate::{ChitchatId, ChitchatMessage, Digest};
+    use crate::{ChitchatId, ChitchatMessage, Delta, Digest, Heartbeat};
 
     #[test]
     fn test_syn() {
-        let mut digest = Digest::default();
-        digest.add_node(ChitchatId::for_local_test(10_001), 1);
-        digest.add_node(ChitchatId::for_local_test(10_002), 2);
-        let syn = ChitchatMessage::Syn {
-            cluster_id: "cluster-a".to_string(),
-            digest,
-        };
-        test_serdeser_aux(&syn, 84);
+        {
+            let syn = ChitchatMessage::Syn {
+                cluster_id: "cluster-a".to_string(),
+                digest: Digest::default(),
+            };
+            test_serdeser_aux(&syn, 14);
+        }
+        {
+            let mut digest = Digest::default();
+            let node = ChitchatId::for_local_test(10_001);
+            digest.add_node(node, Heartbeat(0), 0);
+
+            let syn = ChitchatMessage::Syn {
+                cluster_id: "cluster-a".to_string(),
+                digest,
+            };
+            test_serdeser_aux(&syn, 57);
+        }
+    }
+
+    #[test]
+    fn test_syn_ack() {
+        {
+            let syn_ack = ChitchatMessage::SynAck {
+                digest: Digest::default(),
+                delta: Delta::default(),
+            };
+            test_serdeser_aux(&syn_ack, 7);
+        }
+        {
+            // 2 bytes.
+            let mut digest = Digest::default();
+            let node = ChitchatId::for_local_test(10_001);
+            // +43 bytes = 27 bytes (ChitchatId) + 8 (hearbeat) + 8 (max_version).
+            digest.add_node(node, Heartbeat(0), 0);
+
+            // 4 bytes
+            let mut delta = Delta::default();
+            let node = ChitchatId::for_local_test(10_001);
+            // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
+            delta.add_node(node.clone(), Heartbeat(0));
+            // +29 bytes.
+            delta.add_kv(&node, "key", "value", 0, Some(5));
+
+            let syn_ack = ChitchatMessage::SynAck { digest, delta };
+            // 1 bytes (syn ack message) + 45 bytes (digest) + 69 bytes (delta).
+            test_serdeser_aux(&syn_ack, 116);
+        }
+    }
+
+    #[test]
+    fn test_ack() {
+        {
+            let delta = Delta::default();
+            let ack = ChitchatMessage::Ack { delta };
+            test_serdeser_aux(&ack, 5);
+        }
+        {
+            // 4 bytes.
+            let mut delta = Delta::default();
+            let node = ChitchatId::for_local_test(10_001);
+            // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
+            delta.add_node(node.clone(), Heartbeat(0));
+            // +29 bytes.
+            delta.add_kv(&node, "key", "value", 0, Some(5));
+
+            let ack = ChitchatMessage::Ack { delta };
+            test_serdeser_aux(&ack, 71);
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 use tracing::{debug, info};
 
+#[derive(Debug)]
 enum Operation {
     InsertKeysValues {
         chitchat_id: ChitchatId,
@@ -35,6 +36,7 @@ enum Operation {
     },
 }
 
+#[derive(Debug)]
 enum NodeStatePredicate {
     EqualKeyValue(String, String),   // key, value
     KeyPresent(String, bool),        // key, present
@@ -51,12 +53,12 @@ impl NodeStatePredicate {
                 &versioned_value.value == expected_value
             }
             NodeStatePredicate::KeyPresent(key, present) => {
-                info!(key=%key, present=present, "assert-key-present");
+                debug!(key=%key, present=present, "assert-key-present");
                 &node_state.get_versioned(key).is_some() == present
             }
             NodeStatePredicate::MarkedForDeletion(key, marked) => {
-                info!(key=%key, marked=marked, "assert-key-marked-for-deletion");
-                &node_state.get_versioned(key).unwrap().marked_for_deletion == marked
+                debug!(key=%key, marked=marked, "assert-key-marked-for-deletion");
+                node_state.get_versioned(key).unwrap().tombstone.is_some() == *marked
             }
         }
     }
@@ -70,17 +72,18 @@ struct Simulator {
 }
 
 impl Simulator {
-    pub fn new(gossip_interval: Duration) -> Self {
+    pub fn new(gossip_interval: Duration, marked_for_deletion_key_grace_period: usize) -> Self {
         Self {
             transport: ChannelTransport::default(),
             node_handles: HashMap::new(),
             gossip_interval,
-            marked_for_deletion_key_grace_period: 5,
+            marked_for_deletion_key_grace_period,
         }
     }
 
     pub async fn execute(&mut self, operations: Vec<Operation>) {
         for operation in operations.into_iter() {
+            debug!("Execute operation {operation:?}");
             match operation {
                 Operation::AddNode {
                     chitchat_id,
@@ -101,7 +104,7 @@ impl Simulator {
                     tokio::time::sleep(duration).await;
                 }
                 Operation::RemoveNetworkLink(node_1, node_2) => {
-                    info!(node_l=%node_1.node_id, node_r=%node_2.node_id, "remove-link");
+                    debug!(node_l=%node_1.node_id, node_r=%node_2.node_id, "remove-link");
                     self.transport
                         .remove_link(
                             node_1.gossip_advertise_address,
@@ -124,7 +127,7 @@ impl Simulator {
                     predicate,
                     timeout_opt,
                 } => {
-                    info!(server_node_id=%server_chitchat_id.node_id, node_id=%chitchat_id.node_id, "node-state-assert");
+                    debug!(server_node_id=%server_chitchat_id.node_id, node_id=%chitchat_id.node_id, "node-state-assert");
                     let chitchat = self
                         .node_handles
                         .get(&server_chitchat_id)
@@ -144,7 +147,7 @@ impl Simulator {
                                         info!(node_id=%chitchat_id_clone.node_id, "Waiting for predicate to be true.");
                                     }
                                 } else {
-                                    info!(node_id=%chitchat_id_clone.node_id, "Waiting for node state to be present.");
+                                    info!(node_id=%chitchat_id_clone.node_id, state_snapshot=?chitchat_guard.state_snapshot(), "Waiting for node state to be present.");
                                 }
                                 drop(chitchat_guard);
                                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -157,7 +160,7 @@ impl Simulator {
                         if let Some(node_state) = chitchat_guard.node_state(&chitchat_id) {
                             let predicate_value = predicate.check(node_state);
                             if !predicate_value {
-                                info!(node_id=%chitchat_id.node_id, state_snapshot=?chitchat_guard.state_snapshot(), "Predicate false.");
+                                info!(node_id=%chitchat_id.node_id, predicate=?predicate, state_snapshot=?chitchat_guard.state_snapshot(), "Predicate false.");
                             }
                             assert!(predicate_value);
                         } else {
@@ -175,7 +178,7 @@ impl Simulator {
         chitchat_id: ChitchatId,
         keys_values: Vec<(String, String)>,
     ) {
-        info!(node_id=%chitchat_id.node_id, num_keys_values=?keys_values.len(), "insert-keys-values");
+        debug!(node_id=%chitchat_id.node_id, num_keys_values=?keys_values.len(), "insert-keys-values");
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         for (key, value) in keys_values.into_iter() {
@@ -184,16 +187,11 @@ impl Simulator {
     }
 
     pub async fn mark_for_deletion(&mut self, chitchat_id: ChitchatId, key: String) {
-        info!(node_id=%chitchat_id.node_id, key=%key, "mark-for-deletion");
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         chitchat_guard.self_node_state().mark_for_deletion(&key);
-        let version = chitchat_guard
-            .self_node_state()
-            .get_versioned(&key)
-            .unwrap()
-            .version;
-        info!(key=%key, version=version, "marked-for-deletion");
+        let hearbeat = chitchat_guard.self_node_state().hearbeat();
+        debug!(node_id=%chitchat_id.node_id, key=%key, hearbeat=hearbeat, "Marked key for deletion.");
     }
 
     pub async fn spawn_node(
@@ -201,7 +199,7 @@ impl Simulator {
         chitchat_id: ChitchatId,
         peer_seeds: Option<Vec<ChitchatId>>,
     ) {
-        info!(node_id=%chitchat_id.node_id, "spawn");
+        debug!(node_id=%chitchat_id.node_id, "spawn");
         let seed_nodes: Vec<_> = peer_seeds
             .unwrap_or_else(|| {
                 self.node_handles
@@ -255,7 +253,7 @@ pub fn find_available_tcp_port() -> anyhow::Result<u16> {
 #[tokio::test]
 async fn test_simple_simulation_insert() {
     let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(50));
+    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let operations = vec![
@@ -294,7 +292,7 @@ async fn test_simple_simulation_insert() {
 #[tokio::test]
 async fn test_simple_simulation_with_network_partition() {
     let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(50));
+    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let operations = vec![
@@ -336,7 +334,7 @@ async fn test_simple_simulation_with_network_partition() {
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition() {
     let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(50));
+    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let chitchat_id_3 = create_chitchat_id("node-3");
@@ -369,6 +367,12 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
             timeout_opt: Some(Duration::from_millis(300)),
         },
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_3.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
+            timeout_opt: Some(Duration::from_millis(300)),
+        },
         // Isolate node 3.
         Operation::RemoveNetworkLink(chitchat_id_1.clone(), chitchat_id_3.clone()),
         Operation::RemoveNetworkLink(chitchat_id_2.clone(), chitchat_id_3.clone()),
@@ -384,8 +388,15 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), true),
             timeout_opt: Some(Duration::from_millis(300)),
         },
-        // Wait for garbage collection
-        Operation::Wait(Duration::from_millis(500)),
+        // Check marked for deletion is not propagated to node 3.
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_3.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), false),
+            timeout_opt: None,
+        },
+        // Wait for garbage collection: grace period * heartbeat ~ 1 second + margin of 1 second.
+        Operation::Wait(Duration::from_secs(2)),
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_2.clone(),
             chitchat_id: chitchat_id_1.clone(),
@@ -398,12 +409,6 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
             timeout_opt: None,
         },
-        Operation::NodeStateAssert {
-            server_chitchat_id: chitchat_id_3.clone(),
-            chitchat_id: chitchat_id_1.clone(),
-            predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), false),
-            timeout_opt: None,
-        },
         // Add node 4 which communicates only with node 3.
         Operation::RemoveNetworkLink(chitchat_id_1.clone(), chitchat_id_4.clone()),
         Operation::RemoveNetworkLink(chitchat_id_2.clone(), chitchat_id_4.clone()),
@@ -413,18 +418,18 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
         },
         // Wait for propagation
         // We need to wait longer... because node 4 is just starting?
-        Operation::Wait(Duration::from_millis(1000)),
+        Operation::Wait(Duration::from_millis(500)),
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
-            timeout_opt: Some(Duration::from_millis(500)),
+            timeout_opt: None,
         },
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_4.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
-            timeout_opt: Some(Duration::from_millis(500)),
+            timeout_opt: None,
         },
         // Relink node 3
         Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_3.clone()),
@@ -446,13 +451,15 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
 }
 
 // Playground.
+// This is a stress test. If you want to debug it, reduce first the number
+// of nodes to 3 and keys to 1 or 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_simple_simulation_heavy_insert_delete() {
     let _ = tracing_subscriber::fmt::try_init();
     let mut rng = thread_rng();
-    let mut simulator = Simulator::new(Duration::from_millis(1000));
+    let mut simulator = Simulator::new(Duration::from_millis(100), 50);
     let mut chitchat_ids = Vec::new();
-    for i in 0..50 {
+    for i in 0..20 {
         chitchat_ids.push(create_chitchat_id(&format!("node-{}", i)));
     }
     let seeds = vec![
@@ -470,7 +477,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
         .collect();
     simulator.execute(add_node_operations).await;
 
-    let key_names: Vec<_> = (0..50).map(|idx| format!("key_{}", idx)).collect();
+    let key_names: Vec<_> = (0..200).map(|idx| format!("key_{}", idx)).collect();
     let mut keys_values_inserted_per_chitchat_id: HashMap<ChitchatId, HashSet<String>> =
         HashMap::new();
     for chitchat_id in chitchat_ids.iter() {
@@ -491,9 +498,10 @@ async fn test_simple_simulation_heavy_insert_delete() {
             .await;
     }
 
-    tokio::time::sleep(Duration::from_millis(5000)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    info!("Checking keys are present...");
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
-        info!(node_id=%chitchat_id.node_id, keys=?keys, "check");
+        debug!(node_id=%chitchat_id.node_id, keys=?keys, "check");
         for key in keys {
             let server_chitchat_id = chitchat_ids.choose(&mut rng).unwrap().clone();
             let check_operation = Operation::NodeStateAssert {
@@ -518,7 +526,9 @@ async fn test_simple_simulation_heavy_insert_delete() {
     }
 
     // Wait for garbage collection to kick in.
-    tokio::time::sleep(Duration::from_millis(10000)).await;
+    // Time to wait is 10s = margin of 4s + grace_period(50) * heartbeat (100ms).
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    info!("Checking keys are deleted...");
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
         for key in keys {
             let server_chitchat_id = chitchat_ids.choose(&mut rng).unwrap().clone();

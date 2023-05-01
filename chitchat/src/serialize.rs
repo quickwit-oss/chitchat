@@ -3,7 +3,26 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::bail;
 
-use crate::ChitchatId;
+use crate::{ChitchatId, Heartbeat};
+
+/// Trait to serialize messages.
+///
+/// Chitchat uses a custom binary serialization format.
+/// The point of this format is to make it possible
+/// to truncate the delta payload to a given mtu.
+pub trait Serializable: Sized {
+    fn serialize(&self, buf: &mut Vec<u8>);
+
+    fn serialize_to_vec(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.serialize(&mut buf);
+        buf
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self>;
+
+    fn serialized_len(&self) -> usize;
+}
 
 impl Serializable for u16 {
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -32,6 +51,32 @@ impl Serializable for u64 {
 
     fn serialized_len(&self) -> usize {
         8
+    }
+}
+
+impl Serializable for Option<u64> {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        self.is_some().serialize(buf);
+        if let Some(tombstone) = &self {
+            tombstone.serialize(buf);
+        }
+    }
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let is_some: bool = Serializable::deserialize(buf)?;
+        if is_some {
+            let u64_value = Serializable::deserialize(buf)?;
+            return Ok(Some(u64_value));
+        }
+        Ok(None)
+    }
+
+    fn serialized_len(&self) -> usize {
+        if self.is_some() {
+            9
+        } else {
+            1
+        }
     }
 }
 
@@ -187,20 +232,19 @@ impl Serializable for ChitchatId {
     }
 }
 
-/// Trait to serialize messages.
-///
-/// Chitchat uses a custom binary serialization format.
-/// The point of this format is to make it possible
-/// to truncate the delta payload to a given mtu.
-pub trait Serializable: Sized {
-    fn serialize(&self, buf: &mut Vec<u8>);
-    fn serialize_to_vec(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        self.serialize(&mut buf);
-        buf
+impl Serializable for Heartbeat {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        self.0.serialize(buf);
     }
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self>;
-    fn serialized_len(&self) -> usize;
+
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let heartbeat = u64::deserialize(buf)?;
+        Ok(Self(heartbeat))
+    }
+
+    fn serialized_len(&self) -> usize {
+        self.0.serialized_len()
+    }
 }
 
 #[cfg(test)]
@@ -232,13 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_heartbeat() {
+        test_serdeser_aux(&Heartbeat(1), 8);
+    }
+
+    #[test]
     fn test_serialize_ip() {
-        test_serdeser_aux(&IpAddr::from(Ipv4Addr::new(127, 1, 3, 9)), 5);
-        test_serdeser_aux(
-            &IpAddr::from(Ipv6Addr::from([
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-            ])),
-            17,
-        );
+        let ipv4 = IpAddr::from(Ipv4Addr::new(127, 1, 3, 9));
+        test_serdeser_aux(&ipv4, 5);
+
+        let ipv6 = IpAddr::from(Ipv6Addr::from([
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        ]));
+        test_serdeser_aux(&ipv6, 17);
+    }
+
+    #[test]
+    fn test_serialize_option_u64() {
+        test_serdeser_aux(&Some(1), 9);
+        test_serdeser_aux(&None, 1);
     }
 }
