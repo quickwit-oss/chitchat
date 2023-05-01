@@ -152,17 +152,23 @@ mod tests {
             test_serdeser_aux(&syn_ack, 7);
         }
         {
+            // 2 bytes.
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
+            // +43 bytes = 27 bytes (ChitchatId) + 8 (hearbeat) + 8 (max_version).
             digest.add_node(node, Heartbeat(0), 0);
 
+            // 4 bytes
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
+            // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
             delta.add_node(node.clone(), Heartbeat(0));
-            delta.add_kv(&node, "key", "value", 0, true);
+            // +29 bytes.
+            delta.add_kv(&node, "key", "value", 0, Some(5));
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
-            test_serdeser_aux(&syn_ack, 108);
+            // 1 bytes (syn ack message) + 45 bytes (digest) + 69 bytes (delta).
+            test_serdeser_aux(&syn_ack, 116);
         }
     }
 
@@ -174,13 +180,16 @@ mod tests {
             test_serdeser_aux(&ack, 5);
         }
         {
+            // 4 bytes.
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
+            // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
             delta.add_node(node.clone(), Heartbeat(0));
-            delta.add_kv(&node, "key", "value", 0, true);
+            // +29 bytes.
+            delta.add_kv(&node, "key", "value", 0, Some(5));
 
             let ack = ChitchatMessage::Ack { delta };
-            test_serdeser_aux(&ack, 63);
+            test_serdeser_aux(&ack, 71);
         }
     }
 

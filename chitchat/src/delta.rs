@@ -81,7 +81,7 @@ impl Delta {
         key: &str,
         value: &str,
         version: crate::Version,
-        marked_for_deletion: bool,
+        tombstone: Option<u64>,
     ) {
         let node_delta = self.node_deltas.get_mut(chitchat_id).unwrap();
 
@@ -91,7 +91,7 @@ impl Delta {
             VersionedValue {
                 value: value.to_string(),
                 version,
-                marked_for_deletion,
+                tombstone,
             },
         );
     }
@@ -187,7 +187,7 @@ impl DeltaWriter {
             2 + key.len()
                 + versioned_value.value.serialized_len()
                 + versioned_value.version.serialized_len()
-                + versioned_value.marked_for_deletion.serialized_len(),
+                + versioned_value.tombstone.serialized_len(),
         ) {
             return false;
         }
@@ -224,14 +224,14 @@ impl Serializable for NodeDelta {
             VersionedValue {
                 value,
                 version,
-                marked_for_deletion,
+                tombstone,
             },
         ) in &self.key_values
         {
             key.serialize(buf);
             value.serialize(buf);
             version.serialize(buf);
-            marked_for_deletion.serialize(buf);
+            tombstone.serialize(buf);
         }
     }
 
@@ -244,14 +244,14 @@ impl Serializable for NodeDelta {
             let key = String::deserialize(buf)?;
             let value = String::deserialize(buf)?;
             let version = u64::deserialize(buf)?;
-            let marked_for_deletion = bool::deserialize(buf)?;
+            let tombstone = <Option<u64>>::deserialize(buf)?;
             max_version = max_version.max(version);
             key_values.insert(
                 key,
                 VersionedValue {
                     value,
                     version,
-                    marked_for_deletion,
+                    tombstone,
                 },
             );
         }
@@ -271,14 +271,14 @@ impl Serializable for NodeDelta {
             VersionedValue {
                 value,
                 version,
-                marked_for_deletion,
+                tombstone,
             },
         ) in &self.key_values
         {
             len += key.serialized_len();
             len += value.serialized_len();
             len += version.serialized_len();
-            len += marked_for_deletion.serialized_len();
+            len += tombstone.serialized_len();
         }
         len
     }
@@ -295,80 +295,96 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_simple_foo() {
-        let mut delta_writer = DeltaWriter::with_mtu(170);
+        // 4 bytes
+        let mut delta_writer = DeltaWriter::with_mtu(198);
 
+        // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
         assert!(delta_writer.add_node(node1, heartbeat));
 
+        // +23 bytes: 2 bytes (key length) + 5 bytes (key) + 7 bytes (values) + 8 bytes (version) +
+        // 1 bytes (empty tombstone).
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             },
         ));
+        // +26 bytes: 2 bytes (key length) + 5 bytes (key) + 8 bytes (version) +
+        // 9 bytes (empty tombstone).
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
-                value: "val12".to_string(),
+                value: "".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: Some(0),
             },
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
+        // +37 bytes
         assert!(delta_writer.add_node(node2, heartbeat));
 
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key21",
             VersionedValue {
                 value: "val21".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             },
         ));
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key22",
             VersionedValue {
                 value: "val22".to_string(),
                 version: 3,
-                marked_for_deletion: false,
+                tombstone: None,
             },
         ));
         let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 170);
+        test_serdeser_aux(&delta, 173);
     }
 
     #[test]
     fn test_delta_serialization_simple_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(136);
+        // 4 bytes
+        let mut delta_writer = DeltaWriter::with_mtu(124);
 
+        // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
         assert!(delta_writer.add_node(node1, heartbeat));
 
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
         assert!(delta_writer.add_node(node2, heartbeat));
 
         let delta: Delta = delta_writer.into();
@@ -377,32 +393,38 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_simple_with_nodes_to_reset() {
-        let mut delta_writer = DeltaWriter::with_mtu(152);
-        assert!(delta_writer.add_node_to_reset(ChitchatId::for_local_test(10_000))); // Chitchat ID takes 27 bytes
+        // 4 bytes
+        let mut delta_writer = DeltaWriter::with_mtu(151);
+        // +27 bytes (ChitchatId).
+        assert!(delta_writer.add_node_to_reset(ChitchatId::for_local_test(10_000)));
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(delta_writer.add_node(node1, heartbeat));
 
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(delta_writer.add_node(node2, heartbeat));
 
         let delta: Delta = delta_writer.into();
@@ -411,31 +433,36 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node() {
-        let mut delta_writer = DeltaWriter::with_mtu(95);
+        // 4 bytes.
+        let mut delta_writer = DeltaWriter::with_mtu(87);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(delta_writer.add_node(node1, heartbeat));
 
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(!delta_writer.add_node(node2, heartbeat));
 
         let delta: Delta = delta_writer.into();
@@ -444,26 +471,30 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node_to_reset() {
-        let mut delta_writer = DeltaWriter::with_mtu(95);
+        // 4 bytes.
+        let mut delta_writer = DeltaWriter::with_mtu(90);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes.
         assert!(delta_writer.add_node(node1, heartbeat));
 
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
 
@@ -476,26 +507,29 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_kv() {
-        let mut delta_writer = DeltaWriter::with_mtu(74);
+        // 4 bytes.
+        let mut delta_writer = DeltaWriter::with_mtu(86);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
+        // +37 bytes.
         assert!(delta_writer.add_node(node1, heartbeat));
-
+        // +23 bytes.
         assert!(delta_writer.add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
+        // +23 bytes.
         assert!(!delta_writer.add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
 
@@ -517,7 +551,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
         assert!(!delta_writer.add_kv(
@@ -525,7 +559,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             }
         ));
         delta_writer.add_kv(
@@ -533,7 +567,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                marked_for_deletion: false,
+                tombstone: None,
             },
         );
     }

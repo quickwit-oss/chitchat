@@ -122,6 +122,7 @@ impl Chitchat {
             }
             ChitchatMessage::SynAck { digest, delta } => {
                 self.report_heartbeats(&delta);
+                // self.config.chitchat_id.node_id, digest, delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
