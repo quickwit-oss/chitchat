@@ -106,19 +106,13 @@ impl Simulator {
                 Operation::RemoveNetworkLink(node_1, node_2) => {
                     debug!(node_l=%node_1.node_id, node_r=%node_2.node_id, "remove-link");
                     self.transport
-                        .remove_link(
-                            node_1.gossip_advertise_address,
-                            node_2.gossip_advertise_address,
-                        )
+                        .remove_link(node_1.gossip_advertise_addr, node_2.gossip_advertise_addr)
                         .await;
                 }
                 Operation::AddNetworkLink(node_1, node_2) => {
                     debug!(node_l=%node_1.node_id, node_r=%node_2.node_id, "add-link");
                     self.transport
-                        .add_link(
-                            node_1.gossip_advertise_address,
-                            node_2.gossip_advertise_address,
-                        )
+                        .add_link(node_1.gossip_advertise_addr, node_2.gossip_advertise_addr)
                         .await;
                 }
                 Operation::NodeStateAssert {
@@ -208,19 +202,18 @@ impl Simulator {
                     .collect::<Vec<ChitchatId>>()
             })
             .iter()
-            .map(|chitchat_id| chitchat_id.gossip_advertise_address.to_string())
+            .map(|chitchat_id| chitchat_id.gossip_advertise_addr.to_string())
             .collect();
         let config = ChitchatConfig {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
             gossip_interval: self.gossip_interval,
-            listen_addr: chitchat_id.gossip_advertise_address,
+            listen_addr: chitchat_id.gossip_advertise_addr,
             seed_nodes,
             failure_detector_config: FailureDetectorConfig {
                 initial_interval: self.gossip_interval * 10,
                 ..Default::default()
             },
-            is_ready_predicate: None,
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)
@@ -235,7 +228,7 @@ pub fn create_chitchat_id(id: &str) -> ChitchatId {
     ChitchatId {
         node_id: id.to_string(),
         generation_id: 0,
-        gossip_advertise_address: ([127, 0, 0, 1], port).into(),
+        gossip_advertise_addr: ([127, 0, 0, 1], port).into(),
     }
 }
 

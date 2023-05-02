@@ -54,28 +54,8 @@ impl NodeState {
             .count()
     }
 
-    /// Returns an iterator over keys matching the given predicate.
-    /// Not public as it returns also keys marked for deletion.
-    fn internal_iter_key_values(
-        &self,
-        predicate: impl Fn(&String, &VersionedValue) -> bool,
-    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        self.key_values
-            .iter()
-            .filter(move |(key, versioned_value)| predicate(key, versioned_value))
-            .map(|(key, record)| (key.as_str(), record))
-    }
-
-    /// Returns an iterator over the versioned values that are strictly greater than
-    /// `floor_version`. The floor version typically comes from the max version of a digest.
-    fn stale_key_values(
-        &self,
-        floor_version: u64,
-    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        // TODO optimize by checking the max version.
-        self.internal_iter_key_values(move |_key, versioned_value| {
-            versioned_value.version > floor_version
-        })
+    pub fn hearbeat(&self) -> u64 {
+        self.heartbeat.0
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -85,14 +65,6 @@ impl NodeState {
 
     pub fn get_versioned(&self, key: &str) -> Option<&VersionedValue> {
         self.key_values.get(key)
-    }
-
-    pub fn update_heartbeat(&mut self) {
-        self.heartbeat.inc();
-    }
-
-    pub fn hearbeat(&self) -> u64 {
-        self.heartbeat.0
     }
 
     /// Sets a new value for a given key.
@@ -117,8 +89,31 @@ impl NodeState {
         versioned_value.value = "".to_string();
     }
 
+    pub(crate) fn update_heartbeat(&mut self) {
+        self.heartbeat.inc();
+    }
+
+    fn digest(&self) -> NodeDigest {
+        NodeDigest {
+            heartbeat: self.heartbeat,
+            max_version: self.max_version,
+        }
+    }
+
+    /// Returns an iterator over keys matching the given predicate.
+    /// Not public as it returns also keys marked for deletion.
+    fn internal_iter_key_values(
+        &self,
+        predicate: impl Fn(&String, &VersionedValue) -> bool,
+    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
+        self.key_values
+            .iter()
+            .filter(move |(key, versioned_value)| predicate(key, versioned_value))
+            .map(|(key, record)| (key.as_str(), record))
+    }
+
     /// Removes the keys marked for deletion such that `tombstone + grace_period > heartbeat`.
-    pub fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
+    fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
         let heartbeat = self.heartbeat.0;
 
         self.key_values
@@ -130,11 +125,16 @@ impl NodeState {
             })
     }
 
-    fn digest(&self) -> NodeDigest {
-        NodeDigest {
-            heartbeat: self.heartbeat,
-            max_version: self.max_version,
-        }
+    /// Returns an iterator over the versioned values that are strictly greater than
+    /// `floor_version`. The floor version typically comes from the max version of a digest.
+    fn stale_key_values(
+        &self,
+        floor_version: u64,
+    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
+        // TODO optimize by checking the max version.
+        self.internal_iter_key_values(move |_key, versioned_value| {
+            versioned_value.version > floor_version
+        })
     }
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
@@ -395,32 +395,28 @@ impl<'a> StaleNode<'a> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeStateSnapshot {
-    pub node_id: String,
-    pub generation_id: u64,
-    pub gossip_advertise_addr: SocketAddr,
+    pub chitchat_id: ChitchatId,
     pub node_state: NodeState,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClusterStateSnapshot {
-    pub node_states: Vec<NodeStateSnapshot>,
+    pub node_state_snapshots: Vec<NodeStateSnapshot>,
     pub seed_addrs: HashSet<SocketAddr>,
 }
 
 impl From<&ClusterState> for ClusterStateSnapshot {
     fn from(cluster_state: &ClusterState) -> Self {
-        let node_states = cluster_state
+        let node_state_snapshots = cluster_state
             .node_states
             .iter()
             .map(|(chitchat_id, node_state)| NodeStateSnapshot {
-                node_id: chitchat_id.node_id.clone(),
-                generation_id: chitchat_id.generation_id,
-                gossip_advertise_addr: chitchat_id.gossip_advertise_address,
+                chitchat_id: chitchat_id.clone(),
                 node_state: node_state.clone(),
             })
             .collect();
         Self {
-            node_states,
+            node_state_snapshots,
             seed_addrs: cluster_state.seed_addrs(),
         }
     }
@@ -612,7 +608,7 @@ mod tests {
         assert_eq!(
             stale_nodes
                 .into_iter()
-                .map(|stale_node| stale_node.chitchat_id.gossip_advertise_address.port())
+                .map(|stale_node| stale_node.chitchat_id.gossip_advertise_addr.port())
                 .collect::<Vec<_>>(),
             vec![10_003, 10_002, 10_004, 10_001]
         );

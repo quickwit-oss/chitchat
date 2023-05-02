@@ -48,10 +48,10 @@ impl FailureDetector {
         heartbeat_window.report_heartbeat();
     }
 
-    /// Marks a node as dead or live.
-    pub fn update_node_liveliness(&mut self, chitchat_id: &ChitchatId) {
+    /// Marks the node as dead or alive based on the current phi value.
+    pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         if let Some(phi) = self.phi(chitchat_id) {
-            debug!(node_id=%chitchat_id.node_id, phi=phi, "updating node liveliness");
+            debug!(node_id=%chitchat_id.node_id, phi=phi, "updating node liveness");
             if phi > self.config.phi_threshold {
                 self.live_nodes.remove(chitchat_id);
                 self.dead_nodes.insert(chitchat_id.clone(), Instant::now());
@@ -278,7 +278,7 @@ mod tests {
         }
 
         for chitchat_id in &chitchat_ids_choices {
-            failure_detector.update_node_liveliness(chitchat_id);
+            failure_detector.update_node_liveness(chitchat_id);
         }
 
         let mut live_nodes = failure_detector
@@ -292,7 +292,7 @@ mod tests {
         // stop reporting heartbeat for few seconds
         MockClock::advance(Duration::from_secs(50));
         for chitchat_id in &chitchat_ids_choices {
-            failure_detector.update_node_liveliness(chitchat_id);
+            failure_detector.update_node_liveness(chitchat_id);
         }
         let mut dead_nodes = failure_detector
             .dead_nodes()
@@ -343,7 +343,7 @@ mod tests {
             failure_detector.report_heartbeat(&node_1);
         }
 
-        failure_detector.update_node_liveliness(&node_1);
+        failure_detector.update_node_liveness(&node_1);
         assert_eq!(
             failure_detector
                 .live_nodes()
@@ -354,7 +354,7 @@ mod tests {
 
         // Check node-1 is down (stop reporting heartbeat).
         MockClock::advance(Duration::from_secs(20));
-        failure_detector.update_node_liveliness(&node_1);
+        failure_detector.update_node_liveness(&node_1);
         assert_eq!(
             failure_detector
                 .live_nodes()
@@ -369,7 +369,7 @@ mod tests {
             MockClock::advance(Duration::from_secs(*time_offset));
             failure_detector.report_heartbeat(&node_1);
         }
-        failure_detector.update_node_liveliness(&node_1);
+        failure_detector.update_node_liveness(&node_1);
         assert_eq!(
             failure_detector
                 .live_nodes()
@@ -387,7 +387,7 @@ mod tests {
         failure_detector.report_heartbeat(&chitchat_id);
 
         MockClock::advance(Duration::from_secs(1));
-        failure_detector.update_node_liveliness(&chitchat_id);
+        failure_detector.update_node_liveness(&chitchat_id);
 
         let live_nodes = failure_detector
             .live_nodes()
@@ -395,7 +395,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, vec!["node-10001"]);
         MockClock::advance(Duration::from_secs(40));
-        failure_detector.update_node_liveliness(&chitchat_id);
+        failure_detector.update_node_liveness(&chitchat_id);
 
         let live_nodes = failure_detector
             .live_nodes()

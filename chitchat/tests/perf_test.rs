@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
-use chitchat::{spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig};
+use chitchat::{
+    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, MaxVersion,
+};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tracing::info;
@@ -13,7 +15,7 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
     let chitchat_id = ChitchatId {
         node_id: format!("node_{chitchat_id}"),
         generation_id: 0,
-        gossip_advertise_address: listen_addr,
+        gossip_advertise_addr: listen_addr,
     };
     let gossip_interval = Duration::from_millis(300);
     let config = ChitchatConfig {
@@ -26,7 +28,6 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
             initial_interval: gossip_interval,
             ..Default::default()
         },
-        is_ready_predicate: None,
         marked_for_deletion_grace_period: 10_000,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
@@ -41,12 +42,12 @@ async fn spawn_nodes(num_nodes: u16, transport: &dyn Transport) -> Vec<ChitchatH
     handles
 }
 
-async fn wait_until<P: Fn(&HashSet<ChitchatId>) -> bool>(
+async fn wait_until<P: Fn(&BTreeMap<ChitchatId, MaxVersion>) -> bool>(
     handle: &ChitchatHandle,
     predicate: P,
 ) -> Duration {
     let start = Instant::now();
-    let mut node_watcher = handle.chitchat().lock().await.ready_nodes_watcher();
+    let mut node_watcher = handle.chitchat().lock().await.live_nodes_watcher();
     while let Some(nodes) = node_watcher.next().await {
         if predicate(&nodes) {
             break;
@@ -59,12 +60,11 @@ async fn delay_before_detection_sample(num_nodes: usize, transport: &dyn Transpo
     assert!(num_nodes > 2);
     let mut handles = spawn_nodes(num_nodes as u16, transport).await;
     info!("spawn {num_nodes} nodes");
-    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
+    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes).await;
     info!("converged on {num_nodes} nodes");
-    let _delay = wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
     handles.pop();
     let time_to_death_detection =
-        wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 2).await;
+        wait_until(&handles[1], |nodes| nodes.len() == num_nodes - 1).await;
     for handle in handles {
         handle.shutdown().await.unwrap();
     }
@@ -119,7 +119,7 @@ async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
     let handles = spawn_nodes(num_nodes as u16, &transport).await;
     let instant = Instant::now();
     for handle in &handles {
-        wait_until(handle, |nodes| nodes.len() == num_nodes - 1).await;
+        wait_until(handle, |nodes| nodes.len() == num_nodes).await;
         info!("success");
     }
     let cluster_convergence = instant.elapsed();
@@ -168,11 +168,11 @@ async fn test_faulty_network_stability_aux(num_nodes: usize, transport: &dyn Tra
     let handles = spawn_nodes(num_nodes as u16, transport).await;
     let start = Instant::now();
     for handle in &handles {
-        wait_until(handle, |nodes| nodes.len() == num_nodes - 1).await;
+        wait_until(handle, |nodes| nodes.len() == num_nodes).await;
     }
     let elapsed = start.elapsed();
     info!("Convergence took {elapsed:?}");
-    let lost_one_node = wait_until(&handles[1], |nodes| nodes.len() != num_nodes - 1);
+    let lost_one_node = wait_until(&handles[1], |nodes| nodes.len() != num_nodes);
     // We want this to timeout!
     tokio::time::timeout(Duration::from_secs(30), lost_one_node)
         .await

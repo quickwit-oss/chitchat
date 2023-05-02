@@ -3,7 +3,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::state::NodeState;
 use crate::{ChitchatId, FailureDetectorConfig};
 
 /// A struct for configuring a Chitchat instance.
@@ -14,13 +13,8 @@ pub struct ChitchatConfig {
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
     pub failure_detector_config: FailureDetectorConfig,
-    // `is_ready_predicate` makes it possible for a node to advertise itself as not "ready".
-    // For instance, if it is `starting` or if it lost connection to a third-party service.
-    //
-    // If `None`, a node is ready as long as it is alive.
-    pub is_ready_predicate: Option<Box<dyn Fn(&NodeState) -> bool + Send>>,
-    // Marked for deletion grace period expressed as a number of hearbeat.
-    // Chitchat ensures a marked for deletion key is eventually deleted by three mecanisms:
+    // Marked for deletion grace period expressed as a number of hearbeats.
+    // Chitchat ensures a key marked for deletion is eventually deleted by three mechanisms:
     // - Garbage collection: each heartbeat, marked for deletion keys with `tombstone +
     //   marked_for_deletion_grace_period > node.heartbeat` are deleted.
     // - Compute delta: for a given node digest, if `node_digest.heartbeat +
@@ -32,14 +26,10 @@ pub struct ChitchatConfig {
 }
 
 impl ChitchatConfig {
-    pub fn set_is_ready_predicate(&mut self, pred: impl Fn(&NodeState) -> bool + Send + 'static) {
-        self.is_ready_predicate = Some(Box::new(pred));
-    }
-
     #[cfg(test)]
     pub fn for_test(port: u16) -> Self {
         let chitchat_id = ChitchatId::for_local_test(port);
-        let listen_addr = chitchat_id.gossip_advertise_address;
+        let listen_addr = chitchat_id.gossip_advertise_addr;
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
@@ -47,7 +37,6 @@ impl ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            is_ready_predicate: None,
             marked_for_deletion_grace_period: 10_000,
         }
     }
@@ -57,7 +46,7 @@ impl ChitchatConfig {
 impl Default for ChitchatConfig {
     fn default() -> Self {
         let chitchat_id = ChitchatId::for_local_test(10_000);
-        let listen_addr = chitchat_id.gossip_advertise_address;
+        let listen_addr = chitchat_id.gossip_advertise_addr;
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
@@ -65,9 +54,8 @@ impl Default for ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            is_ready_predicate: None,
             // Each heartbeat increments the version, with one heartbeat each second
-            // 43200 ~ 24h.
+            // 86400 ~ 24h.
             marked_for_deletion_grace_period: 86400,
         }
     }

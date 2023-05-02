@@ -51,7 +51,7 @@ struct Opt {
     /// Defines the socket addr on which we should listen to.
     #[structopt(long = "listen_addr", default_value = "127.0.0.1:10000")]
     listen_addr: SocketAddr,
-    /// Defines the socket_address (host:port) other servers should use to
+    /// Defines the socket address (host:port) other servers should use to
     /// reach this server.
     ///
     /// It defaults to the listen address, but this is only valid
@@ -80,7 +80,6 @@ fn generate_server_id(public_addr: SocketAddr) -> String {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
-    println!("{opt:?}");
     let public_addr = opt.public_addr.unwrap_or(opt.listen_addr);
     let node_id = opt
         .node_id
@@ -93,7 +92,6 @@ async fn main() -> anyhow::Result<()> {
         listen_addr: opt.listen_addr,
         seed_nodes: opt.seeds.clone(),
         failure_detector_config: FailureDetectorConfig::default(),
-        is_ready_predicate: None,
         marked_for_deletion_grace_period: 10_000,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;

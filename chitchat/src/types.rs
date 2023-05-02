@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// die permanently. A [`ChitchatId`] is composed of three components:
 /// - `node_id`: an identifier unique across the cluster.
 /// - `generation_id`: a numeric identifier that distinguishes a node's state between restarts.
-/// - `gossip_advertise_address`: the socket address peers should use to gossip with the node.
+/// - `gossip_advertise_addr`: the socket address peers should use to gossip with the node.
 ///
 /// The `generation_id` is used to detect when a node has restarted. It must be monotonically
 /// increasing to differentiate the most recent state and must be incremented every time a node
@@ -20,24 +20,24 @@ pub struct ChitchatId {
     /// A numeric identifier incremented every time the node leaves and rejoins the cluster.
     pub generation_id: u64,
     /// The socket address peers should use to gossip with the node.
-    pub gossip_advertise_address: SocketAddr,
+    pub gossip_advertise_addr: SocketAddr,
 }
 
 impl ChitchatId {
-    pub fn new(node_id: String, generation_id: u64, gossip_advertise_address: SocketAddr) -> Self {
+    pub fn new(node_id: String, generation_id: u64, gossip_advertise_addr: SocketAddr) -> Self {
         Self {
             node_id,
             generation_id,
-            gossip_advertise_address,
+            gossip_advertise_addr,
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testsuite"))]
 impl ChitchatId {
     /// Returns the gossip advertise port for performing assertions during tests.
     pub fn advertise_port(&self) -> u16 {
-        self.gossip_advertise_address.port()
+        self.gossip_advertise_addr.port()
     }
 
     /// Creates a new [`ChitchatId`] for local testing.
