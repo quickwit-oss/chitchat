@@ -41,7 +41,7 @@ pub use crate::types::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValu
 /// we send the self digest "in full".
 /// An Ethernet frame size of 1400B would limit us to 20 nodes
 /// or so.
-const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
+pub(crate) const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 
 pub struct Chitchat {
     config: ChitchatConfig,
@@ -431,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_nodes() -> anyhow::Result<()> {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let nodes = setup_nodes(20001..=20005, &transport).await;
 
         let node2 = nodes.get(1).unwrap();
@@ -454,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_goes_from_live_to_down_to_live() -> anyhow::Result<()> {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let mut nodes = setup_nodes(30001..=30006, &transport).await;
         wait_for_chitchat_state(
             nodes[0].chitchat(),
@@ -519,7 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dead_node_should_not_be_gossiped_when_node_joins() -> anyhow::Result<()> {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let mut nodes = setup_nodes(40001..=40004, &transport).await;
         {
             let node2 = nodes.get(1).unwrap();
@@ -583,7 +583,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_partition_nodes() -> anyhow::Result<()> {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let port_range = 11_001u16..=11_006;
         let nodes = setup_nodes(port_range.clone(), &transport).await;
 
@@ -601,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dead_node_garbage_collection() -> anyhow::Result<()> {
-        let transport = ChannelTransport::default();
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let mut nodes = setup_nodes(60001..=60006, &transport).await;
         let node2 = nodes.get(1).unwrap();
         assert_eq!(node2.chitchat_id().advertise_port(), 60002);

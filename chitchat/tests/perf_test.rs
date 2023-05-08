@@ -75,7 +75,7 @@ async fn delay_before_detection_sample(num_nodes: usize, transport: &dyn Transpo
 #[tokio::test]
 async fn test_delay_before_dead_detection_10() {
     let _ = tracing_subscriber::fmt::try_init();
-    let transport = ChannelTransport::default();
+    let transport = ChannelTransport::with_mtu(65_507);
     let delay = delay_before_detection_sample(40, &transport).await;
     assert!(delay < Duration::from_secs(4));
 }
@@ -83,7 +83,7 @@ async fn test_delay_before_dead_detection_10() {
 #[tokio::test]
 async fn test_delay_before_dead_detection_20() {
     let _ = tracing_subscriber::fmt::try_init();
-    let transport = ChannelTransport::default();
+    let transport = ChannelTransport::with_mtu(65_507);
     let delay = delay_before_detection_sample(20, &transport).await;
     assert!(delay < Duration::from_secs(4));
 }
@@ -91,7 +91,7 @@ async fn test_delay_before_dead_detection_20() {
 #[tokio::test]
 async fn test_delay_before_dead_detection_40() {
     let _ = tracing_subscriber::fmt::try_init();
-    let transport = ChannelTransport::default();
+    let transport = ChannelTransport::with_mtu(65_507);
     let delay = delay_before_detection_sample(40, &transport).await;
     assert!(delay < Duration::from_secs(5));
 }
@@ -99,7 +99,7 @@ async fn test_delay_before_dead_detection_40() {
 #[tokio::test]
 async fn test_delay_before_dead_detection_100() {
     let _ = tracing_subscriber::fmt::try_init();
-    let transport = ChannelTransport::default();
+    let transport = ChannelTransport::with_mtu(65_507);
     let delay = delay_before_detection_sample(100, &transport).await;
     assert!(delay < Duration::from_secs(5));
 }
@@ -107,7 +107,7 @@ async fn test_delay_before_dead_detection_100() {
 #[tokio::test]
 async fn test_delay_before_dead_detection_100_faulty() {
     let _ = tracing_subscriber::fmt::try_init();
-    let transport = ChannelTransport::default().drop_message(0.5f64);
+    let transport = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);
     let delay = delay_before_detection_sample(100, &*transport).await;
     assert!(delay < Duration::from_secs(10));
 }
@@ -115,7 +115,7 @@ async fn test_delay_before_dead_detection_100_faulty() {
 async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
     let _ = tracing_subscriber::fmt::try_init();
     assert!(num_nodes > 2);
-    let transport = ChannelTransport::default();
+    let transport = ChannelTransport::with_mtu(65_507);
     let handles = spawn_nodes(num_nodes as u16, &transport).await;
     let instant = Instant::now();
     for handle in &handles {
@@ -128,9 +128,10 @@ async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
     let stat_before = transport.statistics();
     tokio::time::sleep(Duration::from_secs(MEASUREMENT_FRAME_SECS)).await;
     let stat_after = transport.statistics();
-    let bytes_per_sec_per_node = (stat_after.cumulated_num_bytes - stat_before.cumulated_num_bytes)
+    let bytes_per_sec_per_node = (stat_after.num_bytes_total - stat_before.num_bytes_total)
         / (num_nodes as u64 * MEASUREMENT_FRAME_SECS);
-    let num_messages_per_sec_per_node = (stat_after.num_messages - stat_before.num_messages)
+    let num_messages_per_sec_per_node = (stat_after.num_messages_total
+        - stat_before.num_messages_total)
         / (num_nodes as u64 * MEASUREMENT_FRAME_SECS);
     info!(num_messages_per_sec_per_node=num_messages_per_sec_per_node, bandwidth_per_node=%bytes_per_sec_per_node);
     assert!(num_messages_per_sec_per_node < 50);
@@ -184,7 +185,7 @@ async fn test_faulty_network_stability_10() {
     let _ = tracing_subscriber::fmt::try_init();
     // 50% messages are dropped.
     use chitchat::transport::TransportExt;
-    let transport: Box<dyn Transport> = ChannelTransport::default().drop_message(0.5f64);
+    let transport: Box<dyn Transport> = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);
     test_faulty_network_stability_aux(10, &*transport).await;
 }
 
@@ -193,6 +194,6 @@ async fn test_faulty_network_stability_100() {
     let _ = tracing_subscriber::fmt::try_init();
     // 50% messages are dropped.
     use chitchat::transport::TransportExt;
-    let transport: Box<dyn Transport> = ChannelTransport::default().drop_message(0.5f64);
+    let transport: Box<dyn Transport> = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);
     test_faulty_network_stability_aux(10, &*transport).await;
 }

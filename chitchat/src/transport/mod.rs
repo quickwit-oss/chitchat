@@ -40,6 +40,7 @@ mod tests {
     use crate::message::ChitchatMessage;
     use crate::serialize::Serializable;
     use crate::transport::{ChannelTransport, UdpTransport};
+    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 
     fn sample_syn_msg() -> ChitchatMessage {
         ChitchatMessage::Syn {
@@ -121,6 +122,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_in_mem() {
-        test_transport_suite(&ChannelTransport::default()).await;
+        test_transport_suite(&ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)).await;
     }
 }

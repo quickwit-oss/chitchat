@@ -74,7 +74,7 @@ struct Simulator {
 impl Simulator {
     pub fn new(gossip_interval: Duration, marked_for_deletion_key_grace_period: usize) -> Self {
         Self {
-            transport: ChannelTransport::default(),
+            transport: ChannelTransport::with_mtu(65_507),
             node_handles: HashMap::new(),
             gossip_interval,
             marked_for_deletion_key_grace_period,
