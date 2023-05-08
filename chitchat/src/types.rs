@@ -82,3 +82,9 @@ impl Heartbeat {
         self.0 += 1;
     }
 }
+
+impl From<Heartbeat> for u64 {
+    fn from(heartbeat: Heartbeat) -> Self {
+        heartbeat.0
+    }
+}

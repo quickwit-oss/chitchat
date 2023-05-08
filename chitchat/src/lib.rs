@@ -12,7 +12,7 @@ mod state;
 pub mod transport;
 mod types;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::once;
 use std::net::SocketAddr;
 
@@ -48,8 +48,9 @@ pub struct Chitchat {
     cluster_state: ClusterState,
     failure_detector: FailureDetector,
     /// Notifies listeners when a change has occurred in the set of live nodes.
-    live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, MaxVersion>>,
-    live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, MaxVersion>>,
+    previous_live_nodes: HashMap<ChitchatId, MaxVersion>,
+    live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
+    live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
 }
 
 impl Chitchat {
@@ -58,12 +59,14 @@ impl Chitchat {
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
         initial_key_values: Vec<(String, String)>,
     ) -> Self {
-        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(BTreeMap::new());
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
+        let previous_live_nodes = HashMap::new();
+        let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(BTreeMap::new());
         let mut chitchat = Chitchat {
             config,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
             failure_detector,
+            previous_live_nodes,
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
         };
@@ -175,23 +178,31 @@ impl Chitchat {
                 self.failure_detector.update_node_liveness(chitchat_id);
             });
 
-        let previous_live_nodes = self.live_nodes_watcher_rx.borrow();
-
         let current_live_nodes = self
             .live_nodes()
             .map(|chitchat_id| {
                 let node_state = self
-                    .cluster_state
                     .node_state(chitchat_id)
                     .expect("Node state should exist.");
                 (chitchat_id.clone(), node_state.max_version)
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
-        if *previous_live_nodes != current_live_nodes {
-            drop(previous_live_nodes); // Release the borrow so we can update the value.
+        if self.previous_live_nodes != current_live_nodes {
+            let live_nodes = current_live_nodes
+                .keys()
+                .cloned()
+                .map(|chitchat_id| {
+                    let node_state = self
+                        .node_state(&chitchat_id)
+                        .expect("Node state should exist.")
+                        .clone();
+                    (chitchat_id, node_state)
+                })
+                .collect::<BTreeMap<_, _>>();
+            self.previous_live_nodes = current_live_nodes;
 
-            if self.live_nodes_watcher_tx.send(current_live_nodes).is_err() {
+            if self.live_nodes_watcher_tx.send(live_nodes).is_err() {
                 error!(current_node = ?self.self_chitchat_id(), "error while reporting membership change event.")
             }
         }
@@ -228,7 +239,7 @@ impl Chitchat {
     /// - updates its max version
     ///
     /// Heartbeats are not notified.
-    pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatId, MaxVersion>> {
+    pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatId, NodeState>> {
         WatchStream::new(self.live_nodes_watcher_rx.clone())
     }
 

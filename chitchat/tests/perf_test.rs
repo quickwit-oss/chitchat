@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
 use chitchat::{
-    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, MaxVersion,
+    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
 };
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
@@ -42,7 +42,7 @@ async fn spawn_nodes(num_nodes: u16, transport: &dyn Transport) -> Vec<ChitchatH
     handles
 }
 
-async fn wait_until<P: Fn(&BTreeMap<ChitchatId, MaxVersion>) -> bool>(
+async fn wait_until<P: Fn(&BTreeMap<ChitchatId, NodeState>) -> bool>(
     handle: &ChitchatHandle,
     predicate: P,
 ) -> Duration {

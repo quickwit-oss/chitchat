@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use crate::message::ChitchatMessage;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::{Heartbeat, MaxVersion, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
+    use crate::{Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -640,9 +640,9 @@ mod tests {
         node2.shutdown().await.unwrap();
     }
 
-    async fn next_live_nodes<S: Unpin + Stream<Item = BTreeMap<ChitchatId, MaxVersion>>>(
+    async fn next_live_nodes<S: Unpin + Stream<Item = BTreeMap<ChitchatId, NodeState>>>(
         watcher: &mut S,
-    ) -> BTreeMap<ChitchatId, MaxVersion> {
+    ) -> BTreeMap<ChitchatId, NodeState> {
         tokio::time::timeout(Duration::from_secs(3), watcher.next())
             .await
             .expect("No Change within 3s")
