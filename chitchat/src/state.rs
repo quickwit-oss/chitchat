@@ -36,6 +36,16 @@ impl Default for NodeState {
 }
 
 impl NodeState {
+    /// Returns the node's last heartbeat value.
+    pub fn hearbeat(&self) -> Heartbeat {
+        self.heartbeat
+    }
+
+    /// Returns the node's max version.
+    pub fn max_version(&self) -> MaxVersion {
+        self.max_version
+    }
+
     /// Returns an iterator over the keys matching the given predicate, excluding keys marked for
     /// deletion.
     pub fn key_values(
@@ -52,10 +62,6 @@ impl NodeState {
             .values()
             .filter(|versioned_value| versioned_value.tombstone.is_none())
             .count()
-    }
-
-    pub fn hearbeat(&self) -> u64 {
-        self.heartbeat.0
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

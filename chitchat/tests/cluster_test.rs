@@ -185,7 +185,7 @@ impl Simulator {
         let mut chitchat_guard = chitchat.lock().await;
         chitchat_guard.self_node_state().mark_for_deletion(&key);
         let hearbeat = chitchat_guard.self_node_state().hearbeat();
-        debug!(node_id=%chitchat_id.node_id, key=%key, hearbeat=hearbeat, "Marked key for deletion.");
+        debug!(node_id=%chitchat_id.node_id, key=%key, hearbeat=?hearbeat, "Marked key for deletion.");
     }
 
     pub async fn spawn_node(
