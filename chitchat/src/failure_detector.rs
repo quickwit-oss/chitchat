@@ -264,7 +264,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
-        let intervals_choices = vec![1u64, 2];
+        let intervals_choices = [1u64, 2];
         let chitchat_ids_choices = vec![
             ChitchatId::for_local_test(10_001),
             ChitchatId::for_local_test(10_002),
@@ -334,7 +334,7 @@ mod tests {
     fn test_failure_detector_node_state_from_live_to_down_to_live() {
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
-        let intervals_choices = vec![1u64, 2];
+        let intervals_choices = [1u64, 2];
         let node_1 = ChitchatId::for_local_test(10_001);
 
         for _ in 0..=2000 {
