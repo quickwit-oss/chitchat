@@ -1,6 +1,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::net::SocketAddr;
+use std::ops::Bound;
 use std::time::Instant;
 
 use itertools::Itertools;
@@ -48,11 +49,21 @@ impl NodeState {
 
     /// Returns an iterator over the keys matching the given predicate, excluding keys marked for
     /// deletion.
-    pub fn key_values(
-        &self,
-        predicate: impl Fn(&String, &VersionedValue) -> bool,
-    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        self.internal_iter_key_values(predicate)
+    pub fn key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
+        self.internal_iter_key_values()
+            .filter(|&(_, versioned_value)| versioned_value.tombstone.is_none())
+    }
+
+    /// Returns key values matching a prefix
+    pub fn iter_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a VersionedValue)> + 'a {
+        let range = (Bound::Included(prefix), Bound::Unbounded);
+        self.key_values
+            .range::<str, _>(range)
+            .take_while(move |(key, _)| key.starts_with(prefix))
+            .map(|(key, record)| (key.as_str(), record))
             .filter(|&(_, versioned_value)| versioned_value.tombstone.is_none())
     }
 
@@ -86,7 +97,10 @@ impl NodeState {
     /// Marks key for deletion and sets the value to an empty string.
     pub fn mark_for_deletion(&mut self, key: &str) {
         let Some(versioned_value) = self.key_values.get_mut(key) else {
-            warn!("Key `{}` does not exist in the node's state and could not be marked for deletion.", key);
+            warn!(
+                "Key `{key}` does not exist in the node's state and could not be marked for \
+                 deletion.",
+            );
             return;
         };
         self.max_version += 1;
@@ -108,13 +122,9 @@ impl NodeState {
 
     /// Returns an iterator over keys matching the given predicate.
     /// Not public as it returns also keys marked for deletion.
-    fn internal_iter_key_values(
-        &self,
-        predicate: impl Fn(&String, &VersionedValue) -> bool,
-    ) -> impl Iterator<Item = (&str, &VersionedValue)> {
+    fn internal_iter_key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
         self.key_values
             .iter()
-            .filter(move |(key, versioned_value)| predicate(key, versioned_value))
             .map(|(key, record)| (key.as_str(), record))
     }
 
@@ -133,14 +143,15 @@ impl NodeState {
 
     /// Returns an iterator over the versioned values that are strictly greater than
     /// `floor_version`. The floor version typically comes from the max version of a digest.
+    ///
+    /// This includes keys marked for deletion.
     fn stale_key_values(
         &self,
         floor_version: u64,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
         // TODO optimize by checking the max version.
-        self.internal_iter_key_values(move |_key, versioned_value| {
-            versioned_value.version > floor_version
-        })
+        self.internal_iter_key_values()
+            .filter(move |(_key, versioned_value)| versioned_value.version > floor_version)
     }
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
@@ -210,8 +221,7 @@ impl ClusterState {
 
         // Apply delta.
         for (chitchat_id, node_delta) in delta.node_deltas {
-            let mut node_state = self.node_states.entry(chitchat_id).or_default();
-
+            let node_state = self.node_states.entry(chitchat_id).or_default();
             if node_state.heartbeat < node_delta.heartbeat {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();
@@ -1054,5 +1064,23 @@ mod tests {
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
             assert_eq!(delta, expected_delta);
         }
+    }
+
+    #[test]
+    fn test_iter_prefix() {
+        let mut node_state = NodeState::default();
+        node_state.set("Europe", "");
+        node_state.set("Europe:", "");
+        node_state.set("Europe:UK", "");
+        node_state.set("Asia:Japan", "");
+        node_state.set("Europe:Italy", "");
+        node_state.set("Africa:Uganda", "");
+        node_state.set("Oceania", "");
+        node_state.mark_for_deletion("Europe:UK");
+        let node_states: Vec<&str> = node_state
+            .iter_prefix("Europe:")
+            .map(|(key, _v)| key)
+            .collect();
+        assert_eq!(node_states, &["Europe:", "Europe:Italy"]);
     }
 }
