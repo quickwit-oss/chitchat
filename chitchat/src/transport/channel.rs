@@ -83,12 +83,12 @@ impl ChannelTransport {
         let from_addr_entry = inner_lock
             .removed_links
             .entry(from_addr)
-            .or_insert_with(HashSet::new);
+            .or_default();
         from_addr_entry.insert(to_addr);
         let to_addr_entry = inner_lock
             .removed_links
             .entry(to_addr)
-            .or_insert_with(HashSet::new);
+            .or_default();
         to_addr_entry.insert(from_addr);
     }
 

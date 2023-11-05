@@ -89,9 +89,9 @@ impl NodeState {
     /// Setting a new value automatically increments the
     /// version of the entire NodeState regardless of whether the
     /// value is really changed or not.
-    pub fn set<K: Into<String>, V: Into<String>>(&mut self, key: K, value: V) {
+    pub fn set(&mut self, key: impl ToString, value: impl ToString) {
         let new_version = self.max_version + 1;
-        self.set_with_version(key.into(), value.into(), new_version);
+        self.set_with_version(key.to_string(), value.to_string(), new_version);
     }
 
     /// Marks key for deletion and sets the value to an empty string.
