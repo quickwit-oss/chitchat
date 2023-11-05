@@ -480,7 +480,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
             keys_values.push((key.to_string(), value.to_string()));
             let keys_entry = keys_values_inserted_per_chitchat_id
                 .entry(chitchat_id.clone())
-                .or_insert_with(HashSet::new);
+                .or_default();
             keys_entry.insert(key.to_string());
         }
         simulator
