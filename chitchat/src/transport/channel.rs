@@ -80,15 +80,9 @@ impl ChannelTransport {
 
     pub async fn remove_link(&self, from_addr: SocketAddr, to_addr: SocketAddr) {
         let mut inner_lock = self.inner.lock().unwrap();
-        let from_addr_entry = inner_lock
-            .removed_links
-            .entry(from_addr)
-            .or_insert_with(HashSet::new);
+        let from_addr_entry = inner_lock.removed_links.entry(from_addr).or_default();
         from_addr_entry.insert(to_addr);
-        let to_addr_entry = inner_lock
-            .removed_links
-            .entry(to_addr)
-            .or_insert_with(HashSet::new);
+        let to_addr_entry = inner_lock.removed_links.entry(to_addr).or_default();
         to_addr_entry.insert(from_addr);
     }
 
