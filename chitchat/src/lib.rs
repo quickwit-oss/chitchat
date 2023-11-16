@@ -5,6 +5,7 @@ mod configuration;
 mod delta;
 mod digest;
 mod failure_detector;
+mod listener;
 mod message;
 pub(crate) mod serialize;
 mod server;
@@ -19,6 +20,7 @@ use std::net::SocketAddr;
 use delta::Delta;
 use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
+pub use listener::ListenerHandle;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{error, warn};
@@ -279,11 +281,34 @@ impl Chitchat {
     fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
         self.cluster_state.compute_digest(dead_nodes)
     }
+
+    /// Subscribe a callback that will be called every time a key matching the  supplied prefix.
+    ///
+    /// Disclaimer:
+    /// The callback is required to be as light as possible.
+    /// In particular,
+    /// - it should not access the cluster state (as it is locked at the moment of the
+    /// execution of the callback.
+    /// - it should be fast: the callback is executed in an async context.
+    ///
+    /// Only new keys will trigger the callback.
+    /// (Existing keys matching the prefix will not trigger the callback.)
+    #[must_use]
+    pub fn subscribe_event(
+        &self,
+        key_prefix: impl ToString,
+        callback: impl Fn(&str, &str) + 'static + Send + Sync,
+    ) -> ListenerHandle {
+        self.cluster_state()
+            .listeners
+            .subscribe_event(key_prefix, callback)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::ops::{Add, RangeInclusive};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -674,5 +699,80 @@ mod tests {
         }
         shutdown_nodes(nodes).await?;
         Ok(())
+    }
+
+    #[test]
+    fn test_chitchat_listener() {
+        let node_config1 = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut node1 = Chitchat::with_chitchat_id_and_seeds(
+            node_config1,
+            empty_seeds.clone(),
+            vec![("self1:suffix1".to_string(), "hello1".to_string())],
+        );
+        let counter_self_key: Arc<AtomicUsize> = Default::default();
+        let counter_other_key: Arc<AtomicUsize> = Default::default();
+
+        let counter_self_key_clone = counter_self_key.clone();
+        node1
+            .subscribe_event("self1:", move |key, value| {
+                assert_eq!(key, "suffix1");
+                assert_eq!(value, "updated");
+                counter_self_key_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .forever();
+        let counter_other_key_clone = counter_other_key.clone();
+        node1
+            .subscribe_event("other:", move |key, value| {
+                assert_eq!(key, "suffix");
+                assert_eq!(value, "hello");
+                counter_other_key_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .forever();
+
+        let counter_self_key_clone = counter_self_key.clone();
+        node1
+            .subscribe_event("self2:", move |key, value| {
+                assert_eq!(key, "suffix2");
+                assert_eq!(value, "hello2");
+                counter_self_key_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .forever();
+
+        let node_config2 = ChitchatConfig::for_test(10_002);
+        let mut node2 = Chitchat::with_chitchat_id_and_seeds(
+            node_config2,
+            empty_seeds,
+            vec![("other:suffix".to_string(), "hello".to_string())],
+        );
+
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 0);
+
+        run_chitchat_handshake(&mut node1, &mut node2);
+        assert_nodes_sync(&[&node1, &node2]);
+
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
+
+        // useless handshake
+        run_chitchat_handshake(&mut node1, &mut node2);
+
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
+
+        node1.self_node_state().set("self2:suffix2", "hello2");
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 1);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
+
+        run_chitchat_handshake(&mut node1, &mut node2);
+
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 1);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
+
+        node1.self_node_state().set("self1:suffix1", "updated");
+
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 2);
+        assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
     }
 }

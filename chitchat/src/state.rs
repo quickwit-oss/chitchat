@@ -1,5 +1,6 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
 use std::ops::Bound;
 use std::time::Instant;
@@ -13,9 +14,10 @@ use tracing::warn;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
+use crate::listener::Listeners;
 use crate::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
@@ -23,20 +25,45 @@ pub struct NodeState {
     #[serde(skip)]
     #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
+    #[serde(skip)]
+    listeners: Listeners,
 }
 
+#[cfg(test)]
 impl Default for NodeState {
-    fn default() -> Self {
-        Self {
+    fn default() -> NodeState {
+        NodeState {
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
             last_heartbeat: Instant::now(),
+            listeners: Listeners::default(),
         }
     }
 }
 
+impl Debug for NodeState {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        f.debug_struct("NodeState")
+            .field("heartbeat", &self.heartbeat)
+            .field("key_values", &self.key_values)
+            .field("max_version", &self.max_version)
+            .field("last_heartbeat", &self.last_heartbeat)
+            .finish()
+    }
+}
+
 impl NodeState {
+    fn new(listeners: Listeners) -> NodeState {
+        NodeState {
+            heartbeat: Heartbeat(0),
+            key_values: Default::default(),
+            max_version: Default::default(),
+            last_heartbeat: Instant::now(),
+            listeners,
+        }
+    }
+
     /// Returns the node's last heartbeat value.
     pub fn heartbeat(&self) -> Heartbeat {
         self.heartbeat
@@ -161,15 +188,22 @@ impl NodeState {
         self.max_version = versioned_value_update.version.max(self.max_version);
         match self.key_values.entry(key) {
             Entry::Occupied(mut occupied) => {
-                let occupied_versioned_value = occupied.get_mut();
-                // The current version is more recent than the newer version.
-                if occupied_versioned_value.version >= versioned_value_update.version {
-                    return;
+                {
+                    let occupied_versioned_value = occupied.get_mut();
+                    // The current version is more recent than the newer version.
+                    if occupied_versioned_value.version >= versioned_value_update.version {
+                        return;
+                    }
+                    *occupied_versioned_value = versioned_value_update.clone();
                 }
-                *occupied_versioned_value = versioned_value_update;
+                self.listeners
+                    .trigger_event(occupied.key(), &versioned_value_update.value);
             }
             Entry::Vacant(vacant) => {
-                vacant.insert(versioned_value_update);
+                let key_clone = vacant.key().clone();
+                vacant.insert(versioned_value_update.clone());
+                self.listeners
+                    .trigger_event(&key_clone, &versioned_value_update.value);
             }
         };
     }
@@ -187,10 +221,19 @@ impl NodeState {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct ClusterState {
     pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
+    pub(crate) listeners: Listeners,
+}
+
+impl Debug for ClusterState {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        f.debug_struct("Cluster")
+            .field("seed_addrs", &self.seed_addrs.borrow())
+            .field("node_states", &self.node_states)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +243,7 @@ impl Default for ClusterState {
         Self {
             node_states: Default::default(),
             seed_addrs: seed_addrs_rx,
+            listeners: Default::default(),
         }
     }
 }
@@ -209,12 +253,15 @@ impl ClusterState {
         ClusterState {
             seed_addrs,
             node_states: BTreeMap::new(),
+            listeners: Default::default(),
         }
     }
 
     pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
-        self.node_states.entry(chitchat_id.clone()).or_default()
+        self.node_states
+            .entry(chitchat_id.clone())
+            .or_insert_with(|| NodeState::new(self.listeners.clone()))
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
@@ -240,7 +287,10 @@ impl ClusterState {
 
         // Apply delta.
         for (chitchat_id, node_delta) in delta.node_deltas {
-            let node_state = self.node_states.entry(chitchat_id).or_default();
+            let node_state = self
+                .node_states
+                .entry(chitchat_id)
+                .or_insert_with(|| NodeState::new(self.listeners.clone()));
             if node_state.heartbeat < node_delta.heartbeat {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();
