@@ -17,9 +17,9 @@ use crate::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeState {
-    pub(crate) heartbeat: Heartbeat,
-    pub(crate) key_values: BTreeMap<String, VersionedValue>,
-    pub(crate) max_version: MaxVersion,
+    heartbeat: Heartbeat,
+    key_values: BTreeMap<String, VersionedValue>,
+    max_version: MaxVersion,
     #[serde(skip)]
     #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
@@ -38,7 +38,7 @@ impl Default for NodeState {
 
 impl NodeState {
     /// Returns the node's last heartbeat value.
-    pub fn hearbeat(&self) -> Heartbeat {
+    pub fn heartbeat(&self) -> Heartbeat {
         self.heartbeat
     }
 
@@ -131,7 +131,6 @@ impl NodeState {
     /// Removes the keys marked for deletion such that `tombstone + grace_period > heartbeat`.
     fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
         let heartbeat = self.heartbeat.0;
-
         self.key_values
             .retain(|_, versioned_value: &mut VersionedValue| {
                 versioned_value
@@ -154,14 +153,34 @@ impl NodeState {
             .filter(move |(_key, versioned_value)| versioned_value.version > floor_version)
     }
 
+    /// Sets a new versioned value to associate to a given key.
+    /// This operation is ignored if  the key value inserted has a version that is obsolete.
+    ///
+    /// This method also update the max_version if necessary.
+    fn set_versioned_value(&mut self, key: String, versioned_value_update: VersionedValue) {
+        self.max_version = versioned_value_update.version.max(self.max_version);
+        match self.key_values.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                let occupied_versioned_value = occupied.get_mut();
+                // The current version is more recent than the newer version.
+                if occupied_versioned_value.version >= versioned_value_update.version {
+                    return;
+                }
+                *occupied_versioned_value = versioned_value_update;
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(versioned_value_update);
+            }
+        };
+    }
+
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
         assert!(version > self.max_version);
-        self.max_version = version;
-        self.key_values.insert(
+        self.set_versioned_value(
             key,
             VersionedValue {
-                version,
                 value,
+                version,
                 tombstone: None,
             },
         );
@@ -227,22 +246,9 @@ impl ClusterState {
                 node_state.last_heartbeat = Instant::now();
             }
             node_state.max_version = node_state.max_version.max(node_delta.max_version);
-
             for (key, versioned_value) in node_delta.key_values {
-                let entry = node_state.key_values.entry(key);
-                match entry {
-                    Entry::Occupied(mut occupied_entry) => {
-                        let local_versioned_value = occupied_entry.get_mut();
-                        // Only update the value if the new version is higher. It is possible that
-                        // we have already received a fresher version from another node.
-                        if local_versioned_value.version < versioned_value.version {
-                            *local_versioned_value = versioned_value;
-                        }
-                    }
-                    Entry::Vacant(vacant_entry) => {
-                        vacant_entry.insert(versioned_value);
-                    }
-                }
+                node_state.max_version = node_state.max_version.max(versioned_value.version);
+                node_state.set_versioned_value(key, versioned_value);
             }
         }
     }

@@ -82,7 +82,7 @@ impl Simulator {
     }
 
     pub async fn execute(&mut self, operations: Vec<Operation>) {
-        for operation in operations.into_iter() {
+        for operation in operations {
             debug!("Execute operation {operation:?}");
             match operation {
                 Operation::AddNode {
@@ -184,7 +184,7 @@ impl Simulator {
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         chitchat_guard.self_node_state().mark_for_deletion(&key);
-        let hearbeat = chitchat_guard.self_node_state().hearbeat();
+        let hearbeat = chitchat_guard.self_node_state().heartbeat();
         debug!(node_id=%chitchat_id.node_id, key=%key, hearbeat=?hearbeat, "Marked key for deletion.");
     }
 
