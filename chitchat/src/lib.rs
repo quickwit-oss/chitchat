@@ -159,8 +159,8 @@ impl Chitchat {
     fn report_heartbeats(&mut self, delta: &Delta) {
         for (chitchat_id, node_delta) in &delta.node_deltas {
             if let Some(node_state) = self.cluster_state.node_states.get(chitchat_id) {
-                if node_state.heartbeat < node_delta.heartbeat
-                    || node_state.max_version < node_delta.max_version
+                if node_state.heartbeat() < node_delta.heartbeat
+                    || node_state.max_version() < node_delta.max_version
                 {
                     self.failure_detector.report_heartbeat(chitchat_id);
                 }
@@ -184,7 +184,7 @@ impl Chitchat {
                 let node_state = self
                     .node_state(chitchat_id)
                     .expect("Node state should exist.");
-                (chitchat_id.clone(), node_state.max_version)
+                (chitchat_id.clone(), node_state.max_version())
             })
             .collect::<HashMap<_, _>>();
 
@@ -307,9 +307,9 @@ mod tests {
     }
 
     fn assert_cluster_state_eq(lhs: &NodeState, rhs: &NodeState) {
-        assert_eq!(lhs.key_values.len(), rhs.key_values.len());
-        for (key, value) in &lhs.key_values {
-            assert_eq!(rhs.key_values.get(key), Some(value));
+        assert_eq!(lhs.num_key_values(), rhs.num_key_values());
+        for (key, value) in lhs.key_values() {
+            assert_eq!(rhs.get_versioned(key), Some(value));
         }
     }
 
