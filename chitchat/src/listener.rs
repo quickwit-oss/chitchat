@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock, Weak};
 
 pub struct ListenerHandle {
     prefix: String,
-    idx: usize,
+    listener_id: usize,
     listeners: Weak<RwLock<InnerListeners>>,
 }
 
@@ -23,7 +23,7 @@ impl Drop for ListenerHandle {
     fn drop(&mut self) {
         if let Some(listeners) = self.listeners.upgrade() {
             let mut listeners_guard = listeners.write().unwrap();
-            listeners_guard.remove_listener(&self.prefix, self.idx);
+            listeners_guard.remove_listener(&self.prefix, self.listener_id);
         }
     }
 }
@@ -57,11 +57,11 @@ impl Listeners {
         let mut inner_listener_guard = self.inner.write().unwrap();
         let new_idx = inner_listener_guard
             .listener_idx
-            .fetch_add(1, Ordering::SeqCst);
+            .fetch_add(1, Ordering::Relaxed);
         inner_listener_guard.subscribe_event(&key_prefix, new_idx, boxed_listener);
         ListenerHandle {
             prefix: key_prefix,
-            idx: new_idx,
+            listener_id: new_idx,
             listeners: weak_listeners,
         }
     }
@@ -136,14 +136,14 @@ mod tests {
         let handle = listeners.subscribe_event("prefix:", move |key, value| {
             assert_eq!(key, "strippedprefix");
             assert_eq!(value, "value");
-            counter_clone.fetch_add(1, Ordering::SeqCst);
+            counter_clone.fetch_add(1, Ordering::Relaxed);
         });
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
         listeners.trigger_event("prefix:strippedprefix", "value");
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
         std::mem::drop(handle);
         listeners.trigger_event("prefix:strippedprefix", "value");
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -155,12 +155,12 @@ mod tests {
             .subscribe_event("", move |key, value| {
                 assert_eq!(key, "prefix:strippedprefix");
                 assert_eq!(value, "value");
-                counter_clone.fetch_add(1, Ordering::SeqCst);
+                counter_clone.fetch_add(1, Ordering::Relaxed);
             })
             .forever();
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
         listeners.trigger_event("prefix:strippedprefix", "value");
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
     #[test]
     fn test_listeners_forever() {
@@ -170,14 +170,14 @@ mod tests {
         let handle = listeners.subscribe_event("prefix:", move |key, value| {
             assert_eq!(key, "strippedprefix");
             assert_eq!(value, "value");
-            counter_clone.fetch_add(1, Ordering::SeqCst);
+            counter_clone.fetch_add(1, Ordering::Relaxed);
         });
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
         listeners.trigger_event("prefix:strippedprefix", "value");
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
         handle.forever();
         listeners.trigger_event("prefix:strippedprefix", "value");
-        assert_eq!(counter.load(Ordering::SeqCst), 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
             let counter_clone = counter.clone();
             listeners
                 .subscribe_event(prefix, move |_key, _value| {
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                    counter_clone.fetch_add(1, Ordering::Relaxed);
                 })
                 .forever();
             counter
@@ -202,45 +202,45 @@ mod tests {
         let counter_bc = subscribe_event("bc");
 
         listeners.trigger_event("hello", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 1);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 1);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
         listeners.trigger_event("", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 2);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 2);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
         listeners.trigger_event("a", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 3);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 3);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
         listeners.trigger_event("b", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 4);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 1);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 4);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 1);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
         listeners.trigger_event("ba", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 5);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 2);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 0);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 5);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 2);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
         listeners.trigger_event("bb", "value");
-        assert_eq!(counter_empty.load(Ordering::SeqCst), 6);
-        assert_eq!(counter_b.load(Ordering::SeqCst), 3);
-        assert_eq!(counter_bb.load(Ordering::SeqCst), 1);
-        assert_eq!(counter_bb2.load(Ordering::SeqCst), 1);
-        assert_eq!(counter_bc.load(Ordering::SeqCst), 0);
+        assert_eq!(counter_empty.load(Ordering::Relaxed), 6);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 3);
+        assert_eq!(counter_bb.load(Ordering::Relaxed), 1);
+        assert_eq!(counter_bb2.load(Ordering::Relaxed), 1);
+        assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
     }
 }
