@@ -29,19 +29,6 @@ pub struct NodeState {
     listeners: Listeners,
 }
 
-#[cfg(test)]
-impl Default for NodeState {
-    fn default() -> NodeState {
-        NodeState {
-            heartbeat: Heartbeat(0),
-            key_values: Default::default(),
-            max_version: Default::default(),
-            last_heartbeat: Instant::now(),
-            listeners: Listeners::default(),
-        }
-    }
-}
-
 impl Debug for NodeState {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.debug_struct("NodeState")
@@ -61,6 +48,16 @@ impl NodeState {
             max_version: Default::default(),
             last_heartbeat: Instant::now(),
             listeners,
+        }
+    }
+
+    pub fn for_test() -> NodeState {
+        NodeState {
+            heartbeat: Heartbeat(0),
+            key_values: Default::default(),
+            max_version: Default::default(),
+            last_heartbeat: Instant::now(),
+            listeners: Listeners::default(),
         }
     }
 
@@ -517,7 +514,7 @@ mod tests {
     fn test_stale_node_iter_stale_key_values() {
         {
             let node = ChitchatId::for_local_test(10_001);
-            let node_state = NodeState::default();
+            let node_state = NodeState::for_test();
             let stale_node = StaleNode {
                 chitchat_id: &node,
                 heartbeat: Heartbeat(0),
@@ -528,7 +525,7 @@ mod tests {
         }
         {
             let node = ChitchatId::for_local_test(10_001);
-            let mut node_state = NodeState::default();
+            let mut node_state = NodeState::for_test();
             node_state
                 .key_values
                 .insert("key_a".to_string(), VersionedValue::for_test("value_a", 3));
@@ -566,14 +563,14 @@ mod tests {
         let mut stale_nodes = SortedStaleNodes::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = NodeState::default();
+        let node1_state = NodeState::for_test();
         stale_nodes.insert(&node1, &node1_state);
 
         let expected_staleness = 1;
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let mut node2_state = NodeState::default();
+        let mut node2_state = NodeState::for_test();
         node2_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
@@ -583,7 +580,7 @@ mod tests {
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
         let node3 = ChitchatId::for_local_test(10_003);
-        let mut node3_state = NodeState::default();
+        let mut node3_state = NodeState::for_test();
         node3_state
             .key_values
             .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
@@ -605,7 +602,7 @@ mod tests {
         let mut stale_nodes = SortedStaleNodes::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = NodeState::default();
+        let node1_state = NodeState::for_test();
         stale_nodes.offer(&node1, &node1_state, &NodeDigest::new(Heartbeat(0), 0));
 
         assert_eq!(stale_nodes.stale_nodes.len(), 0);
@@ -621,7 +618,7 @@ mod tests {
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
         let node3 = ChitchatId::for_local_test(10_003);
-        let mut node3_state = NodeState::default();
+        let mut node3_state = NodeState::for_test();
         node3_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
@@ -650,7 +647,7 @@ mod tests {
         let stale_node1 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_001),
             heartbeat: Heartbeat(0),
-            node_state: &NodeState::default(),
+            node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         stale_nodes.stale_nodes.insert(1, vec![stale_node1]);
@@ -658,19 +655,19 @@ mod tests {
         let stale_node2 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_002),
             heartbeat: Heartbeat(0),
-            node_state: &NodeState::default(),
+            node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         let stale_node3 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_003),
             heartbeat: Heartbeat(0),
-            node_state: &NodeState::default(),
+            node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         let stale_node4 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_004),
             heartbeat: Heartbeat(0),
-            node_state: &NodeState::default(),
+            node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         stale_nodes
@@ -1124,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_iter_prefix() {
-        let mut node_state = NodeState::default();
+        let mut node_state = NodeState::for_test();
         node_state.set("Europe", "");
         node_state.set("Europe:", "");
         node_state.set("Europe:UK", "");
