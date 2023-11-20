@@ -608,10 +608,8 @@ mod tests {
         assert_eq!(stale_nodes.stale_nodes.len(), 0);
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = NodeState {
-            heartbeat: Heartbeat(1),
-            ..Default::default()
-        };
+        let mut node2_state = NodeState::for_test();
+        node2_state.heartbeat = Heartbeat(1);
         stale_nodes.offer(&node2, &node2_state, &NodeDigest::new(Heartbeat(0), 0));
 
         let expected_staleness = 1;
@@ -628,10 +626,8 @@ mod tests {
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 2);
 
         let node4 = ChitchatId::for_local_test(10_004);
-        let mut node4_state = NodeState {
-            heartbeat: Heartbeat(1),
-            ..Default::default()
-        };
+        let mut node4_state = NodeState::for_test();
+        node4_state.heartbeat = Heartbeat(1);
         node4_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
