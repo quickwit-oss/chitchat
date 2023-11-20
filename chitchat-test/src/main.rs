@@ -38,8 +38,8 @@ impl Api {
     async fn set_kv(&self, key: Query<String>, value: Query<String>) -> Json<serde_json::Value> {
         let mut chitchat_guard = self.chitchat.lock().await;
 
-        let cc_state = chitchat_guard.self_node_state();
-        cc_state.set(key.as_str(), value.as_str());
+        let node_state = chitchat_guard.self_node_state();
+        node_state.set(key.as_str(), value.as_str());
 
         Json(serde_json::to_value(&SetKeyValueResponse { status: true }).unwrap())
     }

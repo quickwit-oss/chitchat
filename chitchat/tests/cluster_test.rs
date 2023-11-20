@@ -176,14 +176,18 @@ impl Simulator {
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         for (key, value) in keys_values.into_iter() {
-            chitchat_guard.self_node_state().set(key.clone(), value);
+            chitchat_guard
+                .self_node_state()
+                .set(&chitchat_id.node_id, key.clone(), value);
         }
     }
 
     pub async fn mark_for_deletion(&mut self, chitchat_id: ChitchatId, key: String) {
         let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
         let mut chitchat_guard = chitchat.lock().await;
-        chitchat_guard.self_node_state().mark_for_deletion(&key);
+        chitchat_guard
+            .self_node_state()
+            .mark_for_deletion(&chitchat_id.node_id, &key);
         let hearbeat = chitchat_guard.self_node_state().heartbeat();
         debug!(node_id=%chitchat_id.node_id, key=%key, hearbeat=?hearbeat, "Marked key for deletion.");
     }

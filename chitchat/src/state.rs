@@ -1,6 +1,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::net::SocketAddr;
 use std::ops::Bound;
 use std::time::Instant;
@@ -14,11 +15,12 @@ use tracing::warn;
 
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
-use crate::listener::Listeners;
+use crate::listener::{KeyEvent, Listeners};
 use crate::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
+    node_id: String,
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
     max_version: MaxVersion,
@@ -32,6 +34,7 @@ pub struct NodeState {
 impl Debug for NodeState {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.debug_struct("NodeState")
+            .field("node_id", &self.node_id)
             .field("heartbeat", &self.heartbeat)
             .field("key_values", &self.key_values)
             .field("max_version", &self.max_version)
@@ -41,8 +44,9 @@ impl Debug for NodeState {
 }
 
 impl NodeState {
-    fn new(listeners: Listeners) -> NodeState {
+    fn new(node_id: String, listeners: Listeners) -> NodeState {
         NodeState {
+            node_id,
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
@@ -51,8 +55,9 @@ impl NodeState {
         }
     }
 
-    pub fn for_test() -> NodeState {
+    pub fn for_test(node_id: &str) -> NodeState {
         NodeState {
+            node_id: node_id.to_string(),
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
@@ -127,10 +132,18 @@ impl NodeState {
             );
             return;
         };
+        if versioned_value.tombstone.is_some() {
+            return;
+        }
         self.max_version += 1;
-        versioned_value.tombstone = Some(self.heartbeat.0);
         versioned_value.version = self.max_version;
-        versioned_value.value = "".to_string();
+        versioned_value.tombstone = Some(self.heartbeat.0);
+
+        let event = KeyEvent::Removed {
+            key: key.to_string(),
+            value: mem::take(&mut versioned_value.value),
+        };
+        self.listeners.trigger_event(&self.node_id, event);
     }
 
     pub(crate) fn update_heartbeat(&mut self) {
@@ -181,32 +194,40 @@ impl NodeState {
     /// This operation is ignored if  the key value inserted has a version that is obsolete.
     ///
     /// This method also update the max_version if necessary.
-    fn set_versioned_value(&mut self, key: String, versioned_value_update: VersionedValue) {
-        self.max_version = versioned_value_update.version.max(self.max_version);
+    fn set_versioned_value(&mut self, key: String, new_versioned_value: VersionedValue) {
+        self.max_version = new_versioned_value.version.max(self.max_version);
+
         match self.key_values.entry(key) {
             Entry::Occupied(mut occupied) => {
-                {
-                    let occupied_versioned_value = occupied.get_mut();
-                    // The current version is more recent than the newer version.
-                    if occupied_versioned_value.version >= versioned_value_update.version {
-                        return;
-                    }
-                    *occupied_versioned_value = versioned_value_update.clone();
+                // The current version is more recent than the newer version.
+                if occupied.get().version >= new_versioned_value.version {
+                    return;
                 }
-                self.listeners
-                    .trigger_event(occupied.key(), &versioned_value_update.value);
+                let new_value = new_versioned_value.value.clone();
+                let previous_versioned_value = occupied.insert(new_versioned_value);
+
+                let event = KeyEvent::Updated {
+                    key: occupied.key().clone(),
+                    previous_value: previous_versioned_value.value,
+                    new_value,
+                };
+                self.listeners.trigger_event(&self.node_id, event);
             }
             Entry::Vacant(vacant) => {
-                let key_clone = vacant.key().clone();
-                vacant.insert(versioned_value_update.clone());
-                self.listeners
-                    .trigger_event(&key_clone, &versioned_value_update.value);
+                let event = KeyEvent::Added {
+                    key: vacant.key().clone(),
+                    value: new_versioned_value.value.clone(),
+                };
+                vacant.insert(new_versioned_value);
+
+                self.listeners.trigger_event(&self.node_id, event);
             }
         };
     }
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
         assert!(version > self.max_version);
+
         self.set_versioned_value(
             key,
             VersionedValue {
@@ -219,15 +240,15 @@ impl NodeState {
 }
 
 pub(crate) struct ClusterState {
+    seed_addrs_rx: watch::Receiver<HashSet<SocketAddr>>,
     pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
-    seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
     pub(crate) listeners: Listeners,
 }
 
 impl Debug for ClusterState {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.debug_struct("Cluster")
-            .field("seed_addrs", &self.seed_addrs.borrow())
+            .field("seed_addrs", &self.seed_addrs_rx.borrow())
             .field("node_states", &self.node_states)
             .finish()
     }
@@ -238,8 +259,8 @@ impl Default for ClusterState {
     fn default() -> Self {
         let (_seed_addrs_tx, seed_addrs_rx) = watch::channel(Default::default());
         Self {
+            seed_addrs_rx,
             node_states: Default::default(),
-            seed_addrs: seed_addrs_rx,
             listeners: Default::default(),
         }
     }
@@ -248,7 +269,7 @@ impl Default for ClusterState {
 impl ClusterState {
     pub fn with_seed_addrs(seed_addrs: watch::Receiver<HashSet<SocketAddr>>) -> ClusterState {
         ClusterState {
-            seed_addrs,
+            seed_addrs_rx: seed_addrs,
             node_states: BTreeMap::new(),
             listeners: Default::default(),
         }
@@ -258,7 +279,7 @@ impl ClusterState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         self.node_states
             .entry(chitchat_id.clone())
-            .or_insert_with(|| NodeState::new(self.listeners.clone()))
+            .or_insert_with(|| NodeState::new(chitchat_id.node_id.clone(), self.listeners.clone()))
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
@@ -270,7 +291,7 @@ impl ClusterState {
     }
 
     pub fn seed_addrs(&self) -> HashSet<SocketAddr> {
-        self.seed_addrs.borrow().clone()
+        self.seed_addrs_rx.borrow().clone()
     }
 
     pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
@@ -284,15 +305,18 @@ impl ClusterState {
 
         // Apply delta.
         for (chitchat_id, node_delta) in delta.node_deltas {
+            let node_id = chitchat_id.node_id.clone();
             let node_state = self
                 .node_states
                 .entry(chitchat_id)
-                .or_insert_with(|| NodeState::new(self.listeners.clone()));
+                .or_insert_with(|| NodeState::new(node_id, self.listeners.clone()));
+
             if node_state.heartbeat < node_delta.heartbeat {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();
             }
             node_state.max_version = node_state.max_version.max(node_delta.max_version);
+
             for (key, versioned_value) in node_delta.key_values {
                 node_state.max_version = node_state.max_version.max(versioned_value.version);
                 node_state.set_versioned_value(key, versioned_value);
@@ -506,6 +530,9 @@ fn random_generator() -> impl Rng {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use crate::serialize::Serializable;
     use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
@@ -689,7 +716,8 @@ mod tests {
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let chitchat_id = ChitchatId::for_local_test(10_001);
+        let node_state = cluster_state.node_state_mut(&chitchat_id);
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -704,7 +732,8 @@ mod tests {
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let chitchat_id = ChitchatId::for_local_test(10_001);
+        let node_state = cluster_state.node_state_mut(&chitchat_id);
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -745,7 +774,8 @@ mod tests {
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let chitchat_id = ChitchatId::for_local_test(10_001);
+        let node_state = cluster_state.node_state_mut(&chitchat_id);
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
@@ -769,10 +799,11 @@ mod tests {
     #[test]
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let chitchat_id = ChitchatId::for_local_test(10_001);
+        let node_state = cluster_state.node_state_mut(&chitchat_id);
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
-        node_state.mark_for_deletion("key");
+        node_state.mark_for_deletion(&chitchat_id.node_id, "key");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
             &VersionedValue {
@@ -830,7 +861,7 @@ mod tests {
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.heartbeat = Heartbeat(100);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
-        node1_state.mark_for_deletion("key_a"); // Version 2. Tombstone set to heartbeat 100.
+        node1_state.mark_for_deletion(&node1.node_id, "key_a"); // Version 2. Tombstone set to heartbeat 100.
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 13); // 3
         node1_state.heartbeat = Heartbeat(110);
         // No GC if tombstone (=100) + grace_period <= heartbeat (=110).
@@ -971,7 +1002,7 @@ mod tests {
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
         node2_state.set_with_version("key_d".to_string(), "4".to_string(), 4); // 4
-        node2_state.mark_for_deletion("key_d"); // 5
+        node2_state.mark_for_deletion(&node2.node_id, "key_d"); // 5
 
         cluster_state
     }
@@ -1118,18 +1149,83 @@ mod tests {
     #[test]
     fn test_iter_prefix() {
         let mut node_state = NodeState::for_test();
-        node_state.set("Europe", "");
-        node_state.set("Europe:", "");
-        node_state.set("Europe:UK", "");
-        node_state.set("Asia:Japan", "");
-        node_state.set("Europe:Italy", "");
         node_state.set("Africa:Uganda", "");
+        node_state.set("Asia:Japan", "");
+        node_state.set("Europe:", "");
+        node_state.set("Europe:Italy", "");
+        node_state.set("Europe:UK", "");
+        node_state.set("Europe", "");
         node_state.set("Oceania", "");
-        node_state.mark_for_deletion("Europe:UK");
+        node_state.mark_for_deletion("test-node", "Europe:UK");
+
         let node_states: Vec<&str> = node_state
             .iter_prefix("Europe:")
             .map(|(key, _v)| key)
             .collect();
         assert_eq!(node_states, &["Europe:", "Europe:Italy"]);
+    }
+
+    #[test]
+    fn test_trigger_events() {
+        let listeners = Listeners::default();
+
+        let added_counter: Arc<AtomicUsize> = Default::default();
+        let added_counter_clone = added_counter.clone();
+
+        let updated_counter: Arc<AtomicUsize> = Default::default();
+        let updated_counter_clone = updated_counter.clone();
+
+        let removed_counter: Arc<AtomicUsize> = Default::default();
+        let removed_counter_clone = removed_counter.clone();
+
+        listeners
+            .subscribe_event("", move |node_id, event| {
+                assert_eq!(node_id, "test-node");
+
+                match event {
+                    KeyEvent::Added { key, value } => {
+                        assert_eq!(key, "key");
+                        assert_eq!(value, "value1");
+                        added_counter_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                    KeyEvent::Updated {
+                        key,
+                        previous_value,
+                        new_value,
+                    } => {
+                        assert_eq!(key, "key");
+                        assert_eq!(previous_value, "value1");
+                        assert_eq!(new_value, "value2");
+                        updated_counter_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                    KeyEvent::Removed { key, value } => {
+                        assert_eq!(key, "key");
+                        assert_eq!(value, "value2");
+                        removed_counter_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+            .forever();
+        assert_eq!(added_counter.load(Ordering::Relaxed), 0);
+        assert_eq!(updated_counter.load(Ordering::Relaxed), 0);
+        assert_eq!(removed_counter.load(Ordering::Relaxed), 0);
+
+        let mut node_state = NodeState::new(listeners);
+
+        node_state.set("key", "value1");
+        assert_eq!(added_counter.load(Ordering::Relaxed), 1);
+        assert_eq!(updated_counter.load(Ordering::Relaxed), 0);
+        assert_eq!(removed_counter.load(Ordering::Relaxed), 0);
+
+        node_state.set("key", "value2");
+        assert_eq!(added_counter.load(Ordering::Relaxed), 1);
+        assert_eq!(updated_counter.load(Ordering::Relaxed), 1);
+        assert_eq!(removed_counter.load(Ordering::Relaxed), 0);
+
+        node_state.mark_for_deletion("test-node", "key");
+        node_state.mark_for_deletion("test-node", "key");
+        assert_eq!(added_counter.load(Ordering::Relaxed), 1);
+        assert_eq!(updated_counter.load(Ordering::Relaxed), 1);
+        assert_eq!(removed_counter.load(Ordering::Relaxed), 1);
     }
 }
