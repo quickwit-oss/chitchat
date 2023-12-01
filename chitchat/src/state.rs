@@ -1,7 +1,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Bound;
 use std::time::Instant;
 
@@ -15,10 +15,11 @@ use tracing::warn;
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
-use crate::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
+use crate::{ChitchatId, Heartbeat, KeyChangeEvent, MaxVersion, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
+    node_id: ChitchatId,
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
     max_version: MaxVersion,
@@ -41,8 +42,9 @@ impl Debug for NodeState {
 }
 
 impl NodeState {
-    fn new(listeners: Listeners) -> NodeState {
+    fn new(node_id: ChitchatId, listeners: Listeners) -> NodeState {
         NodeState {
+            node_id,
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
@@ -53,6 +55,11 @@ impl NodeState {
 
     pub fn for_test() -> NodeState {
         NodeState {
+            node_id: ChitchatId {
+                node_id: "test-node".to_string(),
+                generation_id: 0,
+                gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
+            },
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
@@ -182,27 +189,27 @@ impl NodeState {
     ///
     /// This method also update the max_version if necessary.
     fn set_versioned_value(&mut self, key: String, versioned_value_update: VersionedValue) {
+        let key_clone = key.clone();
+        let key_change_event = KeyChangeEvent {
+            key: key_clone.as_str(),
+            value: &versioned_value_update.value,
+            node: &self.node_id,
+        };
         self.max_version = versioned_value_update.version.max(self.max_version);
         match self.key_values.entry(key) {
             Entry::Occupied(mut occupied) => {
-                {
-                    let occupied_versioned_value = occupied.get_mut();
-                    // The current version is more recent than the newer version.
-                    if occupied_versioned_value.version >= versioned_value_update.version {
-                        return;
-                    }
-                    *occupied_versioned_value = versioned_value_update.clone();
+                let occupied_versioned_value = occupied.get_mut();
+                // The current version is more recent than the newer version.
+                if occupied_versioned_value.version >= versioned_value_update.version {
+                    return;
                 }
-                self.listeners
-                    .trigger_event(occupied.key(), &versioned_value_update.value);
+                *occupied_versioned_value = versioned_value_update.clone();
             }
             Entry::Vacant(vacant) => {
-                let key_clone = vacant.key().clone();
                 vacant.insert(versioned_value_update.clone());
-                self.listeners
-                    .trigger_event(&key_clone, &versioned_value_update.value);
             }
         };
+        self.listeners.trigger_event(key_change_event);
     }
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
@@ -258,7 +265,7 @@ impl ClusterState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         self.node_states
             .entry(chitchat_id.clone())
-            .or_insert_with(|| NodeState::new(self.listeners.clone()))
+            .or_insert_with(|| NodeState::new(chitchat_id.clone(), self.listeners.clone()))
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
@@ -286,8 +293,8 @@ impl ClusterState {
         for (chitchat_id, node_delta) in delta.node_deltas {
             let node_state = self
                 .node_states
-                .entry(chitchat_id)
-                .or_insert_with(|| NodeState::new(self.listeners.clone()));
+                .entry(chitchat_id.clone())
+                .or_insert_with(|| NodeState::new(chitchat_id, self.listeners.clone()));
             if node_state.heartbeat < node_delta.heartbeat {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();

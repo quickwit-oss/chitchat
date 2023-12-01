@@ -282,7 +282,8 @@ impl Chitchat {
         self.cluster_state.compute_digest(dead_nodes)
     }
 
-    /// Subscribe a callback that will be called every time a key matching the  supplied prefix.
+    /// Subscribes a callback that will be called every time a key matching the supplied prefix
+    /// is inserted or updated.
     ///
     /// Disclaimer:
     /// The callback is required to be as light as possible.
@@ -291,17 +292,37 @@ impl Chitchat {
     /// execution of the callback.
     /// - it should be fast: the callback is executed in an async context.
     ///
-    /// Only new keys will trigger the callback.
-    /// (Existing keys matching the prefix will not trigger the callback.)
+    /// The callback is called with a [`KeyChangeEvent`] that contains the key stripped of the
+    /// prefix, the new value and the node that owns this key/value.
+    ///
+    /// Deleted keys are not notified.
     #[must_use]
     pub fn subscribe_event(
         &self,
         key_prefix: impl ToString,
-        callback: impl Fn(&str, &str) + 'static + Send + Sync,
+        callback: impl Fn(KeyChangeEvent) + 'static + Send + Sync,
     ) -> ListenerHandle {
         self.cluster_state()
             .listeners
             .subscribe_event(key_prefix, callback)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct KeyChangeEvent<'a> {
+    key: &'a str,
+    value: &'a str,
+    node: &'a ChitchatId,
+}
+
+impl<'a> KeyChangeEvent<'a> {
+    fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent> {
+        let key_without_prefix = self.key.strip_prefix(prefix)?;
+        Some(KeyChangeEvent {
+            key: key_without_prefix,
+            value: self.value,
+            node: self.node,
+        })
     }
 }
 
@@ -715,26 +736,26 @@ mod tests {
 
         let counter_self_key_clone = counter_self_key.clone();
         node1
-            .subscribe_event("self1:", move |key, value| {
-                assert_eq!(key, "suffix1");
-                assert_eq!(value, "updated");
+            .subscribe_event("self1:", move |evt| {
+                assert_eq!(evt.key, "suffix1");
+                assert_eq!(evt.value, "updated");
                 counter_self_key_clone.fetch_add(1, Ordering::SeqCst);
             })
             .forever();
         let counter_other_key_clone = counter_other_key.clone();
         node1
-            .subscribe_event("other:", move |key, value| {
-                assert_eq!(key, "suffix");
-                assert_eq!(value, "hello");
+            .subscribe_event("other:", move |evt| {
+                assert_eq!(evt.key, "suffix");
+                assert_eq!(evt.value, "hello");
                 counter_other_key_clone.fetch_add(1, Ordering::SeqCst);
             })
             .forever();
 
         let counter_self_key_clone = counter_self_key.clone();
         node1
-            .subscribe_event("self2:", move |key, value| {
-                assert_eq!(key, "suffix2");
-                assert_eq!(value, "hello2");
+            .subscribe_event("self2:", move |evt| {
+                assert_eq!(evt.key, "suffix2");
+                assert_eq!(evt.value, "hello2");
                 counter_self_key_clone.fetch_add(1, Ordering::SeqCst);
             })
             .forever();

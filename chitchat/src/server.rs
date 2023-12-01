@@ -29,6 +29,12 @@ pub struct ChitchatHandle {
     join_handle: JoinHandle<Result<(), anyhow::Error>>,
 }
 
+impl ChitchatHandle {
+    pub fn abort(&self) {
+        self.join_handle.abort();
+    }
+}
+
 const DNS_POLLING_DURATION: Duration = Duration::from_secs(60);
 
 async fn dns_refresh_loop(
