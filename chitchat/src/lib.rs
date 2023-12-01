@@ -282,8 +282,8 @@ impl Chitchat {
         self.cluster_state.compute_digest(dead_nodes)
     }
 
-    /// Subscribe a callback that will be called every time a key matching the supplied prefix
-    /// is inserted or is updated.
+    /// Subscribes a callback that will be called every time a key matching the supplied prefix
+    /// is inserted or updated.
     ///
     /// Disclaimer:
     /// The callback is required to be as light as possible.
@@ -316,7 +316,7 @@ pub struct KeyChangeEvent<'a> {
 }
 
 impl<'a> KeyChangeEvent<'a> {
-    pub fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent> {
+    fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent> {
         let key_without_prefix = self.key.strip_prefix(prefix)?;
         Some(KeyChangeEvent {
             key: key_without_prefix,
