@@ -111,11 +111,15 @@ impl NodeState {
     /// Sets a new value for a given key.
     ///
     /// Setting a new value automatically increments the
-    /// version of the entire NodeState regardless of whether the
-    /// value is really changed or not.
+    /// version of the entire NodeState unless the value stays
+    /// the same.
     pub fn set(&mut self, key: impl ToString, value: impl ToString) {
-        let new_version = self.max_version + 1;
-        self.set_with_version(key.to_string(), value.to_string(), new_version);
+        let key = key.to_string();
+        let value = value.to_string();
+        if self.get(&key).map_or(true, |prev_val| prev_val != value) {
+            let new_version = self.max_version + 1;
+            self.set_with_version(key, value, new_version);
+        }
     }
 
     /// Marks key for deletion and sets the value to an empty string.
@@ -760,7 +764,7 @@ mod tests {
             node_state.get_versioned("key").unwrap(),
             &VersionedValue {
                 value: "1".to_string(),
-                version: 2,
+                version: 1,
                 tombstone: None,
             }
         );
