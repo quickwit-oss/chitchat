@@ -310,9 +310,12 @@ impl Chitchat {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct KeyChangeEvent<'a> {
-    key: &'a str,
-    value: &'a str,
-    node: &'a ChitchatId,
+    /// The matching key without the prefix used to subscribe to the event.
+    pub key: &'a str,
+    /// The new value.
+    pub value: &'a str,
+    /// The node for which the event was triggered.
+    pub node: &'a ChitchatId,
 }
 
 impl<'a> KeyChangeEvent<'a> {
