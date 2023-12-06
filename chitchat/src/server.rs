@@ -260,17 +260,17 @@ impl Server {
 
         let peer_nodes = cluster_state
             .nodes()
-            .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
+            .filter(|chitchat_id| !chitchat_id.eq_node_id(chitchat_guard.self_chitchat_id()))
             .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let live_nodes = chitchat_guard
             .live_nodes()
-            .filter(|chitchat_id| *chitchat_id != chitchat_guard.self_chitchat_id())
+            .filter(|chitchat_id| !chitchat_id.eq_node_id(chitchat_guard.self_chitchat_id()))
             .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let dead_nodes = chitchat_guard
             .dead_nodes()
-            .map(|chitchat_id| chitchat_id.gossip_advertise_addr)
+            .map(|chitchat_id| chitchat_id.0.gossip_advertise_addr)
             .collect::<HashSet<_>>();
         let seed_nodes: HashSet<SocketAddr> = chitchat_guard.seed_nodes();
         let (selected_nodes, random_dead_node_opt, random_seed_node_opt) = select_nodes_for_gossip(
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use crate::message::ChitchatMessage;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::{Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
+    use crate::{ChitchatIdGenerationEq, Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
     #[derive(Debug, Default)]
     struct RngForTest {
@@ -601,7 +601,10 @@ mod tests {
             panic!("Expected ack");
         };
 
-        let node_delta = &delta.node_deltas.get(&server_id).unwrap();
+        let node_delta = &delta
+            .node_deltas
+            .get(&ChitchatIdGenerationEq(server_id))
+            .unwrap();
         let heartbeat = node_delta.heartbeat;
         assert_eq!(heartbeat, Heartbeat(3));
 
@@ -628,7 +631,7 @@ mod tests {
         {
             let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
             assert_eq!(live_nodes.len(), 1);
-            assert!(live_nodes.contains_key(&node1_id));
+            assert!(live_nodes.contains_key(&ChitchatIdGenerationEq(node1_id)));
         }
         let mut node2_config = ChitchatConfig::for_test(6664);
         node2_config.seed_nodes = vec![node1_addr.to_string()];
@@ -639,16 +642,18 @@ mod tests {
         {
             let live_nodes = next_live_nodes(&mut live_nodes_watcher).await;
             assert_eq!(live_nodes.len(), 2);
-            assert!(live_nodes.contains_key(&node2_id));
+            assert!(live_nodes.contains_key(&ChitchatIdGenerationEq(node2_id)));
         }
 
         node1.shutdown().await.unwrap();
         node2.shutdown().await.unwrap();
     }
 
-    async fn next_live_nodes<S: Unpin + Stream<Item = BTreeMap<ChitchatId, NodeState>>>(
+    async fn next_live_nodes<
+        S: Unpin + Stream<Item = BTreeMap<ChitchatIdGenerationEq, NodeState>>,
+    >(
         watcher: &mut S,
-    ) -> BTreeMap<ChitchatId, NodeState> {
+    ) -> BTreeMap<ChitchatIdGenerationEq, NodeState> {
         tokio::time::timeout(Duration::from_secs(3), watcher.next())
             .await
             .expect("No Change within 3s")

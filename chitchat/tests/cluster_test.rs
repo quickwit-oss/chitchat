@@ -5,7 +5,8 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chitchat::transport::ChannelTransport;
 use chitchat::{
-    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
+    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, ChitchatIdGenerationEq,
+    FailureDetectorConfig, NodeState,
 };
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
@@ -66,7 +67,7 @@ impl NodeStatePredicate {
 
 struct Simulator {
     transport: ChannelTransport,
-    node_handles: HashMap<ChitchatId, ChitchatHandle>,
+    node_handles: HashMap<ChitchatIdGenerationEq, ChitchatHandle>,
     gossip_interval: Duration,
     marked_for_deletion_key_grace_period: usize,
 }
@@ -124,7 +125,7 @@ impl Simulator {
                     debug!(server_node_id=%server_chitchat_id.node_id, node_id=%chitchat_id.node_id, "node-state-assert");
                     let chitchat = self
                         .node_handles
-                        .get(&server_chitchat_id)
+                        .get(&ChitchatIdGenerationEq(server_chitchat_id))
                         .unwrap()
                         .chitchat();
                     // Wait for node_state & predicate.
@@ -173,7 +174,11 @@ impl Simulator {
         keys_values: Vec<(String, String)>,
     ) {
         debug!(node_id=%chitchat_id.node_id, num_keys_values=?keys_values.len(), "insert-keys-values");
-        let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
+        let chitchat = self
+            .node_handles
+            .get(&ChitchatIdGenerationEq(chitchat_id))
+            .unwrap()
+            .chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         for (key, value) in keys_values.into_iter() {
             chitchat_guard.self_node_state().set(key.clone(), value);
@@ -181,7 +186,11 @@ impl Simulator {
     }
 
     pub async fn mark_for_deletion(&mut self, chitchat_id: ChitchatId, key: String) {
-        let chitchat = self.node_handles.get(&chitchat_id).unwrap().chitchat();
+        let chitchat = self
+            .node_handles
+            .get(&ChitchatIdGenerationEq(chitchat_id.clone()))
+            .unwrap()
+            .chitchat();
         let mut chitchat_guard = chitchat.lock().await;
         chitchat_guard.self_node_state().mark_for_deletion(&key);
         let hearbeat = chitchat_guard.self_node_state().heartbeat();
@@ -198,7 +207,7 @@ impl Simulator {
             .unwrap_or_else(|| {
                 self.node_handles
                     .keys()
-                    .cloned()
+                    .map(|id| id.0.clone())
                     .collect::<Vec<ChitchatId>>()
             })
             .iter()
@@ -219,7 +228,8 @@ impl Simulator {
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)
             .await
             .unwrap();
-        self.node_handles.insert(chitchat_id, handle);
+        self.node_handles
+            .insert(ChitchatIdGenerationEq(chitchat_id), handle);
     }
 }
 
@@ -471,7 +481,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     simulator.execute(add_node_operations).await;
 
     let key_names: Vec<_> = (0..200).map(|idx| format!("key_{}", idx)).collect();
-    let mut keys_values_inserted_per_chitchat_id: HashMap<ChitchatId, HashSet<String>> =
+    let mut keys_values_inserted_per_chitchat_id: HashMap<ChitchatIdGenerationEq, HashSet<String>> =
         HashMap::new();
     for chitchat_id in chitchat_ids.iter() {
         let mut keys_values = Vec::new();
@@ -479,7 +489,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
             let value: u64 = rng.gen();
             keys_values.push((key.to_string(), value.to_string()));
             let keys_entry = keys_values_inserted_per_chitchat_id
-                .entry(chitchat_id.clone())
+                .entry(ChitchatIdGenerationEq(chitchat_id.clone()))
                 .or_default();
             keys_entry.insert(key.to_string());
         }
@@ -494,12 +504,12 @@ async fn test_simple_simulation_heavy_insert_delete() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     info!("Checking keys are present...");
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
-        debug!(node_id=%chitchat_id.node_id, keys=?keys, "check");
+        debug!(node_id=%chitchat_id.0.node_id, keys=?keys, "check");
         for key in keys {
             let server_chitchat_id = chitchat_ids.choose(&mut rng).unwrap().clone();
             let check_operation = Operation::NodeStateAssert {
                 server_chitchat_id,
-                chitchat_id: chitchat_id.clone(),
+                chitchat_id: chitchat_id.clone().0,
                 predicate: NodeStatePredicate::KeyPresent(key.to_string(), true),
                 timeout_opt: None,
             };
@@ -511,7 +521,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {
         for key in keys {
             let check_operation = Operation::MarkKeyForDeletion {
-                chitchat_id: chitchat_id.clone(),
+                chitchat_id: chitchat_id.clone().0,
                 key,
             };
             simulator.execute(vec![check_operation]).await;
@@ -527,7 +537,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
             let server_chitchat_id = chitchat_ids.choose(&mut rng).unwrap().clone();
             let check_operation = Operation::NodeStateAssert {
                 server_chitchat_id,
-                chitchat_id: chitchat_id.clone(),
+                chitchat_id: chitchat_id.clone().0,
                 predicate: NodeStatePredicate::KeyPresent(key.to_string(), false),
                 timeout_opt: None,
             };
