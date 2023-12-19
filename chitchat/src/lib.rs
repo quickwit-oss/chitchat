@@ -332,7 +332,7 @@ pub struct KeyChangeEvent<'a> {
 impl<'a> Eq for KeyChangeEvent<'a> {}
 impl<'a> PartialEq for KeyChangeEvent<'a> {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value && self.node.eq_generation(&other.node)
+        self.key == other.key && self.value == other.value && self.node.eq_generation(other.node)
     }
 }
 
