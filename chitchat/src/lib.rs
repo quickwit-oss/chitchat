@@ -817,6 +817,12 @@ mod tests {
         assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
 
         node1.self_node_state().set("self1:suffix1", "updated");
+        assert_eq!(counter_self_key.load(Ordering::SeqCst), 2);
+
+        node1.self_node_state().mark_for_deletion("self1:suffix1");
+        node2.self_node_state().mark_for_deletion("other:suffix");
+
+        run_chitchat_handshake(&mut node1, &mut node2);
 
         assert_eq!(counter_self_key.load(Ordering::SeqCst), 2);
         assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
