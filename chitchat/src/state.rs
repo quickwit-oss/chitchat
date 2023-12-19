@@ -209,7 +209,9 @@ impl NodeState {
                 vacant.insert(versioned_value_update.clone());
             }
         };
-        self.listeners.trigger_event(key_change_event);
+        if versioned_value_update.tombstone.is_none() {
+            self.listeners.trigger_event(key_change_event);
+        }
     }
 
     fn set_with_version(&mut self, key: String, value: String, version: Version) {
