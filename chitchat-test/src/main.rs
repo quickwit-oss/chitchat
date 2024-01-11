@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use chitchat::transport::UdpTransport;
 use chitchat::{spawn_chitchat, Chitchat, ChitchatConfig, ChitchatId, FailureDetectorConfig};
@@ -28,11 +28,7 @@ impl Api {
             cluster_id: chitchat_guard.cluster_id().to_string(),
             cluster_state: chitchat_guard.state_snapshot(),
             live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
-            dead_nodes: chitchat_guard
-                .dead_nodes()
-                .cloned()
-                .map(|node| node.0)
-                .collect::<Vec<_>>(),
+            dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
         Json(serde_json::to_value(&response).unwrap())
     }
@@ -88,11 +84,7 @@ async fn main() -> anyhow::Result<()> {
     let node_id = opt
         .node_id
         .unwrap_or_else(|| generate_server_id(public_addr));
-    let generation = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let chitchat_id = ChitchatId::new(node_id, generation, public_addr);
+    let chitchat_id = ChitchatId::new(node_id, 0, public_addr);
     let config = ChitchatConfig {
         cluster_id: "testing".to_string(),
         chitchat_id,

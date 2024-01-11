@@ -269,18 +269,9 @@ mod tests {
 
     #[test]
     fn test_serialize_chitchat_id() {
-        // we cant use test_serdeser_aux because ChitchatId isn't Eq
-        let obj = ChitchatId::new("node-id".to_string(), 1, "127.0.0.1:7280".parse().unwrap());
-        let num_bytes = 24;
-
-        let mut buf = Vec::new();
-        obj.serialize(&mut buf);
-        assert_eq!(buf.len(), obj.serialized_len());
-        assert_eq!(buf.len(), num_bytes);
-        let obj_serdeser = ChitchatId::deserialize(&mut &buf[..]).unwrap();
-        assert!(
-            obj.eq_generation(&obj_serdeser)
-                && obj.gossip_advertise_addr == obj_serdeser.gossip_advertise_addr
+        test_serdeser_aux(
+            &ChitchatId::new("node-id".to_string(), 1, "127.0.0.1:7280".parse().unwrap()),
+            24,
         );
     }
 

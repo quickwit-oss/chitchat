@@ -15,10 +15,7 @@ use tracing::warn;
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
-use crate::{
-    ChitchatId, ChitchatIdGenerationEq, ChitchatIdNodeEq, Heartbeat, KeyChangeEvent, MaxVersion,
-    Version, VersionedValue,
-};
+use crate::{ChitchatId, Heartbeat, KeyChangeEvent, MaxVersion, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
@@ -235,9 +232,7 @@ impl NodeState {
 }
 
 pub(crate) struct ClusterState {
-    // when inserting in this map, it's up to you to make sure you store the newest generation,
-    // which possibly means removing and reinserting a key.
-    pub(crate) node_states: BTreeMap<ChitchatIdNodeEq, NodeState>,
+    pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
     pub(crate) listeners: Listeners,
 }
@@ -275,16 +270,16 @@ impl ClusterState {
     pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         self.node_states
-            .entry(ChitchatIdNodeEq(chitchat_id.clone()))
+            .entry(chitchat_id.clone())
             .or_insert_with(|| NodeState::new(chitchat_id.clone(), self.listeners.clone()))
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
-        self.node_states.get(&ChitchatIdNodeEq(chitchat_id.clone()))
+        self.node_states.get(chitchat_id)
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &ChitchatId> {
-        self.node_states.keys().map(|node| &node.0)
+        self.node_states.keys()
     }
 
     pub fn seed_addrs(&self) -> HashSet<SocketAddr> {
@@ -292,38 +287,20 @@ impl ClusterState {
     }
 
     pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
-        self.node_states
-            .remove(&ChitchatIdNodeEq(chitchat_id.clone()));
+        self.node_states.remove(chitchat_id);
     }
 
-    /// Apply a delta, ignoring any entry from a previous relay of `me`.
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
         // Remove nodes to reset.
-        self.node_states.retain(|chitchat_id, _| {
-            !delta
-                .nodes_to_reset
-                .iter()
-                .any(|to_reset| to_reset.0.eq_generation(&chitchat_id.0))
-        });
+        self.node_states
+            .retain(|chitchat_id, _| !delta.nodes_to_reset.contains(chitchat_id));
 
         // Apply delta.
         for (chitchat_id, node_delta) in delta.node_deltas {
-            // we remove and re-insert to update the key in case generation changed.
-            let mut node_state = if let Some((old_chitchat_id, old_state)) = self
+            let node_state = self
                 .node_states
-                .remove_entry(&ChitchatIdNodeEq(chitchat_id.0.clone()))
-            {
-                let old_chichat_id = ChitchatIdGenerationEq(old_chitchat_id.0);
-                if old_chichat_id > chitchat_id {
-                    // we know a newer generation, restore the write and ignore that bit of delta.
-                    self.node_states
-                        .insert(ChitchatIdNodeEq(old_chichat_id.0), old_state);
-                    continue;
-                }
-                old_state
-            } else {
-                NodeState::new(chitchat_id.0.clone(), self.listeners.clone())
-            };
+                .entry(chitchat_id.clone())
+                .or_insert_with(|| NodeState::new(chitchat_id, self.listeners.clone()));
             if node_state.heartbeat < node_delta.heartbeat {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();
@@ -333,23 +310,16 @@ impl ClusterState {
                 node_state.max_version = node_state.max_version.max(versioned_value.version);
                 node_state.set_versioned_value(key, versioned_value);
             }
-            self.node_states
-                .insert(ChitchatIdNodeEq(chitchat_id.0), node_state);
         }
     }
 
-    pub fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatIdNodeEq>) -> Digest {
+    pub fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
         Digest {
             node_digests: self
                 .node_states
                 .iter()
                 .filter(|(chitchat_id, _)| !dead_nodes.contains(chitchat_id))
-                .map(|(chitchat_id, node_state)| {
-                    (
-                        ChitchatIdGenerationEq(chitchat_id.0.clone()),
-                        node_state.digest(),
-                    )
-                })
+                .map(|(chitchat_id, node_state)| (chitchat_id.clone(), node_state.digest()))
                 .collect(),
         }
     }
@@ -357,7 +327,7 @@ impl ClusterState {
     pub fn gc_keys_marked_for_deletion(
         &mut self,
         marked_for_deletion_grace_period: u64,
-        dead_nodes: &HashSet<ChitchatIdNodeEq>,
+        dead_nodes: &HashSet<ChitchatId>,
     ) {
         for (chitchat_id, node_state) in &mut self.node_states {
             if dead_nodes.contains(chitchat_id) {
@@ -372,7 +342,7 @@ impl ClusterState {
         &self,
         digest: &Digest,
         mtu: usize,
-        dead_nodes: &HashSet<&ChitchatIdNodeEq>,
+        dead_nodes: &HashSet<&ChitchatId>,
         marked_for_deletion_grace_period: u64,
     ) -> Delta {
         let mut stale_nodes = SortedStaleNodes::default();
@@ -382,20 +352,17 @@ impl ClusterState {
             if dead_nodes.contains(chitchat_id) {
                 continue;
             }
-            let Some(node_digest) = digest
-                .node_digests
-                .get(&ChitchatIdGenerationEq(chitchat_id.0.clone()))
-            else {
-                stale_nodes.insert(&chitchat_id.0, node_state);
+            let Some(node_digest) = digest.node_digests.get(chitchat_id) else {
+                stale_nodes.insert(chitchat_id, node_state);
                 continue;
             };
             if node_digest.heartbeat.0 + marked_for_deletion_grace_period < node_state.heartbeat.0 {
                 warn!("Node to reset {chitchat_id:?}");
-                nodes_to_reset.push(&chitchat_id.0);
-                stale_nodes.insert(&chitchat_id.0, node_state);
+                nodes_to_reset.push(chitchat_id);
+                stale_nodes.insert(chitchat_id, node_state);
                 continue;
             }
-            stale_nodes.offer(&chitchat_id.0, node_state, node_digest);
+            stale_nodes.offer(chitchat_id, node_state, node_digest);
         }
         let mut delta_writer = DeltaWriter::with_mtu(mtu);
 
@@ -526,7 +493,7 @@ impl From<&ClusterState> for ClusterStateSnapshot {
             .node_states
             .iter()
             .map(|(chitchat_id, node_state)| NodeStateSnapshot {
-                chitchat_id: chitchat_id.0.clone(),
+                chitchat_id: chitchat_id.clone(),
                 node_state: node_state.clone(),
             })
             .collect();
@@ -860,8 +827,7 @@ mod tests {
         assert_eq!(&digest, &expected_node_digests);
 
         // Consider node 1 dead:
-        let dead_node = ChitchatIdNodeEq(node1);
-        let dead_nodes = HashSet::from_iter([&dead_node]);
+        let dead_nodes = HashSet::from_iter([&node1]);
         let digest = cluster_state.compute_digest(&dead_nodes);
 
         let mut expected_node_digests = Digest::default();
@@ -970,7 +936,7 @@ mod tests {
     fn test_with_varying_max_transmitted_kv_helper(
         cluster_state: &ClusterState,
         digest: &Digest,
-        dead_nodes: &HashSet<&ChitchatIdNodeEq>,
+        dead_nodes: &HashSet<&ChitchatId>,
         expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, Option<u64>)],
     ) {
         let max_delta = cluster_state.compute_delta(digest, usize::MAX, dead_nodes, 10_000);
@@ -1096,8 +1062,7 @@ mod tests {
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
 
-        let dead_node = ChitchatIdNodeEq(node2);
-        let dead_nodes = HashSet::from_iter([&dead_node]);
+        let dead_nodes = HashSet::from_iter([&node2]);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
