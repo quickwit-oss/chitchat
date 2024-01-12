@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chitchat::transport::UdpTransport;
 use chitchat::{spawn_chitchat, Chitchat, ChitchatConfig, ChitchatId, FailureDetectorConfig};
@@ -84,15 +84,22 @@ async fn main() -> anyhow::Result<()> {
     let node_id = opt
         .node_id
         .unwrap_or_else(|| generate_server_id(public_addr));
-    let chitchat_id = ChitchatId::new(node_id, 0, public_addr);
+    let generation = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let chitchat_id = ChitchatId::new(node_id, generation, public_addr);
     let config = ChitchatConfig {
         cluster_id: "testing".to_string(),
         chitchat_id,
         gossip_interval: Duration::from_millis(opt.interval),
         listen_addr: opt.listen_addr,
         seed_nodes: opt.seeds.clone(),
-        failure_detector_config: FailureDetectorConfig::default(),
-        marked_for_deletion_grace_period: 10_000,
+        failure_detector_config: FailureDetectorConfig {
+            dead_node_grace_period: Duration::from_secs(10),
+            ..FailureDetectorConfig::default()
+        },
+        marked_for_deletion_grace_period: 60,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();

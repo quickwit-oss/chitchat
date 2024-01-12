@@ -48,6 +48,19 @@ impl FailureDetector {
         heartbeat_window.report_heartbeat();
     }
 
+    pub fn report_unknown(&mut self, chitchat_id: &ChitchatId) {
+        debug!(node_id=%chitchat_id.node_id, "reporting unknown node heartbeat.");
+        self.node_samples
+            .entry(chitchat_id.clone())
+            .or_insert_with(|| {
+                SamplingWindow::new(
+                    self.config.sampling_window_size,
+                    self.config.max_interval,
+                    self.config.initial_interval,
+                )
+            });
+    }
+
     /// Marks the node as dead or alive based on the current phi value.
     pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         if let Some(phi) = self.phi(chitchat_id) {
@@ -181,10 +194,14 @@ impl SamplingWindow {
 
     /// Computes the sampling window's phi value.
     pub fn phi(&self) -> f64 {
-        // Ensure we don't call before any sample arrival.
-        assert!(self.intervals.mean() > 0.0 && self.last_heartbeat.is_some());
-        let elapsed_time = self.last_heartbeat.unwrap().elapsed().as_secs_f64();
-        elapsed_time / self.intervals.mean()
+        if self.last_heartbeat.is_none() {
+            // if we phi is called before we have a sample, we assume the node isn't really alive.
+            f64::INFINITY
+        } else {
+            assert!(self.intervals.mean() > 0.0);
+            let elapsed_time = self.last_heartbeat.unwrap().elapsed().as_secs_f64();
+            elapsed_time / self.intervals.mean()
+        }
     }
 }
 

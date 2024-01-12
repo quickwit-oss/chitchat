@@ -166,6 +166,8 @@ impl Chitchat {
                 {
                     self.failure_detector.report_heartbeat(chitchat_id);
                 }
+            } else {
+                self.failure_detector.report_unknown(chitchat_id);
             }
         }
     }
