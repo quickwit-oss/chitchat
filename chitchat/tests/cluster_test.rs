@@ -255,7 +255,7 @@ pub fn find_available_tcp_port() -> anyhow::Result<u16> {
 
 #[tokio::test]
 async fn test_simple_simulation_insert() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
@@ -294,7 +294,7 @@ async fn test_simple_simulation_insert() {
 
 #[tokio::test]
 async fn test_simple_simulation_with_network_partition() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
@@ -336,7 +336,7 @@ async fn test_simple_simulation_with_network_partition() {
 
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
@@ -458,7 +458,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
 // of nodes to 3 and keys to 1 or 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_simple_simulation_heavy_insert_delete() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     let mut rng = thread_rng();
     let mut simulator = Simulator::new(Duration::from_millis(100), 50);
     let mut chitchat_ids = Vec::new();
