@@ -594,11 +594,11 @@ mod tests {
         test_transport.send(server_addr, syn_ack).await.unwrap();
 
         // Wait for delta to ensure heartbeat key was incremented.
-        let (_, chitchat_message) = timeout(test_transport.recv()).await.unwrap();
-        let delta = if let ChitchatMessage::Ack { delta } = chitchat_message {
-            delta
-        } else {
-            panic!("Expected ack");
+        let delta = loop {
+            let (_, chitchat_message) = timeout(test_transport.recv()).await.unwrap();
+            if let ChitchatMessage::Ack { delta } = chitchat_message {
+                break delta;
+            };
         };
 
         let node_delta = &delta.node_deltas.get(&server_id).unwrap();

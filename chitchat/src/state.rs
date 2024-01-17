@@ -313,12 +313,11 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
+    pub fn compute_digest(&self) -> Digest {
         Digest {
             node_digests: self
                 .node_states
                 .iter()
-                .filter(|(chitchat_id, _)| !dead_nodes.contains(chitchat_id))
                 .map(|(chitchat_id, node_state)| (chitchat_id.clone(), node_state.digest()))
                 .collect(),
         }
@@ -366,8 +365,8 @@ impl ClusterState {
         }
         let mut delta_writer = DeltaWriter::with_mtu(mtu);
 
-        for chitchat_id in nodes_to_reset {
-            if !delta_writer.add_node_to_reset(chitchat_id.clone()) {
+        for chitchat_id in &nodes_to_reset {
+            if !delta_writer.add_node_to_reset((*chitchat_id).clone()) {
                 break;
             }
         }
@@ -375,8 +374,26 @@ impl ClusterState {
             if !delta_writer.add_node(stale_node.chitchat_id.clone(), stale_node.heartbeat) {
                 break;
             }
+            let mut added_something = false;
             for (key, versioned_value) in stale_node.stale_key_values() {
+                added_something = true;
                 if !delta_writer.add_kv(key, versioned_value.clone()) {
+                    let delta: Delta = delta_writer.into();
+                    return delta;
+                }
+            }
+            if !added_something && nodes_to_reset.contains(&stale_node.chitchat_id) {
+                // send a sentinel element to update the max_version. Otherwise the node's vision
+                // of max_version will be 0, and it may accept writes that are supposed to be
+                // stale, but it can tell they are.
+                if !delta_writer.add_kv(
+                    "",
+                    VersionedValue {
+                        value: String::new(),
+                        version: stale_node.node_state.max_version,
+                        tombstone: Some(0),
+                    },
+                ) {
                     let delta: Delta = delta_writer.into();
                     return delta;
                 }
@@ -817,20 +834,10 @@ mod tests {
         node2_state.set("key_a", "");
         node2_state.set("key_b", "");
 
-        let dead_nodes = HashSet::new();
-        let digest = cluster_state.compute_digest(&dead_nodes);
+        let digest = cluster_state.compute_digest();
 
         let mut expected_node_digests = Digest::default();
         expected_node_digests.add_node(node1.clone(), Heartbeat(0), 1);
-        expected_node_digests.add_node(node2.clone(), Heartbeat(0), 2);
-
-        assert_eq!(&digest, &expected_node_digests);
-
-        // Consider node 1 dead:
-        let dead_nodes = HashSet::from_iter([&node1]);
-        let digest = cluster_state.compute_digest(&dead_nodes);
-
-        let mut expected_node_digests = Digest::default();
         expected_node_digests.add_node(node2.clone(), Heartbeat(0), 2);
 
         assert_eq!(&digest, &expected_node_digests);

@@ -86,8 +86,7 @@ impl Chitchat {
     }
 
     pub(crate) fn create_syn_message(&self) -> ChitchatMessage {
-        let dead_nodes: HashSet<_> = self.dead_nodes().collect();
-        let digest = self.compute_digest(&dead_nodes);
+        let digest = self.compute_digest();
         ChitchatMessage::Syn {
             cluster_id: self.config.cluster_id.clone(),
             digest,
@@ -107,7 +106,7 @@ impl Chitchat {
                 }
                 // Ensure for every reply from this node, at least the heartbeat is changed.
                 let dead_nodes: HashSet<_> = self.dead_nodes().collect();
-                let self_digest = self.compute_digest(&dead_nodes);
+                let self_digest = self.compute_digest();
                 let empty_delta = Delta::default();
                 let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE
                     - syn_ack_serialized_len(&self_digest, &empty_delta);
@@ -168,6 +167,7 @@ impl Chitchat {
                 }
             } else {
                 self.failure_detector.report_unknown(chitchat_id);
+                self.failure_detector.update_node_liveness(chitchat_id);
             }
         }
     }
@@ -280,8 +280,8 @@ impl Chitchat {
     }
 
     /// Computes the node's digest.
-    fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatId>) -> Digest {
-        self.cluster_state.compute_digest(dead_nodes)
+    fn compute_digest(&self) -> Digest {
+        self.cluster_state.compute_digest()
     }
 
     /// Subscribes a callback that will be called every time a key matching the supplied prefix

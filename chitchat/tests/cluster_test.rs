@@ -426,7 +426,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
         },
         // Relink node 3
         Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_3.clone()),
-        Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::AddNetworkLink(chitchat_id_2.clone(), chitchat_id_3.clone()),
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
