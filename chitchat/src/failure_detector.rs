@@ -194,13 +194,13 @@ impl SamplingWindow {
 
     /// Computes the sampling window's phi value.
     pub fn phi(&self) -> f64 {
-        if self.last_heartbeat.is_none() {
+        if let Some(last_heartbeat) = self.last_heartbeat {
+            assert!(self.intervals.mean() > 0.0);
+            let elapsed_time = last_heartbeat.elapsed().as_secs_f64();
+            elapsed_time / self.intervals.mean()
+        } else {
             // if we phi is called before we have a sample, we assume the node isn't really alive.
             f64::INFINITY
-        } else {
-            assert!(self.intervals.mean() > 0.0);
-            let elapsed_time = self.last_heartbeat.unwrap().elapsed().as_secs_f64();
-            elapsed_time / self.intervals.mean()
         }
     }
 }

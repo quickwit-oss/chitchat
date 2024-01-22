@@ -387,7 +387,7 @@ impl ClusterState {
                 // of max_version will be 0, and it may accept writes that are supposed to be
                 // stale, but it can tell they are.
                 if !delta_writer.add_kv(
-                    "",
+                    "__reset_sentinel",
                     VersionedValue {
                         value: String::new(),
                         version: stale_node.node_state.max_version,
