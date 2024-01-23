@@ -9,8 +9,8 @@ on:
     paths:
       - "Cargo.lock"
       - "Cargo.toml"
-      - "scuttlebutt/**"
-      - "scuttlebutt-*/**"
+      - "chitchat/**"
+      - "chitchat-*/**"
 
 env:
   RUSTFLAGS: -Dwarnings
