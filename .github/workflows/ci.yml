@@ -9,9 +9,8 @@ on:
     paths:
       - "Cargo.lock"
       - "Cargo.toml"
-      - "scuttlebutt/**"
-      - "scuttlebutt-*/**"
-
+      - "chitchat/**"
+      - "chitchat-*/**"
 
 env:
   RUSTFLAGS: -Dwarnings
@@ -21,9 +20,14 @@ jobs:
   check:
     name: Check (fmt, dependency check, clippy, test)
     runs-on: ubuntu-latest
-    container: public.ecr.aws/l6o9a3f9/quickwit-builder:latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+      - name: Install rustup
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain none -y
+      - name: Setup stable Rust Toolchain
+        run: rustup show
+      - name: Setup nightly Rust Toolchain (for rustfmt)
+        run: rustup toolchain install nightly
       - uses: actions/cache@v2
         with:
           path: |

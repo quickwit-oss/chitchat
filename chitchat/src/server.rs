@@ -65,7 +65,7 @@ async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>
         Ok(resolved_seed_addrs) => {
             for seed_addr in resolved_seed_addrs {
                 if seed_addrs.insert(seed_addr) {
-                    info!(seed_host=%seed_host, seed_addr=%seed_addr, "Resolved peer seed host.");
+                    debug!(seed_host=%seed_host, seed_addr=%seed_addr, "Resolved peer seed host.");
                 }
             }
         }
