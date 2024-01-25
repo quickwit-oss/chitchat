@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
@@ -15,13 +13,7 @@ use serde::{Deserialize, Serialize};
 /// leaves and rejoins the cluster. Backends such as Cassandra or Quickwit typically use the node's
 /// startup time as the `generation_id`. Applications with stable state across restarts can use a
 /// constant `generation_id`, for instance, `0`.
-// This type doesn't implement Eq & co because there are multiple notions of equality depending
-// on what you want to do with it. Nodes with the same node_id are the same by definition, so
-// sometime checking node_id is enough, but sometime we want to compare ChitchatId for generations,
-// in which case node_id+generation_id needs to be compared. Mixing both is easy and can lead to
-// bugs. Instead you have to use dedicated methods and/or wrappers depending on what equality means
-// for you in this context.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ChitchatId {
     /// An identifier unique across the cluster.
     pub node_id: String,
@@ -39,14 +31,6 @@ impl ChitchatId {
             gossip_advertise_addr,
         }
     }
-
-    pub fn eq_node_id(&self, other: &ChitchatId) -> bool {
-        self.node_id == other.node_id
-    }
-
-    pub fn eq_generation(&self, other: &ChitchatId) -> bool {
-        self.eq_node_id(other) && self.generation_id == other.generation_id
-    }
 }
 
 #[cfg(any(test, feature = "testsuite"))]
@@ -59,60 +43,6 @@ impl ChitchatId {
     /// Creates a new [`ChitchatId`] for local testing.
     pub fn for_local_test(port: u16) -> Self {
         Self::new(format!("node-{port}"), 0, ([127, 0, 0, 1], port).into())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ChitchatIdNodeEq(pub ChitchatId);
-
-impl Eq for ChitchatIdNodeEq {}
-impl PartialEq for ChitchatIdNodeEq {
-    fn eq(&self, other: &ChitchatIdNodeEq) -> bool {
-        self.0.eq_node_id(&other.0)
-    }
-}
-impl Hash for ChitchatIdNodeEq {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.node_id.hash(state);
-    }
-}
-impl Ord for ChitchatIdNodeEq {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.node_id.cmp(&other.0.node_id)
-    }
-}
-impl PartialOrd for ChitchatIdNodeEq {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ChitchatIdGenerationEq(pub ChitchatId);
-
-impl Eq for ChitchatIdGenerationEq {}
-impl PartialEq for ChitchatIdGenerationEq {
-    fn eq(&self, other: &ChitchatIdGenerationEq) -> bool {
-        self.0.eq_generation(&other.0)
-    }
-}
-impl Hash for ChitchatIdGenerationEq {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.node_id.hash(state);
-        self.0.generation_id.hash(state);
-    }
-}
-impl Ord for ChitchatIdGenerationEq {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0
-            .node_id
-            .cmp(&other.0.node_id)
-            .then(self.0.generation_id.cmp(&other.0.generation_id))
-    }
-}
-impl PartialOrd for ChitchatIdGenerationEq {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 

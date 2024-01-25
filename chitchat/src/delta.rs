@@ -2,40 +2,40 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
 use crate::serialize::*;
-use crate::{ChitchatId, ChitchatIdGenerationEq, Heartbeat, MaxVersion, VersionedValue};
+use crate::{ChitchatId, Heartbeat, MaxVersion, VersionedValue};
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct Delta {
-    pub(crate) node_deltas: BTreeMap<ChitchatIdGenerationEq, NodeDelta>,
-    pub(crate) nodes_to_reset: HashSet<ChitchatIdGenerationEq>,
+    pub(crate) node_deltas: BTreeMap<ChitchatId, NodeDelta>,
+    pub(crate) nodes_to_reset: HashSet<ChitchatId>,
 }
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
         (self.node_deltas.len() as u16).serialize(buf);
         for (chitchat_id, node_delta) in &self.node_deltas {
-            chitchat_id.0.serialize(buf);
+            chitchat_id.serialize(buf);
             node_delta.serialize(buf);
         }
         (self.nodes_to_reset.len() as u16).serialize(buf);
         for chitchat_id in &self.nodes_to_reset {
-            chitchat_id.0.serialize(buf);
+            chitchat_id.serialize(buf);
         }
     }
 
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut node_deltas: BTreeMap<ChitchatIdGenerationEq, NodeDelta> = Default::default();
+        let mut node_deltas: BTreeMap<ChitchatId, NodeDelta> = Default::default();
         let num_nodes = u16::deserialize(buf)?;
         for _ in 0..num_nodes {
             let chitchat_id = ChitchatId::deserialize(buf)?;
             let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(ChitchatIdGenerationEq(chitchat_id), node_delta);
+            node_deltas.insert(chitchat_id, node_delta);
         }
         let num_nodes_to_reset = u16::deserialize(buf)?;
         let mut nodes_to_reset = HashSet::with_capacity(num_nodes_to_reset as usize);
         for _ in 0..num_nodes_to_reset {
             let chitchat_id = ChitchatId::deserialize(buf)?;
-            nodes_to_reset.insert(ChitchatIdGenerationEq(chitchat_id));
+            nodes_to_reset.insert(chitchat_id);
         }
         Ok(Delta {
             node_deltas,
@@ -46,12 +46,12 @@ impl Serializable for Delta {
     fn serialized_len(&self) -> usize {
         let mut len = 2;
         for (chitchat_id, node_delta) in &self.node_deltas {
-            len += chitchat_id.0.serialized_len();
+            len += chitchat_id.serialized_len();
             len += node_delta.serialized_len();
         }
         len += 2;
         for chitchat_id in &self.nodes_to_reset {
-            len += chitchat_id.0.serialized_len();
+            len += chitchat_id.serialized_len();
         }
         len
     }
@@ -68,7 +68,7 @@ impl Delta {
 
     pub fn add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) {
         self.node_deltas
-            .entry(ChitchatIdGenerationEq(chitchat_id))
+            .entry(chitchat_id)
             .or_insert_with(|| NodeDelta {
                 heartbeat,
                 ..Default::default()
@@ -83,10 +83,7 @@ impl Delta {
         version: crate::Version,
         tombstone: Option<u64>,
     ) {
-        let node_delta = self
-            .node_deltas
-            .get_mut(&ChitchatIdGenerationEq(chitchat_id.clone()))
-            .unwrap();
+        let node_delta = self.node_deltas.get_mut(chitchat_id).unwrap();
 
         node_delta.max_version = node_delta.max_version.max(version);
         node_delta.key_values.insert(
@@ -100,8 +97,7 @@ impl Delta {
     }
 
     pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) {
-        self.nodes_to_reset
-            .insert(ChitchatIdGenerationEq(chitchat_id));
+        self.nodes_to_reset.insert(chitchat_id);
     }
 }
 
@@ -145,16 +141,13 @@ impl DeltaWriter {
         let chitchat_id_opt = mem::take(&mut self.current_chitchat_id);
         let node_delta = mem::take(&mut self.current_node_delta);
         if let Some(chitchat_id) = chitchat_id_opt {
-            self.delta
-                .node_deltas
-                .insert(ChitchatIdGenerationEq(chitchat_id), node_delta);
+            self.delta.node_deltas.insert(chitchat_id, node_delta);
         }
     }
 
     pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) -> bool {
-        let chitchat_id = ChitchatIdGenerationEq(chitchat_id);
         assert!(!self.delta.nodes_to_reset.contains(&chitchat_id));
-        if !self.attempt_add_bytes(chitchat_id.0.serialized_len()) {
+        if !self.attempt_add_bytes(chitchat_id.serialized_len()) {
             return false;
         }
         self.delta.nodes_to_reset.insert(chitchat_id);
@@ -162,21 +155,15 @@ impl DeltaWriter {
     }
 
     pub fn add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) -> bool {
-        assert!(self
-            .current_chitchat_id
-            .as_ref()
-            .map(|current_node| !current_node.eq_generation(&chitchat_id))
-            .unwrap_or(true));
-        let chitchat_id = ChitchatIdGenerationEq(chitchat_id);
+        assert!(self.current_chitchat_id.as_ref() != Some(&chitchat_id));
         assert!(!self.delta.node_deltas.contains_key(&chitchat_id));
         self.flush();
         // Reserve bytes for [`ChitchatId`], [`Hearbeat`], and for an empty [`NodeDelta`] which has
         // a size of 2 bytes.
-        if !self.attempt_add_bytes(chitchat_id.0.serialized_len() + heartbeat.serialized_len() + 2)
-        {
+        if !self.attempt_add_bytes(chitchat_id.serialized_len() + heartbeat.serialized_len() + 2) {
             return false;
         }
-        self.current_chitchat_id = Some(chitchat_id.0);
+        self.current_chitchat_id = Some(chitchat_id);
         self.current_node_delta.heartbeat = heartbeat;
         true
     }

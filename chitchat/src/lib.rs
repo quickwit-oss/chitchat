@@ -32,10 +32,7 @@ use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::ClusterState;
-pub use crate::types::{
-    ChitchatId, ChitchatIdGenerationEq, ChitchatIdNodeEq, Heartbeat, MaxVersion, Version,
-    VersionedValue,
-};
+pub use crate::types::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
 
 /// Maximum UDP datagram payload size (in bytes).
 ///
@@ -53,9 +50,9 @@ pub struct Chitchat {
     cluster_state: ClusterState,
     failure_detector: FailureDetector,
     /// Notifies listeners when a change has occurred in the set of live nodes.
-    previous_live_nodes: HashMap<ChitchatIdGenerationEq, MaxVersion>,
-    live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatIdGenerationEq, NodeState>>,
-    live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatIdGenerationEq, NodeState>>,
+    previous_live_nodes: HashMap<ChitchatId, MaxVersion>,
+    live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
+    live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
 }
 
 impl Chitchat {
@@ -89,8 +86,7 @@ impl Chitchat {
     }
 
     pub(crate) fn create_syn_message(&self) -> ChitchatMessage {
-        let dead_nodes: HashSet<_> = self.dead_nodes().collect();
-        let digest = self.compute_digest(&dead_nodes);
+        let digest = self.compute_digest();
         ChitchatMessage::Syn {
             cluster_id: self.config.cluster_id.clone(),
             digest,
@@ -110,7 +106,7 @@ impl Chitchat {
                 }
                 // Ensure for every reply from this node, at least the heartbeat is changed.
                 let dead_nodes: HashSet<_> = self.dead_nodes().collect();
-                let self_digest = self.compute_digest(&dead_nodes);
+                let self_digest = self.compute_digest();
                 let empty_delta = Delta::default();
                 let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE
                     - syn_ack_serialized_len(&self_digest, &empty_delta);
@@ -163,17 +159,15 @@ impl Chitchat {
     /// update.
     fn report_heartbeats(&mut self, delta: &Delta) {
         for (chitchat_id, node_delta) in &delta.node_deltas {
-            if let Some((node_id, node_state)) = self
-                .cluster_state
-                .node_states
-                .get_key_value(&ChitchatIdNodeEq(chitchat_id.0.clone()))
-            {
+            if let Some(node_state) = self.cluster_state.node_states.get(chitchat_id) {
                 if node_state.heartbeat() < node_delta.heartbeat
                     || node_state.max_version() < node_delta.max_version
-                    || node_id.0.generation_id < chitchat_id.0.generation_id
                 {
-                    self.failure_detector.report_heartbeat(&chitchat_id.0);
+                    self.failure_detector.report_heartbeat(chitchat_id);
                 }
+            } else {
+                self.failure_detector.report_unknown(chitchat_id);
+                self.failure_detector.update_node_liveness(chitchat_id);
             }
         }
     }
@@ -183,7 +177,7 @@ impl Chitchat {
     pub(crate) fn update_nodes_liveness(&mut self) {
         self.cluster_state
             .nodes()
-            .filter(|&chitchat_id| !chitchat_id.eq_node_id(&self.config.chitchat_id))
+            .filter(|&chitchat_id| *chitchat_id != self.config.chitchat_id)
             .for_each(|chitchat_id| {
                 self.failure_detector.update_node_liveness(chitchat_id);
             });
@@ -194,10 +188,7 @@ impl Chitchat {
                 let node_state = self
                     .node_state(chitchat_id)
                     .expect("Node state should exist.");
-                (
-                    ChitchatIdGenerationEq(chitchat_id.clone()),
-                    node_state.max_version(),
-                )
+                (chitchat_id.clone(), node_state.max_version())
             })
             .collect::<HashMap<_, _>>();
 
@@ -207,7 +198,7 @@ impl Chitchat {
                 .cloned()
                 .map(|chitchat_id| {
                     let node_state = self
-                        .node_state(&chitchat_id.0)
+                        .node_state(&chitchat_id)
                         .expect("Node state should exist.")
                         .clone();
                     (chitchat_id, node_state)
@@ -226,7 +217,7 @@ impl Chitchat {
         }
     }
 
-    pub fn node_states(&self) -> &BTreeMap<ChitchatIdNodeEq, NodeState> {
+    pub fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
         &self.cluster_state.node_states
     }
 
@@ -241,7 +232,7 @@ impl Chitchat {
     /// Returns the set of nodes considered alive by the failure detector. It includes the
     /// current node (also called "self node"), which is always considered alive.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
-        once(self.self_chitchat_id()).chain(self.failure_detector.live_nodes().map(|node| &node.0))
+        once(self.self_chitchat_id()).chain(self.failure_detector.live_nodes())
     }
 
     /// Returns a watch stream for monitoring changes in the cluster.
@@ -252,12 +243,12 @@ impl Chitchat {
     /// - updates its max version
     ///
     /// Heartbeats are not notified.
-    pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatIdGenerationEq, NodeState>> {
+    pub fn live_nodes_watcher(&self) -> WatchStream<BTreeMap<ChitchatId, NodeState>> {
         WatchStream::new(self.live_nodes_watcher_rx.clone())
     }
 
     /// Returns the set of nodes considered dead by the failure detector.
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatIdNodeEq> {
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.failure_detector.dead_nodes()
     }
 
@@ -289,8 +280,8 @@ impl Chitchat {
     }
 
     /// Computes the node's digest.
-    fn compute_digest(&self, dead_nodes: &HashSet<&ChitchatIdNodeEq>) -> Digest {
-        self.cluster_state.compute_digest(dead_nodes)
+    fn compute_digest(&self) -> Digest {
+        self.cluster_state.compute_digest()
     }
 
     /// Subscribes a callback that will be called every time a key matching the supplied prefix
@@ -319,7 +310,7 @@ impl Chitchat {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct KeyChangeEvent<'a> {
     /// The matching key without the prefix used to subscribe to the event.
     pub key: &'a str,
@@ -327,13 +318,6 @@ pub struct KeyChangeEvent<'a> {
     pub value: &'a str,
     /// The node for which the event was triggered.
     pub node: &'a ChitchatId,
-}
-
-impl<'a> Eq for KeyChangeEvent<'a> {}
-impl<'a> PartialEq for KeyChangeEvent<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value && self.node.eq_generation(other.node)
-    }
 }
 
 impl<'a> KeyChangeEvent<'a> {
@@ -426,7 +410,7 @@ mod tests {
         for chitchat_id in &chitchat_ids[1..] {
             let seeds = chitchat_ids
                 .iter()
-                .filter(|&peer_id| !peer_id.eq_node_id(chitchat_id))
+                .filter(|&peer_id| peer_id != chitchat_id)
                 .map(|peer_id| peer_id.gossip_advertise_addr.to_string())
                 .collect::<Vec<_>>();
             chitchat_handlers.push(start_node(chitchat_id.clone(), &seeds, transport).await);
@@ -452,10 +436,6 @@ mod tests {
         chitchat: Arc<Mutex<Chitchat>>,
         expected_nodes: &[ChitchatId],
     ) {
-        let expected_nodes: Vec<_> = expected_nodes
-            .iter()
-            .map(|node| ChitchatIdGenerationEq(node.clone()))
-            .collect();
         let expected_nodes = expected_nodes.iter().collect::<HashSet<_>>();
         let mut live_nodes_watcher =
             chitchat
