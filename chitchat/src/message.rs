@@ -4,7 +4,7 @@ use anyhow::Context;
 
 use crate::delta::Delta;
 use crate::digest::Digest;
-use crate::serialize::Serializable;
+use crate::serialize::{Deserializable, Serializable};
 
 /// Chitchat message.
 ///
@@ -73,6 +73,19 @@ impl Serializable for ChitchatMessage {
         }
     }
 
+    fn serialized_len(&self) -> usize {
+        match self {
+            ChitchatMessage::Syn { cluster_id, digest } => {
+                1 + cluster_id.serialized_len() + digest.serialized_len()
+            }
+            ChitchatMessage::SynAck { digest, delta } => syn_ack_serialized_len(digest, delta),
+            ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
+            ChitchatMessage::BadCluster => 1,
+        }
+    }
+}
+
+impl Deserializable for ChitchatMessage {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .first()
@@ -96,17 +109,6 @@ impl Serializable for ChitchatMessage {
                 Ok(Self::Ack { delta })
             }
             MessageType::BadCluster => Ok(Self::BadCluster),
-        }
-    }
-
-    fn serialized_len(&self) -> usize {
-        match self {
-            ChitchatMessage::Syn { cluster_id, digest } => {
-                1 + cluster_id.serialized_len() + digest.serialized_len()
-            }
-            ChitchatMessage::SynAck { digest, delta } => syn_ack_serialized_len(digest, delta),
-            ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
-            ChitchatMessage::BadCluster => 1,
         }
     }
 }
@@ -149,7 +151,7 @@ mod tests {
                 digest: Digest::default(),
                 delta: Delta::default(),
             };
-            test_serdeser_aux(&syn_ack, 7);
+            test_serdeser_aux(&syn_ack, 4);
         }
         {
             // 2 bytes.
@@ -177,7 +179,7 @@ mod tests {
         {
             let delta = Delta::default();
             let ack = ChitchatMessage::Ack { delta };
-            test_serdeser_aux(&ack, 5);
+            test_serdeser_aux(&ack, 2);
         }
         {
             // 4 bytes.

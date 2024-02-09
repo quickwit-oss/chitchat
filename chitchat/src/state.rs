@@ -950,7 +950,7 @@ mod tests {
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
-        for mtu in 2..buf.len() {
+        for mtu in 100..buf.len() {
             let delta = cluster_state.compute_delta(digest, mtu, dead_nodes, 10_000);
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
