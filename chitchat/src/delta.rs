@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
+use anyhow::ensure;
+
 use crate::serialize::*;
 use crate::{ChitchatId, Heartbeat, MaxVersion, VersionedValue};
 
@@ -31,7 +33,6 @@ enum DeltaOp {
     },
     NodesToReset(ChitchatId),
 }
-
 
 const NODE_OP_TAG: u8 = 0;
 const KEY_VALUE_OP_TAG: u8 = 1;
@@ -127,24 +128,9 @@ impl Serializable for Delta {
         if let Some(serialized_ref) = self.serialized_delta.as_ref() {
             buf.extend(serialized_ref);
         } else {
-            let mut compressed_stream_writer = CompressedStreamWriter::with_block_threshold(16_384);
-            for (chitchat_id, node_delta) in &self.node_deltas {
-                compressed_stream_writer.append(&DeltaOp::Node {
-                    chitchat_id: chitchat_id.clone(),
-                    heartbeat: node_delta.heartbeat,
-                });
-                for (key, versioned_value) in &node_delta.key_values {
-                    compressed_stream_writer.append(&DeltaOp::KeyValue {
-                        key: key.clone(),
-                        versioned_value: versioned_value.clone(),
-                    });
-                }
-            }
-            for chitchat_id in &self.nodes_to_reset {
-                compressed_stream_writer.append(&DeltaOp::NodesToReset(chitchat_id.clone()));
-            }
-            let serialized = compressed_stream_writer.finalize();
-            buf.extend(&serialized);
+            // Slow, but never called in practise
+            let ops: Vec<DeltaOp> = self.get_ops();
+            ops.serialize(buf)
         }
     }
 
@@ -152,24 +138,9 @@ impl Serializable for Delta {
         if let Some(serialized_ref) = self.serialized_delta.as_ref() {
             serialized_ref.len()
         } else {
-            let mut compressed_stream_writer = CompressedStreamWriter::with_block_threshold(16_384);
-            for (chitchat_id, node_delta) in &self.node_deltas {
-                compressed_stream_writer.append(&DeltaOp::Node {
-                    chitchat_id: chitchat_id.clone(),
-                    heartbeat: node_delta.heartbeat,
-                });
-                for (key, versioned_value) in &node_delta.key_values {
-                    compressed_stream_writer.append(&DeltaOp::KeyValue {
-                        key: key.clone(),
-                        versioned_value: versioned_value.clone(),
-                    });
-                }
-            }
-            for chitchat_id in &self.nodes_to_reset {
-                compressed_stream_writer.append(&DeltaOp::NodesToReset(chitchat_id.clone()));
-            }
-            let serialized = compressed_stream_writer.finalize();
-            serialized.len()
+            // Slow, but never called in practise
+            let ops: Vec<DeltaOp> = self.get_ops();
+            ops.serialized_len()
         }
     }
 }
@@ -177,11 +148,60 @@ impl Serializable for Delta {
 impl Deserializable for Delta {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let ops: Vec<DeltaOp> = crate::serialize::deserialize_stream(buf)?;
+        ops.try_into()
+    }
+}
+
+impl Delta {
+    fn get_ops(&self) -> Vec<DeltaOp> {
+        let mut ops = Vec::new();
+        for (chitchat_id, node_delta) in &self.node_deltas {
+            ops.push(DeltaOp::Node {
+                chitchat_id: chitchat_id.clone(),
+                heartbeat: node_delta.heartbeat,
+            });
+            for (key, versioned_value) in &node_delta.key_values {
+                ops.push(DeltaOp::KeyValue {
+                    key: key.clone(),
+                    versioned_value: versioned_value.clone(),
+                });
+            }
+        }
+        for chitchat_id in &self.nodes_to_reset {
+            ops.push(DeltaOp::NodesToReset(chitchat_id.clone()));
+        }
+        ops
+    }
+}
+
+impl TryFrom<Vec<DeltaOp>> for Delta {
+    type Error = anyhow::Error;
+
+    fn try_from(delta_ops: Vec<DeltaOp>) -> anyhow::Result<Delta> {
         let mut delta_builder = DeltaBuilder::default();
-        for op in ops {
-            delta_builder.apply_op(op);
+        for op in delta_ops {
+            delta_builder.apply_op(op)?;
         }
         Ok(delta_builder.finish())
+    }
+}
+
+impl Serializable for Vec<DeltaOp> {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        // This is slow, but it is only used in tests.
+        let mut compressed_stream_writer = CompressedStreamWriter::with_block_threshold(16_384);
+        for op in self {
+            compressed_stream_writer.append(op);
+        }
+        let payload = compressed_stream_writer.finalize();
+        buf.extend(&payload);
+    }
+
+    fn serialized_len(&self) -> usize {
+        // This is slow, but it is only used in tests.
+        let mut buf = Vec::new();
+        self.serialize(&mut buf);
+        buf.len()
     }
 }
 
@@ -257,14 +277,14 @@ impl DeltaBuilder {
         self.delta
     }
 
-    fn apply_op(&mut self, op: DeltaOp) {
+    fn apply_op(&mut self, op: DeltaOp) -> anyhow::Result<()> {
         match op {
             DeltaOp::Node {
                 chitchat_id,
                 heartbeat,
             } => {
-                assert!(self.current_chitchat_id.as_ref() != Some(&chitchat_id));
-                assert!(!self.delta.node_deltas.contains_key(&chitchat_id));
+                ensure!(self.current_chitchat_id.as_ref() != Some(&chitchat_id));
+                ensure!(!self.delta.node_deltas.contains_key(&chitchat_id));
                 self.flush();
                 self.current_chitchat_id = Some(chitchat_id);
                 self.current_node_delta.heartbeat = heartbeat;
@@ -273,8 +293,7 @@ impl DeltaBuilder {
                 key,
                 versioned_value,
             } => {
-                // TODO do we want an assert here?
-                assert!(!self.current_node_delta.key_values.contains_key(&key));
+                ensure!(!self.current_node_delta.key_values.contains_key(&key));
                 self.current_node_delta.max_version = self
                     .current_node_delta
                     .max_version
@@ -284,10 +303,11 @@ impl DeltaBuilder {
                     .insert(key.to_string(), versioned_value);
             }
             DeltaOp::NodesToReset(chitchat_id) => {
-                assert!(!self.delta.nodes_to_reset.contains(&chitchat_id));
+                ensure!(!self.delta.nodes_to_reset.contains(&chitchat_id));
                 self.delta.nodes_to_reset.insert(chitchat_id);
             }
         }
+        Ok(())
     }
 
     fn flush(&mut self) {
@@ -330,7 +350,7 @@ impl DeltaWriter {
             return false;
         }
         self.compressed_stream_writer.append(&delta_op);
-        self.delta_builder.apply_op(delta_op);
+        assert!(self.delta_builder.apply_op(delta_op).is_ok());
         true
     }
 
