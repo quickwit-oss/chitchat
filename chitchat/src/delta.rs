@@ -11,7 +11,7 @@ pub struct Delta {
     pub(crate) node_deltas: BTreeMap<ChitchatId, NodeDelta>,
     pub(crate) nodes_to_reset: HashSet<ChitchatId>,
     // Transient: if we have precomputed the serialized from the delta, we store it here.
-    serialized_delta: Option<Vec<u8>>,
+    pre_serialized_delta: Option<Vec<u8>>,
 }
 
 impl PartialEq for Delta {
@@ -34,16 +34,40 @@ enum DeltaOp {
     NodesToReset(ChitchatId),
 }
 
-const NODE_OP_TAG: u8 = 0;
-const KEY_VALUE_OP_TAG: u8 = 1;
-const NODES_TO_RESET_OP_TAG: u8 = 2;
+#[repr(u8)]
+enum DeltaOpTag {
+    Node = 0u8,
+    KeyValue = 1u8,
+    NodeToReset = 2u8,
+}
+
+impl TryFrom<u8> for DeltaOpTag {
+    type Error = anyhow::Error;
+
+    fn try_from(tag_byte: u8) -> anyhow::Result<DeltaOpTag> {
+        match tag_byte {
+            0u8 => Ok(DeltaOpTag::Node),
+            1u8 => Ok(DeltaOpTag::KeyValue),
+            2u8 => Ok(DeltaOpTag::NodeToReset),
+            _ => {
+                anyhow::bail!("Unknown tag: {tag_byte}")
+            }
+        }
+    }
+}
+
+impl From<DeltaOpTag> for u8 {
+    fn from(tag: DeltaOpTag) -> u8 {
+        tag as u8
+    }
+}
 
 impl Deserializable for DeltaOp {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let tag_bytes: [u8; 1] = Deserializable::deserialize(buf)?;
-        let tag = tag_bytes[0];
+        let tag = DeltaOpTag::try_from(tag_bytes[0])?;
         match tag {
-            NODE_OP_TAG => {
+            DeltaOpTag::Node => {
                 let chitchat_id = ChitchatId::deserialize(buf)?;
                 let heartbeat = Heartbeat::deserialize(buf)?;
                 Ok(DeltaOp::Node {
@@ -51,7 +75,7 @@ impl Deserializable for DeltaOp {
                     heartbeat,
                 })
             }
-            KEY_VALUE_OP_TAG => {
+            DeltaOpTag::KeyValue => {
                 let key = String::deserialize(buf)?;
                 let value = String::deserialize(buf)?;
                 let version = u64::deserialize(buf)?;
@@ -66,11 +90,10 @@ impl Deserializable for DeltaOp {
                     versioned_value,
                 })
             }
-            NODES_TO_RESET_OP_TAG => {
+            DeltaOpTag::NodeToReset => {
                 let chitchat_id = ChitchatId::deserialize(buf)?;
                 Ok(DeltaOp::NodesToReset(chitchat_id))
             }
-            _ => Err(anyhow::anyhow!("Invalid tag: {}", tag)),
         }
     }
 }
@@ -82,7 +105,7 @@ impl Serializable for DeltaOp {
                 chitchat_id,
                 heartbeat,
             } => {
-                buf.push(NODE_OP_TAG);
+                buf.push(DeltaOpTag::Node.into());
                 chitchat_id.serialize(buf);
                 heartbeat.serialize(buf);
             }
@@ -90,14 +113,14 @@ impl Serializable for DeltaOp {
                 key,
                 versioned_value,
             } => {
-                buf.push(KEY_VALUE_OP_TAG);
+                buf.push(DeltaOpTag::KeyValue.into());
                 key.serialize(buf);
                 versioned_value.value.serialize(buf);
                 versioned_value.version.serialize(buf);
                 versioned_value.tombstone.serialize(buf);
             }
             DeltaOp::NodesToReset(chitchat_id) => {
-                buf.push(NODES_TO_RESET_OP_TAG);
+                buf.push(DeltaOpTag::NodeToReset.into());
                 chitchat_id.serialize(buf);
             }
         }
@@ -125,7 +148,7 @@ impl Serializable for DeltaOp {
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        if let Some(serialized_ref) = self.serialized_delta.as_ref() {
+        if let Some(serialized_ref) = self.pre_serialized_delta.as_ref() {
             buf.extend(serialized_ref);
         } else {
             // Slow, but never called in practise
@@ -135,7 +158,7 @@ impl Serializable for Delta {
     }
 
     fn serialized_len(&self) -> usize {
-        if let Some(serialized_ref) = self.serialized_delta.as_ref() {
+        if let Some(serialized_ref) = self.pre_serialized_delta.as_ref() {
             serialized_ref.len()
         } else {
             // Slow, but never called in practise
@@ -383,7 +406,7 @@ impl DeltaWriter {
 impl From<DeltaWriter> for Delta {
     fn from(delta_writer: DeltaWriter) -> Delta {
         let mut delta = delta_writer.delta_builder.finish();
-        delta.serialized_delta = Some(delta_writer.compressed_stream_writer.finalize());
+        delta.pre_serialized_delta = Some(delta_writer.compressed_stream_writer.finalize());
         delta
     }
 }
@@ -689,5 +712,18 @@ mod tests {
                 tombstone: None,
             },
         );
+    }
+
+    #[test]
+    fn test_delta_op_tag() {
+        let mut num_valid_tags = 0;
+        for b in 0..=u8::MAX {
+            if let Ok(tag) = DeltaOpTag::try_from(b) {
+                let tag_byte = tag.into();
+                assert_eq!(b, tag_byte);
+                num_valid_tags += 1;
+            }
+        }
+        assert_eq!(num_valid_tags, 3);
     }
 }

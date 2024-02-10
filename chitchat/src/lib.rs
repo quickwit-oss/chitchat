@@ -117,7 +117,6 @@ impl Chitchat {
                     &dead_nodes,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
-                self.report_heartbeats(&delta);
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
                     delta,
