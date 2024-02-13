@@ -15,14 +15,14 @@ use tracing::warn;
 use crate::delta::{Delta, DeltaWriter};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
-use crate::{ChitchatId, Heartbeat, KeyChangeEvent, MaxVersion, Version, VersionedValue};
+use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
     node_id: ChitchatId,
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
-    max_version: MaxVersion,
+    max_version: Version,
     #[serde(skip)]
     #[serde(default = "Instant::now")]
     last_heartbeat: Instant,
@@ -74,7 +74,7 @@ impl NodeState {
     }
 
     /// Returns the node's max version.
-    pub fn max_version(&self) -> MaxVersion {
+    pub fn max_version(&self) -> Version {
         self.max_version
     }
 
@@ -305,7 +305,6 @@ impl ClusterState {
                 node_state.heartbeat = node_delta.heartbeat;
                 node_state.last_heartbeat = Instant::now();
             }
-            node_state.max_version = node_state.max_version.max(node_delta.max_version);
             for (key, versioned_value) in node_delta.key_values {
                 node_state.max_version = node_state.max_version.max(versioned_value.version);
                 node_state.set_versioned_value(key, versioned_value);

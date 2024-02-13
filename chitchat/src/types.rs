@@ -68,9 +68,6 @@ impl VersionedValue {
 /// The current version of a key.
 pub type Version = u64;
 
-/// The highest version of a key in a node's state.
-pub type MaxVersion = u64;
-
 /// The current heartbeat of a node.
 #[derive(
     Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize,

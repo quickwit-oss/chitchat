@@ -1,16 +1,16 @@
 use std::collections::BTreeMap;
 
 use crate::serialize::*;
-use crate::{ChitchatId, Heartbeat, MaxVersion};
+use crate::{ChitchatId, Heartbeat, Version};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) struct NodeDigest {
     pub(crate) heartbeat: Heartbeat,
-    pub(crate) max_version: MaxVersion,
+    pub(crate) max_version: Version,
 }
 
 impl NodeDigest {
-    pub(crate) fn new(heartbeat: Heartbeat, max_version: MaxVersion) -> Self {
+    pub(crate) fn new(heartbeat: Heartbeat, max_version: Version) -> Self {
         Self {
             heartbeat,
             max_version,
@@ -30,7 +30,7 @@ pub struct Digest {
 
 #[cfg(test)]
 impl Digest {
-    pub fn add_node(&mut self, node: ChitchatId, heartbeat: Heartbeat, max_version: MaxVersion) {
+    pub fn add_node(&mut self, node: ChitchatId, heartbeat: Heartbeat, max_version: Version) {
         let node_digest = NodeDigest::new(heartbeat, max_version);
         self.node_digests.insert(node, node_digest);
     }
