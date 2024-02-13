@@ -81,8 +81,9 @@ impl FailureDetector {
     /// Removes and returns the list of garbage collectible nodes.
     pub fn garbage_collect(&mut self) -> Vec<ChitchatId> {
         let mut garbage_collected_nodes = Vec::new();
-        for (chitchat_id, instant) in self.dead_nodes.iter() {
-            if instant.elapsed() >= self.config.dead_node_grace_period {
+        let now = Instant::now();
+        for (chitchat_id, &time_of_death) in &self.dead_nodes {
+            if now >= time_of_death + self.config.dead_node_grace_period {
                 garbage_collected_nodes.push(chitchat_id.clone())
             }
         }
@@ -100,6 +101,23 @@ impl FailureDetector {
     /// Returns the list of nodes considered dead by the failure detector.
     pub fn dead_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         self.dead_nodes.keys()
+    }
+
+    /// Returns the list of nodes considered dead by the failure detector.
+    pub fn scheduled_for_deletion_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
+        let now = Instant::now();
+        let half_dead_node_grace_period = self.config.dead_node_grace_period.div_f32(2.0f32);
+        // Note: we can't just compute the threshold now - half_dead_node_grace_period, because it
+        // would underflow on some platform (MacOS).
+        self.dead_nodes
+            .iter()
+            .filter_map(move |(chitchat_id, time_of_death)| {
+                if *time_of_death + half_dead_node_grace_period < now {
+                    Some(chitchat_id)
+                } else {
+                    None
+                }
+            })
     }
 
     /// Returns the current phi value of a node.

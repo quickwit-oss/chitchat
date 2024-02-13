@@ -317,11 +317,12 @@ impl ClusterState {
         }
     }
 
-    pub fn compute_digest(&self) -> Digest {
+    pub fn compute_digest(&self, scheduled_for_deletion: &HashSet<&ChitchatId>) -> Digest {
         Digest {
             node_digests: self
                 .node_states
                 .iter()
+                .filter(|(chitchat_id, _)| !scheduled_for_deletion.contains(chitchat_id))
                 .map(|(chitchat_id, node_state)| (chitchat_id.clone(), node_state.digest()))
                 .collect(),
         }
@@ -341,18 +342,20 @@ impl ClusterState {
     }
 
     /// Implements the Scuttlebutt reconciliation with the scuttle-depth ordering.
+    ///
+    /// Nodes that are scheduled for deletion (as passed by argument) are not shared.
     pub fn compute_partial_delta_respecting_mtu(
         &self,
         digest: &Digest,
         mtu: usize,
-        dead_nodes: &HashSet<&ChitchatId>,
+        scheduled_for_deletion: &HashSet<&ChitchatId>,
         marked_for_deletion_grace_period: u64,
     ) -> Delta {
         let mut stale_nodes = SortedStaleNodes::default();
         let mut nodes_to_reset = Vec::new();
 
         for (chitchat_id, node_state) in &self.node_states {
-            if dead_nodes.contains(chitchat_id) {
+            if scheduled_for_deletion.contains(chitchat_id) {
                 continue;
             }
             let Some(node_digest) = digest.node_digests.get(chitchat_id) else {
@@ -838,7 +841,7 @@ mod tests {
         node2_state.set("key_a", "");
         node2_state.set("key_b", "");
 
-        let digest = cluster_state.compute_digest();
+        let digest = cluster_state.compute_digest(&HashSet::new());
 
         let mut expected_node_digests = Digest::default();
         expected_node_digests.add_node(node1.clone(), Heartbeat(0), 1);
