@@ -326,6 +326,7 @@ async fn test_simple_simulation_with_network_partition() {
 
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition() {
+    const TIMEOUT: Duration = Duration::from_millis(500);
     // let _ = tracing_subscriber::fmt::try_init();
     let mut simulator = Simulator::new(Duration::from_millis(100), 10);
     let chitchat_id_1 = create_chitchat_id("node-1");
@@ -358,13 +359,13 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_2.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
-            timeout_opt: Some(Duration::from_millis(300)),
+            timeout_opt: Some(TIMEOUT),
         },
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
-            timeout_opt: Some(Duration::from_millis(300)),
+            timeout_opt: Some(TIMEOUT),
         },
         // Isolate node 3.
         Operation::RemoveNetworkLink(chitchat_id_1.clone(), chitchat_id_3.clone()),
@@ -379,7 +380,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_2.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), true),
-            timeout_opt: Some(Duration::from_millis(300)),
+            timeout_opt: Some(TIMEOUT),
         },
         // Check marked for deletion is not propagated to node 3.
         Operation::NodeStateAssert {
@@ -394,7 +395,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_2.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
-            timeout_opt: Some(Duration::from_millis(300)),
+            timeout_opt: Some(TIMEOUT),
         },
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_1.clone(),
@@ -411,7 +412,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
         },
         // Wait for propagation
         // We need to wait longer... because node 4 is just starting?
-        Operation::Wait(Duration::from_millis(500)),
+        Operation::Wait(TIMEOUT),
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
@@ -422,7 +423,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_4.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
-            timeout_opt: None,
+            timeout_opt: Some(TIMEOUT),
         },
         // Relink node 3
         Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_3.clone()),
@@ -431,13 +432,13 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
-            timeout_opt: Some(Duration::from_millis(500)),
+            timeout_opt: Some(TIMEOUT),
         },
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_4.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
-            timeout_opt: Some(Duration::from_millis(500)),
+            timeout_opt: Some(TIMEOUT),
         },
     ];
     simulator.execute(operations).await;

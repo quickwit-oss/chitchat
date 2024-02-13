@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
 use crate::serialize::*;
-use crate::{ChitchatId, Heartbeat, MaxVersion, VersionedValue};
+use crate::{ChitchatId, Heartbeat, VersionedValue};
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct Delta {
@@ -84,8 +84,6 @@ impl Delta {
         tombstone: Option<u64>,
     ) {
         let node_delta = self.node_deltas.get_mut(chitchat_id).unwrap();
-
-        node_delta.max_version = node_delta.max_version.max(version);
         node_delta.key_values.insert(
             key.to_string(),
             VersionedValue {
@@ -105,8 +103,6 @@ impl Delta {
 pub(crate) struct NodeDelta {
     pub heartbeat: Heartbeat,
     pub key_values: BTreeMap<String, VersionedValue>,
-    // This attribute is computed upon deserialization. 0 if `key_values` is empty.
-    pub max_version: MaxVersion,
 }
 
 #[cfg(test)]
@@ -191,10 +187,6 @@ impl DeltaWriter {
         ) {
             return false;
         }
-        self.current_node_delta.max_version = self
-            .current_node_delta
-            .max_version
-            .max(versioned_value.version);
         self.current_node_delta
             .key_values
             .insert(key.to_string(), versioned_value);
@@ -238,14 +230,12 @@ impl Serializable for NodeDelta {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let heartbeat = Heartbeat::deserialize(buf)?;
         let mut key_values: BTreeMap<String, VersionedValue> = Default::default();
-        let mut max_version = 0;
         let num_key_values = u16::deserialize(buf)?;
         for _ in 0..num_key_values {
             let key = String::deserialize(buf)?;
             let value = String::deserialize(buf)?;
             let version = u64::deserialize(buf)?;
             let tombstone = <Option<u64>>::deserialize(buf)?;
-            max_version = max_version.max(version);
             key_values.insert(
                 key,
                 VersionedValue {
@@ -258,7 +248,6 @@ impl Serializable for NodeDelta {
         Ok(Self {
             heartbeat,
             key_values,
-            max_version,
         })
     }
 

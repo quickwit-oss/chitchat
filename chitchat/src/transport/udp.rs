@@ -24,7 +24,7 @@ impl Transport for UdpTransport {
     }
 }
 
-struct UdpSocket {
+pub struct UdpSocket {
     buf_send: Vec<u8>,
     buf_recv: Box<[u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]>,
     socket: tokio::net::UdpSocket,

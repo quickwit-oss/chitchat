@@ -33,7 +33,7 @@ use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::ClusterState;
-pub use crate::types::{ChitchatId, Heartbeat, MaxVersion, Version, VersionedValue};
+pub use crate::types::{ChitchatId, Heartbeat, Version, VersionedValue};
 
 /// Maximum UDP datagram payload size (in bytes).
 ///
@@ -51,7 +51,7 @@ pub struct Chitchat {
     cluster_state: ClusterState,
     failure_detector: FailureDetector,
     /// Notifies listeners when a change has occurred in the set of live nodes.
-    previous_live_nodes: HashMap<ChitchatId, MaxVersion>,
+    previous_live_nodes: HashMap<ChitchatId, Version>,
     live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
     live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
 }
@@ -117,7 +117,6 @@ impl Chitchat {
                     &dead_nodes,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
-                self.report_heartbeats(&delta);
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
                     delta,
@@ -125,7 +124,6 @@ impl Chitchat {
             }
             ChitchatMessage::SynAck { digest, delta } => {
                 self.report_heartbeats(&delta);
-                // self.config.chitchat_id.node_id, digest, delta);
                 self.cluster_state.apply_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_delta(
@@ -161,9 +159,7 @@ impl Chitchat {
     fn report_heartbeats(&mut self, delta: &Delta) {
         for (chitchat_id, node_delta) in &delta.node_deltas {
             if let Some(node_state) = self.cluster_state.node_states.get(chitchat_id) {
-                if node_state.heartbeat() < node_delta.heartbeat
-                    || node_state.max_version() < node_delta.max_version
-                {
+                if node_state.heartbeat() < node_delta.heartbeat {
                     self.failure_detector.report_heartbeat(chitchat_id);
                 }
             } else {
