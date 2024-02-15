@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context};
 use async_trait::async_trait;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::serialize::Serializable;
 use crate::transport::{Socket, Transport};
@@ -98,7 +98,6 @@ impl ChannelTransport {
                 bail!("Serialized message size exceeds MTU.");
             }
         }
-        debug!(num_bytes = num_bytes, "send");
         let mut inner_lock = self.inner.lock().unwrap();
         inner_lock.statistics.record_message_len(num_bytes);
         if let Some(to_addrs) = inner_lock.removed_links.get(&from_addr) {

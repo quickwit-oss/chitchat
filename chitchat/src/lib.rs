@@ -29,7 +29,6 @@ use tracing::{error, warn};
 pub use self::configuration::ChitchatConfig;
 pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
-use crate::message::syn_ack_serialized_len;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
 use crate::state::ClusterState;
@@ -94,6 +93,14 @@ impl Chitchat {
         }
     }
 
+    fn process_delta(&mut self, delta: Delta) {
+        // Warning: order matters here.
+        // `report_heartbeats` will compare the current known heartbeat with the one
+        // in the delta, while `apply_delta` is actually updating this heartbeat.
+        self.report_heartbeats(&delta);
+        self.cluster_state.apply_delta(delta);
+    }
+
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
@@ -105,13 +112,10 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-                // Ensure for every reply from this node, at least the heartbeat is changed.
                 let dead_nodes: HashSet<_> = self.dead_nodes().collect();
                 let self_digest = self.compute_digest();
-                let empty_delta = Delta::default();
-                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE
-                    - syn_ack_serialized_len(&self_digest, &empty_delta);
-                let delta = self.cluster_state.compute_delta(
+                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 - digest.serialized_len();
+                let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
                     delta_mtu,
                     &dead_nodes,
@@ -123,10 +127,9 @@ impl Chitchat {
                 })
             }
             ChitchatMessage::SynAck { digest, delta } => {
-                self.report_heartbeats(&delta);
-                self.cluster_state.apply_delta(delta);
+                self.process_delta(delta);
                 let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
-                let delta = self.cluster_state.compute_delta(
+                let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
                     &dead_nodes,
@@ -135,8 +138,7 @@ impl Chitchat {
                 Some(ChitchatMessage::Ack { delta })
             }
             ChitchatMessage::Ack { delta } => {
-                self.report_heartbeats(&delta);
-                self.cluster_state.apply_delta(delta);
+                self.process_delta(delta);
                 None
             }
             ChitchatMessage::BadCluster => {
@@ -157,14 +159,17 @@ impl Chitchat {
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
     fn report_heartbeats(&mut self, delta: &Delta) {
-        for (chitchat_id, node_delta) in &delta.node_deltas {
-            if let Some(node_state) = self.cluster_state.node_states.get(chitchat_id) {
+        for node_delta in &delta.node_deltas {
+            if let Some(node_state) = self.cluster_state.node_states.get(&node_delta.chitchat_id) {
                 if node_state.heartbeat() < node_delta.heartbeat {
-                    self.failure_detector.report_heartbeat(chitchat_id);
+                    self.failure_detector
+                        .report_heartbeat(&node_delta.chitchat_id);
                 }
             } else {
-                self.failure_detector.report_unknown(chitchat_id);
-                self.failure_detector.update_node_liveness(chitchat_id);
+                self.failure_detector
+                    .report_unknown(&node_delta.chitchat_id);
+                self.failure_detector
+                    .update_node_liveness(&node_delta.chitchat_id);
             }
         }
     }

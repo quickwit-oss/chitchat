@@ -9,7 +9,7 @@ use chitchat::{
 };
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 enum Operation {
@@ -158,7 +158,7 @@ impl Simulator {
                             }
                             assert!(predicate_value);
                         } else {
-                            info!(node_id=%chitchat_id.node_id, state_snapshot=?chitchat_guard.state_snapshot(), "Node state missing.");
+                            error!(node_id=%chitchat_id.node_id, state_snapshot=?chitchat_guard.state_snapshot(), "Node state missing.");
                             panic!("Node state missing");
                         }
                     }

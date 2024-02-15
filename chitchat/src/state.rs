@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::warn;
 
-use crate::delta::{Delta, DeltaWriter};
+use crate::delta::{Delta, DeltaSerializer, NodeDelta};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
 use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
@@ -296,16 +296,21 @@ impl ClusterState {
             .retain(|chitchat_id, _| !delta.nodes_to_reset.contains(chitchat_id));
 
         // Apply delta.
-        for (chitchat_id, node_delta) in delta.node_deltas {
+        for node_delta in delta.node_deltas {
+            let NodeDelta {
+                chitchat_id,
+                heartbeat,
+                key_values,
+            } = node_delta;
             let node_state = self
                 .node_states
                 .entry(chitchat_id.clone())
                 .or_insert_with(|| NodeState::new(chitchat_id, self.listeners.clone()));
-            if node_state.heartbeat < node_delta.heartbeat {
-                node_state.heartbeat = node_delta.heartbeat;
+            if node_state.heartbeat < heartbeat {
+                node_state.heartbeat = heartbeat;
                 node_state.last_heartbeat = Instant::now();
             }
-            for (key, versioned_value) in node_delta.key_values {
+            for (key, versioned_value) in key_values {
                 node_state.max_version = node_state.max_version.max(versioned_value.version);
                 node_state.set_versioned_value(key, versioned_value);
             }
@@ -336,7 +341,7 @@ impl ClusterState {
     }
 
     /// Implements the Scuttlebutt reconciliation with the scuttle-depth ordering.
-    pub fn compute_delta(
+    pub fn compute_partial_delta_respecting_mtu(
         &self,
         digest: &Digest,
         mtu: usize,
@@ -362,30 +367,31 @@ impl ClusterState {
             }
             stale_nodes.offer(chitchat_id, node_state, node_digest);
         }
-        let mut delta_writer = DeltaWriter::with_mtu(mtu);
+        let mut delta_serializer = DeltaSerializer::with_mtu(mtu);
 
         for chitchat_id in &nodes_to_reset {
-            if !delta_writer.add_node_to_reset((*chitchat_id).clone()) {
+            if !delta_serializer.try_add_node_to_reset((*chitchat_id).clone()) {
                 break;
             }
         }
+
         for stale_node in stale_nodes.into_iter() {
-            if !delta_writer.add_node(stale_node.chitchat_id.clone(), stale_node.heartbeat) {
+            if !delta_serializer.try_add_node(stale_node.chitchat_id.clone(), stale_node.heartbeat)
+            {
                 break;
             }
             let mut added_something = false;
             for (key, versioned_value) in stale_node.stale_key_values() {
                 added_something = true;
-                if !delta_writer.add_kv(key, versioned_value.clone()) {
-                    let delta: Delta = delta_writer.into();
-                    return delta;
+                if !delta_serializer.try_add_kv(key, versioned_value.clone()) {
+                    return delta_serializer.finish();
                 }
             }
             if !added_something && nodes_to_reset.contains(&stale_node.chitchat_id) {
                 // send a sentinel element to update the max_version. Otherwise the node's vision
                 // of max_version will be 0, and it may accept writes that are supposed to be
                 // stale, but it can tell they are.
-                if !delta_writer.add_kv(
+                if !delta_serializer.try_add_kv(
                     "__reset_sentinel",
                     VersionedValue {
                         value: String::new(),
@@ -393,12 +399,11 @@ impl ClusterState {
                         tombstone: Some(0),
                     },
                 ) {
-                    let delta: Delta = delta_writer.into();
-                    return delta;
+                    return delta_serializer.finish();
                 }
             }
         }
-        delta_writer.into()
+        delta_serializer.finish()
     }
 }
 
@@ -945,12 +950,18 @@ mod tests {
         dead_nodes: &HashSet<&ChitchatId>,
         expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, Option<u64>)],
     ) {
-        let max_delta = cluster_state.compute_delta(digest, usize::MAX, dead_nodes, 10_000);
+        let max_delta = cluster_state.compute_partial_delta_respecting_mtu(
+            digest,
+            usize::MAX,
+            dead_nodes,
+            10_000,
+        );
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
-        for mtu in 2..buf.len() {
-            let delta = cluster_state.compute_delta(digest, mtu, dead_nodes, 10_000);
+        for mtu in 100..buf.len() {
+            let delta =
+                cluster_state.compute_partial_delta_respecting_mtu(digest, mtu, dead_nodes, 10_000);
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -966,11 +977,17 @@ mod tests {
                 expected_delta.add_kv(node, key, val, version, tombstone);
             }
             {
-                let delta = cluster_state.compute_delta(digest, mtu, dead_nodes, 10_000);
+                let delta = cluster_state
+                    .compute_partial_delta_respecting_mtu(digest, mtu, dead_nodes, 10_000);
                 assert_eq!(&delta, &expected_delta);
             }
             {
-                let delta = cluster_state.compute_delta(digest, mtu + 1, dead_nodes, 10_000);
+                let delta = cluster_state.compute_partial_delta_respecting_mtu(
+                    digest,
+                    mtu + 1,
+                    dead_nodes,
+                    10_000,
+                );
                 assert_eq!(&delta, &expected_delta);
             }
         }
@@ -1099,7 +1116,7 @@ mod tests {
         let node1 = ChitchatId::for_local_test(10_001);
         digest.add_node(node1.clone(), Heartbeat(0), 1);
         {
-            let delta = cluster_state.compute_delta(
+            let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
@@ -1111,13 +1128,14 @@ mod tests {
             expected_delta.add_kv(&node1, "key_b", "2", 2, None);
             expected_delta.add_node(node2.clone(), Heartbeat(0));
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
+            expected_delta.set_serialized_len(78);
             assert_eq!(delta, expected_delta);
         }
         {
             // Node 1 heartbeat in digest + grace period (9_999) is inferior to the
             // node1's hearbeat in the cluster state. Thus we expect the cluster to compute a
             // delta that will reset node 1.
-            let delta = cluster_state.compute_delta(
+            let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
@@ -1130,6 +1148,7 @@ mod tests {
             expected_delta.add_kv(&node1, "key_b", "2", 2, None);
             expected_delta.add_node(node2.clone(), Heartbeat(0));
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
+            expected_delta.set_serialized_len(91);
             assert_eq!(delta, expected_delta);
         }
     }

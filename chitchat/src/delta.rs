@@ -1,81 +1,267 @@
-use std::collections::{BTreeMap, HashSet};
-use std::mem;
+use std::collections::HashSet;
 
 use crate::serialize::*;
 use crate::{ChitchatId, Heartbeat, VersionedValue};
 
-#[derive(Debug, Default, Eq, PartialEq)]
+/// A delta is the message we send to another node to update it.
+///
+/// Its serialization is done by transforming it into a sequence of operations,
+/// encoded one after the other in a compressed stream.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Delta {
-    pub(crate) node_deltas: BTreeMap<ChitchatId, NodeDelta>,
-    pub(crate) nodes_to_reset: HashSet<ChitchatId>,
+    pub(crate) nodes_to_reset: Vec<ChitchatId>,
+    pub(crate) node_deltas: Vec<NodeDelta>,
+    serialized_len: usize,
+}
+
+impl Default for Delta {
+    fn default() -> Self {
+        Delta {
+            nodes_to_reset: Vec::new(),
+            node_deltas: Vec::new(),
+            serialized_len: 1,
+        }
+    }
+}
+
+impl Delta {
+    fn get_operations(&self) -> impl Iterator<Item = DeltaOpRef<'_>> {
+        let nodes_to_reset_ops = self.nodes_to_reset.iter().map(DeltaOpRef::NodeToReset);
+        let node_deltas = self.node_deltas.iter().flat_map(|node_delta| {
+            std::iter::once(DeltaOpRef::Node {
+                chitchat_id: &node_delta.chitchat_id,
+                heartbeat: node_delta.heartbeat,
+            })
+            .chain(node_delta.key_values.iter().map(|(key, versioned_value)| {
+                DeltaOpRef::KeyValue {
+                    key,
+                    versioned_value,
+                }
+            }))
+        });
+        nodes_to_reset_ops.chain(node_deltas)
+    }
+}
+
+enum DeltaOp {
+    NodeToReset(ChitchatId),
+    Node {
+        chitchat_id: ChitchatId,
+        heartbeat: Heartbeat,
+    },
+    KeyValue {
+        key: String,
+        versioned_value: VersionedValue,
+    },
+}
+
+enum DeltaOpRef<'a> {
+    NodeToReset(&'a ChitchatId),
+    Node {
+        chitchat_id: &'a ChitchatId,
+        heartbeat: Heartbeat,
+    },
+    KeyValue {
+        key: &'a str,
+        versioned_value: &'a VersionedValue,
+    },
+}
+
+#[repr(u8)]
+enum DeltaOpTag {
+    Node = 0u8,
+    KeyValue = 1u8,
+    NodeToReset = 2u8,
+}
+
+impl TryFrom<u8> for DeltaOpTag {
+    type Error = anyhow::Error;
+
+    fn try_from(tag_byte: u8) -> anyhow::Result<DeltaOpTag> {
+        match tag_byte {
+            0u8 => Ok(DeltaOpTag::Node),
+            1u8 => Ok(DeltaOpTag::KeyValue),
+            2u8 => Ok(DeltaOpTag::NodeToReset),
+            _ => {
+                anyhow::bail!("Unknown tag: {tag_byte}")
+            }
+        }
+    }
+}
+
+impl From<DeltaOpTag> for u8 {
+    fn from(tag: DeltaOpTag) -> u8 {
+        tag as u8
+    }
+}
+
+impl Deserializable for DeltaOp {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let tag_bytes: [u8; 1] = Deserializable::deserialize(buf)?;
+        let tag = DeltaOpTag::try_from(tag_bytes[0])?;
+        match tag {
+            DeltaOpTag::NodeToReset => {
+                let chitchat_id = ChitchatId::deserialize(buf)?;
+                Ok(DeltaOp::NodeToReset(chitchat_id))
+            }
+            DeltaOpTag::Node => {
+                let chitchat_id = ChitchatId::deserialize(buf)?;
+                let heartbeat = Heartbeat::deserialize(buf)?;
+                Ok(DeltaOp::Node {
+                    chitchat_id,
+                    heartbeat,
+                })
+            }
+            DeltaOpTag::KeyValue => {
+                let key = String::deserialize(buf)?;
+                let value = String::deserialize(buf)?;
+                let version = u64::deserialize(buf)?;
+                let tombstone = Option::<u64>::deserialize(buf)?;
+                let versioned_value: VersionedValue = VersionedValue {
+                    value,
+                    version,
+                    tombstone,
+                };
+                Ok(DeltaOp::KeyValue {
+                    key,
+                    versioned_value,
+                })
+            }
+        }
+    }
+}
+
+impl DeltaOp {
+    fn as_ref(&self) -> DeltaOpRef {
+        match self {
+            DeltaOp::Node {
+                chitchat_id,
+                heartbeat,
+            } => DeltaOpRef::Node {
+                chitchat_id,
+                heartbeat: *heartbeat,
+            },
+            DeltaOp::KeyValue {
+                key,
+                versioned_value,
+            } => DeltaOpRef::KeyValue {
+                key,
+                versioned_value,
+            },
+            DeltaOp::NodeToReset(node_to_reset) => DeltaOpRef::NodeToReset(node_to_reset),
+        }
+    }
+}
+
+impl Serializable for DeltaOp {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        self.as_ref().serialize(buf)
+    }
+
+    fn serialized_len(&self) -> usize {
+        self.as_ref().serialized_len()
+    }
+}
+
+impl<'a> Serializable for DeltaOpRef<'a> {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Node {
+                chitchat_id,
+                heartbeat,
+            } => {
+                buf.push(DeltaOpTag::Node.into());
+                chitchat_id.serialize(buf);
+                heartbeat.serialize(buf);
+            }
+            Self::KeyValue {
+                key,
+                versioned_value,
+            } => {
+                buf.push(DeltaOpTag::KeyValue.into());
+                key.serialize(buf);
+                versioned_value.value.serialize(buf);
+                versioned_value.version.serialize(buf);
+                versioned_value.tombstone.serialize(buf);
+            }
+            Self::NodeToReset(chitchat_id) => {
+                buf.push(DeltaOpTag::NodeToReset.into());
+                chitchat_id.serialize(buf);
+            }
+        }
+    }
+
+    fn serialized_len(&self) -> usize {
+        1 + match self {
+            Self::Node {
+                chitchat_id,
+                heartbeat,
+            } => chitchat_id.serialized_len() + heartbeat.serialized_len(),
+            Self::KeyValue {
+                key,
+                versioned_value,
+            } => {
+                key.serialized_len()
+                    + versioned_value.value.serialized_len()
+                    + versioned_value.version.serialized_len()
+                    + versioned_value.tombstone.serialized_len()
+            }
+            Self::NodeToReset(chitchat_id) => chitchat_id.serialized_len(),
+        }
+    }
 }
 
 impl Serializable for Delta {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        (self.node_deltas.len() as u16).serialize(buf);
-        for (chitchat_id, node_delta) in &self.node_deltas {
-            chitchat_id.serialize(buf);
-            node_delta.serialize(buf);
+        let mut compressed_stream_writer = CompressedStreamWriter::with_block_threshold(16_384);
+        for op in self.get_operations() {
+            compressed_stream_writer.append(&op);
         }
-        (self.nodes_to_reset.len() as u16).serialize(buf);
-        for chitchat_id in &self.nodes_to_reset {
-            chitchat_id.serialize(buf);
-        }
-    }
-
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let mut node_deltas: BTreeMap<ChitchatId, NodeDelta> = Default::default();
-        let num_nodes = u16::deserialize(buf)?;
-        for _ in 0..num_nodes {
-            let chitchat_id = ChitchatId::deserialize(buf)?;
-            let node_delta = NodeDelta::deserialize(buf)?;
-            node_deltas.insert(chitchat_id, node_delta);
-        }
-        let num_nodes_to_reset = u16::deserialize(buf)?;
-        let mut nodes_to_reset = HashSet::with_capacity(num_nodes_to_reset as usize);
-        for _ in 0..num_nodes_to_reset {
-            let chitchat_id = ChitchatId::deserialize(buf)?;
-            nodes_to_reset.insert(chitchat_id);
-        }
-        Ok(Delta {
-            node_deltas,
-            nodes_to_reset,
-        })
+        let payload = compressed_stream_writer.finish();
+        assert_eq!(payload.len(), self.serialized_len);
+        buf.extend(&payload);
     }
 
     fn serialized_len(&self) -> usize {
-        let mut len = 2;
-        for (chitchat_id, node_delta) in &self.node_deltas {
-            len += chitchat_id.serialized_len();
-            len += node_delta.serialized_len();
+        self.serialized_len
+    }
+}
+
+impl Deserializable for Delta {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let original_len = buf.len();
+        let ops: Vec<DeltaOp> = crate::serialize::deserialize_stream(buf)?;
+        let consumed_len = original_len - buf.len();
+        let mut delta_builder = DeltaBuilder::default();
+        for op in ops {
+            delta_builder.apply_op(op)?;
         }
-        len += 2;
-        for chitchat_id in &self.nodes_to_reset {
-            len += chitchat_id.serialized_len();
-        }
-        len
+        Ok(delta_builder.finish(consumed_len))
     }
 }
 
 #[cfg(test)]
 impl Delta {
-    pub fn num_tuples(&self) -> usize {
+    pub(crate) fn num_tuples(&self) -> usize {
         self.node_deltas
-            .values()
+            .iter()
             .map(|node_delta| node_delta.num_tuples())
             .sum()
     }
 
-    pub fn add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) {
-        self.node_deltas
-            .entry(chitchat_id)
-            .or_insert_with(|| NodeDelta {
-                heartbeat,
-                ..Default::default()
-            });
+    pub(crate) fn add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) {
+        assert!(!self
+            .node_deltas
+            .iter()
+            .any(|node_delta| { node_delta.chitchat_id == chitchat_id }));
+        self.node_deltas.push(NodeDelta {
+            chitchat_id,
+            heartbeat,
+            key_values: Vec::new(),
+        });
     }
 
-    pub fn add_kv(
+    pub(crate) fn add_kv(
         &mut self,
         chitchat_id: &ChitchatId,
         key: &str,
@@ -83,26 +269,41 @@ impl Delta {
         version: crate::Version,
         tombstone: Option<u64>,
     ) {
-        let node_delta = self.node_deltas.get_mut(chitchat_id).unwrap();
-        node_delta.key_values.insert(
+        let node_delta = self
+            .node_deltas
+            .iter_mut()
+            .find(|node_delta| &node_delta.chitchat_id == chitchat_id)
+            .unwrap();
+        node_delta.key_values.push((
             key.to_string(),
             VersionedValue {
                 value: value.to_string(),
                 version,
                 tombstone,
             },
-        );
+        ));
     }
 
-    pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) {
-        self.nodes_to_reset.insert(chitchat_id);
+    pub(crate) fn set_serialized_len(&mut self, serialized_len: usize) {
+        self.serialized_len = serialized_len;
+    }
+
+    pub(crate) fn get(&self, chitchat_id: &ChitchatId) -> Option<&NodeDelta> {
+        self.node_deltas
+            .iter()
+            .find(|node_delta| &node_delta.chitchat_id == chitchat_id)
+    }
+
+    pub(crate) fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) {
+        self.nodes_to_reset.push(chitchat_id);
     }
 }
 
-#[derive(Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[derive(Debug, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct NodeDelta {
+    pub chitchat_id: ChitchatId,
     pub heartbeat: Heartbeat,
-    pub key_values: BTreeMap<String, VersionedValue>,
+    pub key_values: Vec<(String, VersionedValue)>,
 }
 
 #[cfg(test)]
@@ -112,164 +313,141 @@ impl NodeDelta {
     }
 }
 
-pub struct DeltaWriter {
+#[derive(Default)]
+struct DeltaBuilder {
+    existing_nodes: HashSet<ChitchatId>,
     delta: Delta,
-    mtu: usize,
-    num_bytes: usize,
-    current_chitchat_id: Option<ChitchatId>,
-    current_node_delta: NodeDelta,
-    reached_capacity: bool,
+    current_node_delta: Option<NodeDelta>,
 }
 
-impl DeltaWriter {
-    pub fn with_mtu(mtu: usize) -> Self {
-        DeltaWriter {
-            delta: Delta::default(),
-            mtu,
-            num_bytes: 2 + 2, /* 2 bytes for `nodes_to_reset.len()` + 2 bytes for
-                               * `node_deltas.len()` */
-            current_chitchat_id: None,
-            current_node_delta: NodeDelta::default(),
-            reached_capacity: false,
-        }
-    }
-    fn flush(&mut self) {
-        let chitchat_id_opt = mem::take(&mut self.current_chitchat_id);
-        let node_delta = mem::take(&mut self.current_node_delta);
-        if let Some(chitchat_id) = chitchat_id_opt {
-            self.delta.node_deltas.insert(chitchat_id, node_delta);
-        }
-    }
-
-    pub fn add_node_to_reset(&mut self, chitchat_id: ChitchatId) -> bool {
-        assert!(!self.delta.nodes_to_reset.contains(&chitchat_id));
-        if !self.attempt_add_bytes(chitchat_id.serialized_len()) {
-            return false;
-        }
-        self.delta.nodes_to_reset.insert(chitchat_id);
-        true
-    }
-
-    pub fn add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) -> bool {
-        assert!(self.current_chitchat_id.as_ref() != Some(&chitchat_id));
-        assert!(!self.delta.node_deltas.contains_key(&chitchat_id));
+impl DeltaBuilder {
+    fn finish(mut self, len: usize) -> Delta {
         self.flush();
-        // Reserve bytes for [`ChitchatId`], [`Hearbeat`], and for an empty [`NodeDelta`] which has
-        // a size of 2 bytes.
-        if !self.attempt_add_bytes(chitchat_id.serialized_len() + heartbeat.serialized_len() + 2) {
-            return false;
-        }
-        self.current_chitchat_id = Some(chitchat_id);
-        self.current_node_delta.heartbeat = heartbeat;
-        true
+        self.delta.serialized_len = len;
+        self.delta
     }
 
-    fn attempt_add_bytes(&mut self, num_bytes: usize) -> bool {
-        assert!(!self.reached_capacity);
-        let new_num_bytes = self.num_bytes + num_bytes;
-        if new_num_bytes > self.mtu {
-            self.reached_capacity = true;
-            return false;
-        }
-        self.num_bytes = new_num_bytes;
-        true
-    }
-
-    /// Returns false if the KV could not be added because mtu was reached.
-    pub fn add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
-        assert!(!self.current_node_delta.key_values.contains_key(key));
-        // Reserve bytes for the key (2 bytes are used to store the key length) and versioned value.
-        if !self.attempt_add_bytes(
-            2 + key.len()
-                + versioned_value.value.serialized_len()
-                + versioned_value.version.serialized_len()
-                + versioned_value.tombstone.serialized_len(),
-        ) {
-            return false;
-        }
-        self.current_node_delta
-            .key_values
-            .insert(key.to_string(), versioned_value);
-        true
-    }
-}
-
-impl From<DeltaWriter> for Delta {
-    fn from(mut delta_writer: DeltaWriter) -> Delta {
-        delta_writer.flush();
-        if cfg!(debug_assertions) {
-            let mut buf = Vec::new();
-            assert_eq!(delta_writer.num_bytes, delta_writer.delta.serialized_len());
-            delta_writer.delta.serialize(&mut buf);
-            assert_eq!(buf.len(), delta_writer.num_bytes);
-        }
-        delta_writer.delta
-    }
-}
-
-impl Serializable for NodeDelta {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        self.heartbeat.serialize(buf);
-        (self.key_values.len() as u16).serialize(buf);
-        for (
-            key,
-            VersionedValue {
-                value,
-                version,
-                tombstone,
-            },
-        ) in &self.key_values
-        {
-            key.serialize(buf);
-            value.serialize(buf);
-            version.serialize(buf);
-            tombstone.serialize(buf);
-        }
-    }
-
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let heartbeat = Heartbeat::deserialize(buf)?;
-        let mut key_values: BTreeMap<String, VersionedValue> = Default::default();
-        let num_key_values = u16::deserialize(buf)?;
-        for _ in 0..num_key_values {
-            let key = String::deserialize(buf)?;
-            let value = String::deserialize(buf)?;
-            let version = u64::deserialize(buf)?;
-            let tombstone = <Option<u64>>::deserialize(buf)?;
-            key_values.insert(
+    fn apply_op(&mut self, op: DeltaOp) -> anyhow::Result<()> {
+        match op {
+            DeltaOp::Node {
+                chitchat_id,
+                heartbeat,
+            } => {
+                self.flush();
+                anyhow::ensure!(!self.existing_nodes.contains(&chitchat_id));
+                self.existing_nodes.insert(chitchat_id.clone());
+                self.current_node_delta = Some(NodeDelta {
+                    chitchat_id,
+                    heartbeat,
+                    key_values: Vec::new(),
+                });
+            }
+            DeltaOp::KeyValue {
                 key,
-                VersionedValue {
-                    value,
-                    version,
-                    tombstone,
-                },
-            );
+                versioned_value,
+            } => {
+                let Some(current_node_delta) = self.current_node_delta.as_mut() else {
+                    anyhow::bail!("received a key-value op without a node op before.");
+                };
+                if let Some((_last_key, last_versioned_value)) =
+                    current_node_delta.key_values.last()
+                {
+                    anyhow::ensure!(
+                        last_versioned_value.version < versioned_value.version,
+                        "kv version should be increasing"
+                    );
+                }
+                current_node_delta
+                    .key_values
+                    .push((key.to_string(), versioned_value));
+            }
+            DeltaOp::NodeToReset(chitchat_id) => {
+                anyhow::ensure!(
+                    self.delta.node_deltas.is_empty(),
+                    "nodes_to_reset should be encoded before node_deltas"
+                );
+                self.delta.nodes_to_reset.push(chitchat_id);
+            }
         }
-        Ok(Self {
-            heartbeat,
-            key_values,
-        })
+        Ok(())
     }
 
-    fn serialized_len(&self) -> usize {
-        let mut len = 2;
-        len += self.heartbeat.serialized_len();
+    fn flush(&mut self) {
+        let Some(node_delta) = self.current_node_delta.take() else {
+            // There are no nodes in the builder.
+            // (this happens when the delta builder is freshly created and no ops have been received
+            // yet.)
+            return;
+        };
+        self.delta.node_deltas.push(node_delta);
+    }
+}
 
-        for (
-            key,
-            VersionedValue {
-                value,
-                version,
-                tombstone,
-            },
-        ) in &self.key_values
-        {
-            len += key.serialized_len();
-            len += value.serialized_len();
-            len += version.serialized_len();
-            len += tombstone.serialized_len();
+/// The delta serializer is just helping us with the task of serializing
+/// part of a delta, while respecting a given `mtu`.
+///
+/// We do it by calling `try_add_node_reset`, `try_add_node`, and `try_add_kv`
+/// and stopping as soon as one of this methods returns `false`.
+pub struct DeltaSerializer {
+    mtu: usize,
+    delta_builder: DeltaBuilder,
+    compressed_stream_writer: CompressedStreamWriter,
+}
+
+const BLOCK_THRESHOLD: u16 = 16_384u16;
+
+impl DeltaSerializer {
+    pub fn with_mtu(mtu: usize) -> Self {
+        assert!(mtu >= 100);
+        let block_threshold = u16::try_from((BLOCK_THRESHOLD as usize).min(mtu)).unwrap();
+        DeltaSerializer {
+            mtu,
+            delta_builder: DeltaBuilder::default(),
+            compressed_stream_writer: CompressedStreamWriter::with_block_threshold(block_threshold),
         }
-        len
+    }
+
+    /// Returns false if the node to reset could not be added because the payload would exceed the
+    /// mtu.
+    pub fn try_add_node_to_reset(&mut self, chitchat_id: ChitchatId) -> bool {
+        let delta_op = DeltaOp::NodeToReset(chitchat_id);
+        self.try_add_op(delta_op)
+    }
+
+    fn try_add_op(&mut self, delta_op: DeltaOp) -> bool {
+        if self
+            .compressed_stream_writer
+            .serialized_len_upperbound_after(&delta_op)
+            > self.mtu
+        {
+            return false;
+        }
+        self.compressed_stream_writer.append(&delta_op);
+        assert!(self.delta_builder.apply_op(delta_op).is_ok());
+        true
+    }
+
+    /// Returns false if the KV could not be added because the payload would exceed the mtu.
+    pub fn try_add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
+        let key_value_op = DeltaOp::KeyValue {
+            key: key.to_string(),
+            versioned_value,
+        };
+        self.try_add_op(key_value_op)
+    }
+
+    /// Returns false if the node could not be added because the payload would exceed the mtu.
+    pub fn try_add_node(&mut self, chitchat_id: ChitchatId, heartbeat: Heartbeat) -> bool {
+        let new_node_op = DeltaOp::Node {
+            chitchat_id,
+            heartbeat,
+        };
+        self.try_add_op(new_node_op)
+    }
+
+    pub fn finish(self) -> Delta {
+        let buffer = self.compressed_stream_writer.finish();
+        self.delta_builder.finish(buffer.len())
     }
 }
 
@@ -279,23 +457,23 @@ mod tests {
 
     #[test]
     fn test_delta_serialization_default() {
-        test_serdeser_aux(&Delta::default(), 4);
+        test_serdeser_aux(&Delta::default(), 1);
     }
 
     #[test]
     fn test_delta_serialization_simple_foo() {
         // 4 bytes
-        let mut delta_writer = DeltaWriter::with_mtu(198);
+        let mut delta_writer = DeltaSerializer::with_mtu(198);
 
         // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
-        assert!(delta_writer.add_node(node1, heartbeat));
+        assert!(delta_writer.try_add_node(node1, heartbeat));
 
         // +23 bytes: 2 bytes (key length) + 5 bytes (key) + 7 bytes (values) + 8 bytes (version) +
         // 1 bytes (empty tombstone).
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -305,7 +483,7 @@ mod tests {
         ));
         // +26 bytes: 2 bytes (key length) + 5 bytes (key) + 8 bytes (version) +
         // 9 bytes (empty tombstone).
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "".to_string(),
@@ -317,10 +495,10 @@ mod tests {
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
         // +37 bytes
-        assert!(delta_writer.add_node(node2, heartbeat));
+        assert!(delta_writer.try_add_node(node2, heartbeat));
 
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key21",
             VersionedValue {
                 value: "val21".to_string(),
@@ -329,7 +507,7 @@ mod tests {
             },
         ));
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key22",
             VersionedValue {
                 value: "val22".to_string(),
@@ -337,23 +515,22 @@ mod tests {
                 tombstone: None,
             },
         ));
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 173);
+        test_aux_delta_writer(delta_writer, 99);
     }
 
     #[test]
     fn test_delta_serialization_simple_node() {
-        // 4 bytes
-        let mut delta_writer = DeltaWriter::with_mtu(124);
+        // 1 bytes (End tag)
+        let mut delta_writer = DeltaSerializer::with_mtu(128);
 
         // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
-        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
-        assert!(delta_writer.add_node(node1, heartbeat));
+        // +37 bytes = 8 bytes (heartbeat) + 27 bytes (node) +  2bytes (block length)
+        assert!(delta_writer.try_add_node(node1, heartbeat));
 
-        // +23 bytes.
-        assert!(delta_writer.add_kv(
+        // +24 bytes (kv + op tag)
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -361,8 +538,9 @@ mod tests {
                 tombstone: None,
             }
         ));
-        // +23 bytes.
-        assert!(delta_writer.add_kv(
+
+        // +24 bytes. (kv + op tag)
+        assert!(delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
@@ -374,26 +552,35 @@ mod tests {
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
-        assert!(delta_writer.add_node(node2, heartbeat));
+        assert!(delta_writer.try_add_node(node2, heartbeat));
+        test_aux_delta_writer(delta_writer, 80);
+    }
 
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 124);
+    #[track_caller]
+    fn test_aux_delta_writer(delta_writer: DeltaSerializer, expected_len: usize) {
+        let delta: Delta = delta_writer.finish();
+        test_serdeser_aux(&delta, expected_len)
     }
 
     #[test]
     fn test_delta_serialization_simple_with_nodes_to_reset() {
-        // 4 bytes
-        let mut delta_writer = DeltaWriter::with_mtu(151);
-        // +27 bytes (ChitchatId).
-        assert!(delta_writer.add_node_to_reset(ChitchatId::for_local_test(10_000)));
+        // 1 bytes (end tag)
+        let mut delta_writer = DeltaSerializer::with_mtu(155);
+
+        // +27 bytes (ChitchatId) + 1 (op tag) + 3 bytes (block len)
+        // = 32 bytes
+        assert!(delta_writer.try_add_node_to_reset(ChitchatId::for_local_test(10_000)));
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
-        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(delta_writer.add_node(node1, heartbeat));
 
-        // +23 bytes.
-        assert!(delta_writer.add_kv(
+        // +8 bytes (heartbeat) + 27 bytes (ChitchatId) + (1 op tag) + 3 bytes (pessimistic new
+        // block) = 71
+        assert!(delta_writer.try_add_node(node1, heartbeat));
+
+        // +23 bytes (kv) + 1 (op tag)
+        // = 95
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -401,8 +588,9 @@ mod tests {
                 tombstone: None,
             }
         ));
-        // +23 bytes.
-        assert!(delta_writer.add_kv(
+        // +23 bytes (kv) + 1 (op tag)
+        // = 119
+        assert!(delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
@@ -413,25 +601,25 @@ mod tests {
 
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
-        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(delta_writer.add_node(node2, heartbeat));
-
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 151);
+        // +8 bytes (heartbeat) + 27 bytes (ChitchatId) + 1 byte (op tag)
+        // = 155
+        assert!(delta_writer.try_add_node(node2, heartbeat));
+        // The block got compressed.
+        test_aux_delta_writer(delta_writer, 85);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node() {
         // 4 bytes.
-        let mut delta_writer = DeltaWriter::with_mtu(87);
+        let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(delta_writer.add_node(node1, heartbeat));
+        assert!(delta_writer.try_add_node(node1, heartbeat));
 
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -440,7 +628,7 @@ mod tests {
             }
         ));
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
@@ -452,24 +640,24 @@ mod tests {
         let node2 = ChitchatId::for_local_test(10_002);
         let heartbeat = Heartbeat(0);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(!delta_writer.add_node(node2, heartbeat));
+        assert!(!delta_writer.try_add_node(node2, heartbeat));
 
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 87);
+        // The block got compressed.
+        test_aux_delta_writer(delta_writer, 72);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_node_to_reset() {
         // 4 bytes.
-        let mut delta_writer = DeltaWriter::with_mtu(90);
+        let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
         // +37 bytes.
-        assert!(delta_writer.add_node(node1, heartbeat));
+        assert!(delta_writer.try_add_node(node1, heartbeat));
 
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -478,7 +666,7 @@ mod tests {
             }
         ));
         // +23 bytes.
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
@@ -488,23 +676,27 @@ mod tests {
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
-        assert!(!delta_writer.add_node_to_reset(node2));
+        assert!(!delta_writer.try_add_node_to_reset(node2));
 
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 87);
+        // The block got compressed.
+        test_aux_delta_writer(delta_writer, 72);
     }
 
     #[test]
     fn test_delta_serialization_exceed_mtu_on_add_kv() {
-        // 4 bytes.
-        let mut delta_writer = DeltaWriter::with_mtu(86);
+        // 1 bytes.
+        let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
-        // +37 bytes.
-        assert!(delta_writer.add_node(node1, heartbeat));
-        // +23 bytes.
-        assert!(delta_writer.add_kv(
+
+        // + 3 bytes (block tag) + 35 bytes (node) + 1 byte (op tag)
+        // = 40
+        assert!(delta_writer.try_add_node(node1, heartbeat));
+
+        // +23 bytes (kv) + 1 (op tag) + 3 bytes (pessimistic block tag)
+        // = 67
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -512,30 +704,30 @@ mod tests {
                 tombstone: None,
             }
         ));
-        // +23 bytes.
-        assert!(!delta_writer.add_kv(
+
+        // +33 bytes (kv) + 1 (op tag)
+        // = 101 (exceeding mtu!)
+        assert!(!delta_writer.try_add_kv(
             "key12",
             VersionedValue {
-                value: "val12".to_string(),
+                value: "val12aaaaaaaaaabcc".to_string(),
                 version: 2,
                 tombstone: None,
             }
         ));
-
-        let delta: Delta = delta_writer.into();
-        test_serdeser_aux(&delta, 64);
+        test_aux_delta_writer(delta_writer, 64);
     }
 
     #[test]
     #[should_panic]
     fn test_delta_serialization_panic_if_add_after_exceed() {
-        let mut delta_writer = DeltaWriter::with_mtu(62);
+        let mut delta_writer = DeltaSerializer::with_mtu(62);
 
         let node1 = ChitchatId::for_local_test(10_001);
         let heartbeat = Heartbeat(0);
-        assert!(delta_writer.add_node(node1, heartbeat));
+        assert!(delta_writer.try_add_node(node1, heartbeat));
 
-        assert!(delta_writer.add_kv(
+        assert!(delta_writer.try_add_kv(
             "key11",
             VersionedValue {
                 value: "val11".to_string(),
@@ -543,7 +735,7 @@ mod tests {
                 tombstone: None,
             }
         ));
-        assert!(!delta_writer.add_kv(
+        assert!(!delta_writer.try_add_kv(
             "key12",
             VersionedValue {
                 value: "val12".to_string(),
@@ -551,7 +743,7 @@ mod tests {
                 tombstone: None,
             }
         ));
-        delta_writer.add_kv(
+        delta_writer.try_add_kv(
             "key13",
             VersionedValue {
                 value: "val12".to_string(),
@@ -559,5 +751,18 @@ mod tests {
                 tombstone: None,
             },
         );
+    }
+
+    #[test]
+    fn test_delta_op_tag() {
+        let mut num_valid_tags = 0;
+        for b in 0..=u8::MAX {
+            if let Ok(tag) = DeltaOpTag::try_from(b) {
+                let tag_byte: u8 = tag.into();
+                assert_eq!(b, tag_byte);
+                num_valid_tags += 1;
+            }
+        }
+        assert_eq!(num_valid_tags, 3);
     }
 }

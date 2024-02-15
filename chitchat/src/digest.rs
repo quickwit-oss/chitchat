@@ -45,7 +45,18 @@ impl Serializable for Digest {
             node_digest.max_version.serialize(buf);
         }
     }
+    fn serialized_len(&self) -> usize {
+        let mut len = (self.node_digests.len() as u16).serialized_len();
+        for (chitchat_id, node_digest) in &self.node_digests {
+            len += chitchat_id.serialized_len();
+            len += node_digest.heartbeat.serialized_len();
+            len += node_digest.max_version.serialized_len();
+        }
+        len
+    }
+}
 
+impl Deserializable for Digest {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let num_nodes = u16::deserialize(buf)?;
         let mut node_digests: BTreeMap<ChitchatId, NodeDigest> = Default::default();
@@ -58,15 +69,5 @@ impl Serializable for Digest {
             node_digests.insert(chitchat_id, node_digest);
         }
         Ok(Digest { node_digests })
-    }
-
-    fn serialized_len(&self) -> usize {
-        let mut len = (self.node_digests.len() as u16).serialized_len();
-        for (chitchat_id, node_digest) in &self.node_digests {
-            len += chitchat_id.serialized_len();
-            len += node_digest.heartbeat.serialized_len();
-            len += node_digest.max_version.serialized_len();
-        }
-        len
     }
 }

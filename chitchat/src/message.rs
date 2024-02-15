@@ -4,7 +4,7 @@ use anyhow::Context;
 
 use crate::delta::Delta;
 use crate::digest::Digest;
-use crate::serialize::Serializable;
+use crate::serialize::{Deserializable, Serializable};
 
 /// Chitchat message.
 ///
@@ -73,6 +73,21 @@ impl Serializable for ChitchatMessage {
         }
     }
 
+    fn serialized_len(&self) -> usize {
+        match self {
+            ChitchatMessage::Syn { cluster_id, digest } => {
+                1 + cluster_id.serialized_len() + digest.serialized_len()
+            }
+            ChitchatMessage::SynAck { digest, delta } => {
+                1 + digest.serialized_len() + delta.serialized_len()
+            }
+            ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
+            ChitchatMessage::BadCluster => 1,
+        }
+    }
+}
+
+impl Deserializable for ChitchatMessage {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .first()
@@ -98,21 +113,6 @@ impl Serializable for ChitchatMessage {
             MessageType::BadCluster => Ok(Self::BadCluster),
         }
     }
-
-    fn serialized_len(&self) -> usize {
-        match self {
-            ChitchatMessage::Syn { cluster_id, digest } => {
-                1 + cluster_id.serialized_len() + digest.serialized_len()
-            }
-            ChitchatMessage::SynAck { digest, delta } => syn_ack_serialized_len(digest, delta),
-            ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
-            ChitchatMessage::BadCluster => 1,
-        }
-    }
-}
-
-pub(crate) fn syn_ack_serialized_len(digest: &Digest, delta: &Delta) -> usize {
-    1 + digest.serialized_len() + delta.serialized_len()
 }
 
 #[cfg(test)]
@@ -149,7 +149,8 @@ mod tests {
                 digest: Digest::default(),
                 delta: Delta::default(),
             };
-            test_serdeser_aux(&syn_ack, 7);
+            // 1 (message tag) + 2 (digest len) + 1 (delta end op)
+            test_serdeser_aux(&syn_ack, 4);
         }
         {
             // 2 bytes.
@@ -165,6 +166,7 @@ mod tests {
             delta.add_node(node.clone(), Heartbeat(0));
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, Some(5));
+            delta.set_serialized_len(70);
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
             // 1 bytes (syn ack message) + 45 bytes (digest) + 69 bytes (delta).
@@ -177,7 +179,7 @@ mod tests {
         {
             let delta = Delta::default();
             let ack = ChitchatMessage::Ack { delta };
-            test_serdeser_aux(&ack, 5);
+            test_serdeser_aux(&ack, 2);
         }
         {
             // 4 bytes.
@@ -187,7 +189,7 @@ mod tests {
             delta.add_node(node.clone(), Heartbeat(0));
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, Some(5));
-
+            delta.set_serialized_len(70);
             let ack = ChitchatMessage::Ack { delta };
             test_serdeser_aux(&ack, 71);
         }
