@@ -76,7 +76,7 @@ impl Chitchat {
         let self_node_state = chitchat.self_node_state();
 
         // Immediately mark the node as alive to ensure it responds to SYN messages.
-        self_node_state.update_heartbeat();
+        self_node_state.inc_heartbeat();
 
         // Set initial key/value pairs.
         for (key, value) in initial_key_values {
@@ -94,15 +94,22 @@ impl Chitchat {
         }
     }
 
-    fn process_delta(&mut self, delta: Delta) {
-        // Warning: order matters here.
-        // `report_heartbeats` will compare the current known heartbeat with the one
-        // in the delta, while `apply_delta` is actually updating this heartbeat.
-        self.report_heartbeats(&delta);
-        self.cluster_state.apply_delta(delta);
+    /// Digest contains important information about the list of members in
+    /// the cluster.
+    fn process_digest(&mut self, digest: &Digest) {
+        for (chitchat_id, node_digest) in &digest.node_digests {
+            self.report_heartbeat(chitchat_id, node_digest.heartbeat);
+        }
     }
 
+    fn process_delta(&mut self, delta: Delta) {
+        for node_delta in &delta.node_deltas {
+            self.report_heartbeat(&node_delta.chitchat_id, node_delta.heartbeat);
+        }
+        self.cluster_state.apply_delta(delta);
+    }
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
+        self.update_self_heartbeat();
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 if cluster_id != self.cluster_id() {
@@ -113,7 +120,7 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-
+                self.process_digest(&digest);
                 let scheduled_for_deletion: HashSet<_> =
                     self.scheduled_for_deletion_nodes().collect();
                 let self_digest = self.compute_digest(&scheduled_for_deletion);
@@ -130,6 +137,7 @@ impl Chitchat {
                 })
             }
             ChitchatMessage::SynAck { digest, delta } => {
+                self.process_digest(&digest);
                 self.process_delta(delta);
                 let scheduled_for_deletion =
                     self.scheduled_for_deletion_nodes().collect::<HashSet<_>>();
@@ -162,32 +170,21 @@ impl Chitchat {
 
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
-    fn report_heartbeats(&mut self, delta: &Delta) {
-        for node_delta in &delta.node_deltas {
-            if let Some(node_state) = self.cluster_state.node_states.get(&node_delta.chitchat_id) {
-                if node_state.heartbeat() < node_delta.heartbeat {
-                    self.failure_detector
-                        .report_heartbeat(&node_delta.chitchat_id);
-                }
-            } else {
-                self.failure_detector
-                    .report_unknown(&node_delta.chitchat_id);
-                self.failure_detector
-                    .update_node_liveness(&node_delta.chitchat_id);
-            }
+    fn report_heartbeat(&mut self, chitchat_id: &ChitchatId, heartbeat: Heartbeat) {
+        let node_state = self.cluster_state.node_state_mut(chitchat_id);
+        if node_state.try_set_heartbeat(heartbeat) {
+            self.failure_detector.report_heartbeat(chitchat_id);
         }
     }
 
     /// Marks the node as dead or alive depending on the new phi values and updates the live nodes
     /// watcher accordingly.
     pub(crate) fn update_nodes_liveness(&mut self) {
-        self.cluster_state
-            .nodes()
-            .filter(|&chitchat_id| *chitchat_id != self.config.chitchat_id)
-            .for_each(|chitchat_id| {
+        for chitchat_id in self.cluster_state.nodes() {
+            if chitchat_id != &self.config.chitchat_id {
                 self.failure_detector.update_node_liveness(chitchat_id);
-            });
-
+            }
+        }
         let current_live_nodes = self
             .live_nodes()
             .map(|chitchat_id| {
@@ -282,8 +279,8 @@ impl Chitchat {
         ClusterStateSnapshot::from(&self.cluster_state)
     }
 
-    pub(crate) fn update_heartbeat(&mut self) {
-        self.self_node_state().update_heartbeat();
+    pub(crate) fn update_self_heartbeat(&mut self) {
+        self.self_node_state().inc_heartbeat();
     }
 
     pub(crate) fn cluster_state(&self) -> &ClusterState {

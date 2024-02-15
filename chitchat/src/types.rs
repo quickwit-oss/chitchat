@@ -76,7 +76,7 @@ pub struct Heartbeat(pub(crate) u64);
 
 impl Heartbeat {
     pub(crate) fn inc(&mut self) {
-        self.0 += 1;
+        self.0 = self.0.wrapping_add(1);
     }
 }
 

@@ -281,7 +281,7 @@ impl Server {
             seed_nodes,
         );
 
-        chitchat_guard.update_heartbeat();
+        chitchat_guard.update_self_heartbeat();
         chitchat_guard.gc_keys_marked_for_deletion();
 
         // Drop lock to prevent deadlock in [`UdpSocket::gossip`].
@@ -579,12 +579,20 @@ mod tests {
         // Add our test socket to the server's nodes.
         server_handle
             .with_chitchat(|server_chitchat| {
-                server_chitchat.update_heartbeat();
+                server_chitchat.update_self_heartbeat();
                 let syn = server_chitchat.create_syn_message();
                 let syn_ack = test_chitchat.process_message(syn).unwrap();
                 server_chitchat.process_message(syn_ack);
             })
             .await;
+
+        let node_state = test_chitchat
+            .cluster_state()
+            .node_state(&server_id)
+            .unwrap();
+        let heartbeat = node_state.heartbeat();
+
+        assert_eq!(heartbeat, Heartbeat(2));
 
         // Wait for syn, with updated heartbeat
         let (_, syn) = timeout(test_transport.recv()).await.unwrap();
@@ -603,7 +611,7 @@ mod tests {
 
         let node_delta = delta.get(&server_id).unwrap();
         let heartbeat = node_delta.heartbeat;
-        assert_eq!(heartbeat, Heartbeat(3));
+        assert_eq!(heartbeat, Heartbeat(5));
 
         server_handle.shutdown().await.unwrap();
     }

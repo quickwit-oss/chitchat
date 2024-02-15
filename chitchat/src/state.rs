@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Bound;
-use std::time::Instant;
 
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
@@ -24,9 +23,6 @@ pub struct NodeState {
     key_values: BTreeMap<String, VersionedValue>,
     max_version: Version,
     #[serde(skip)]
-    #[serde(default = "Instant::now")]
-    last_heartbeat: Instant,
-    #[serde(skip)]
     listeners: Listeners,
 }
 
@@ -36,7 +32,6 @@ impl Debug for NodeState {
             .field("heartbeat", &self.heartbeat)
             .field("key_values", &self.key_values)
             .field("max_version", &self.max_version)
-            .field("last_heartbeat", &self.last_heartbeat)
             .finish()
     }
 }
@@ -48,7 +43,6 @@ impl NodeState {
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
-            last_heartbeat: Instant::now(),
             listeners,
         }
     }
@@ -63,7 +57,6 @@ impl NodeState {
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: Default::default(),
-            last_heartbeat: Instant::now(),
             listeners: Listeners::default(),
         }
     }
@@ -144,8 +137,20 @@ impl NodeState {
         versioned_value.value = "".to_string();
     }
 
-    pub(crate) fn update_heartbeat(&mut self) {
+    pub(crate) fn inc_heartbeat(&mut self) {
         self.heartbeat.inc();
+    }
+
+    /// Attempts to set the heartbeat of another node.
+    /// If the value is actually not an update, just ignore the data and return false.
+    /// Otherwise, returns true.
+    pub fn try_set_heartbeat(&mut self, heartbeat_new_value: Heartbeat) -> bool {
+        if heartbeat_new_value >= self.heartbeat {
+            self.heartbeat = heartbeat_new_value;
+            true
+        } else {
+            false
+        }
     }
 
     fn digest(&self) -> NodeDigest {
@@ -269,6 +274,8 @@ impl ClusterState {
 
     pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
+        // Most of the time the entry is already present. We avoid cloning chitchat_id with
+        // this if statement.
         self.node_states
             .entry(chitchat_id.clone())
             .or_insert_with(|| NodeState::new(chitchat_id.clone(), self.listeners.clone()))
@@ -299,17 +306,10 @@ impl ClusterState {
         for node_delta in delta.node_deltas {
             let NodeDelta {
                 chitchat_id,
-                heartbeat,
                 key_values,
+                ..
             } = node_delta;
-            let node_state = self
-                .node_states
-                .entry(chitchat_id.clone())
-                .or_insert_with(|| NodeState::new(chitchat_id, self.listeners.clone()));
-            if node_state.heartbeat < heartbeat {
-                node_state.heartbeat = heartbeat;
-                node_state.last_heartbeat = Instant::now();
-            }
+            let node_state = self.node_state_mut(&chitchat_id);
             for (key, versioned_value) in key_values {
                 node_state.max_version = node_state.max_version.max(versioned_value.version);
                 node_state.set_versioned_value(key, versioned_value);
