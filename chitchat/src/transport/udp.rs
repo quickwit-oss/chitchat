@@ -13,14 +13,8 @@ pub struct UdpTransport;
 #[async_trait]
 impl Transport for UdpTransport {
     async fn open(&self, bind_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
-        let socket = tokio::net::UdpSocket::bind(bind_addr)
-            .await
-            .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
-        Ok(Box::new(UdpSocket {
-            buf_send: Vec::with_capacity(MAX_UDP_DATAGRAM_PAYLOAD_SIZE),
-            buf_recv: Box::new([0u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]),
-            socket,
-        }))
+        let udp_socket = UdpSocket::open(bind_addr).await?;
+        Ok(Box::new(udp_socket))
     }
 }
 
@@ -28,6 +22,19 @@ pub struct UdpSocket {
     buf_send: Vec<u8>,
     buf_recv: Box<[u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]>,
     socket: tokio::net::UdpSocket,
+}
+
+impl UdpSocket {
+    pub async fn open(bind_addr: SocketAddr) -> anyhow::Result<UdpSocket> {
+        let socket = tokio::net::UdpSocket::bind(bind_addr)
+            .await
+            .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
+        Ok(UdpSocket {
+            buf_send: Vec::with_capacity(MAX_UDP_DATAGRAM_PAYLOAD_SIZE),
+            buf_recv: Box::new([0u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]),
+            socket,
+        })
+    }
 }
 
 #[async_trait]

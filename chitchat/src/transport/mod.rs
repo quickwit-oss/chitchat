@@ -9,7 +9,7 @@ mod udp;
 mod utils;
 
 pub use channel::{ChannelTransport, Statistics};
-pub use udp::UdpTransport;
+pub use udp::{UdpSocket, UdpTransport};
 pub use utils::TransportExt;
 
 #[async_trait]
