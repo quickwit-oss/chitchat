@@ -86,7 +86,8 @@ impl Chitchat {
     }
 
     pub(crate) fn create_syn_message(&self) -> ChitchatMessage {
-        let digest = self.compute_digest();
+        let scheduled_for_deletion: HashSet<_> = self.scheduled_for_deletion_nodes().collect();
+        let digest = self.compute_digest(&scheduled_for_deletion);
         ChitchatMessage::Syn {
             cluster_id: self.config.cluster_id.clone(),
             digest,
@@ -112,13 +113,15 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-                let dead_nodes: HashSet<_> = self.dead_nodes().collect();
-                let self_digest = self.compute_digest();
+
+                let scheduled_for_deletion: HashSet<_> =
+                    self.scheduled_for_deletion_nodes().collect();
+                let self_digest = self.compute_digest(&scheduled_for_deletion);
                 let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 - digest.serialized_len();
                 let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
                     delta_mtu,
-                    &dead_nodes,
+                    &scheduled_for_deletion,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
                 Some(ChitchatMessage::SynAck {
@@ -128,11 +131,12 @@ impl Chitchat {
             }
             ChitchatMessage::SynAck { digest, delta } => {
                 self.process_delta(delta);
-                let dead_nodes = self.dead_nodes().collect::<HashSet<_>>();
+                let scheduled_for_deletion =
+                    self.scheduled_for_deletion_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
-                    &dead_nodes,
+                    &scheduled_for_deletion,
                     self.config.marked_for_deletion_grace_period as u64,
                 );
                 Some(ChitchatMessage::Ack { delta })
@@ -254,6 +258,11 @@ impl Chitchat {
         self.failure_detector.dead_nodes()
     }
 
+    /// Returns the set of nodes considered dead by the failure detector.
+    pub fn scheduled_for_deletion_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
+        self.failure_detector.scheduled_for_deletion_nodes()
+    }
+
     /// Returns the set of seed nodes.
     pub fn seed_nodes(&self) -> HashSet<SocketAddr> {
         self.cluster_state.seed_addrs()
@@ -282,8 +291,9 @@ impl Chitchat {
     }
 
     /// Computes the node's digest.
-    fn compute_digest(&self) -> Digest {
-        self.cluster_state.compute_digest()
+    fn compute_digest(&self, scheduled_for_deletion_nodes: &HashSet<&ChitchatId>) -> Digest {
+        self.cluster_state
+            .compute_digest(scheduled_for_deletion_nodes)
     }
 
     /// Subscribes a callback that will be called every time a key matching the supplied prefix
@@ -582,9 +592,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dead_node_should_not_be_gossiped_when_node_joins() -> anyhow::Result<()> {
+    async fn test_dead_node_kvs_are_when_node_joins() -> anyhow::Result<()> {
         let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
-        let mut nodes = setup_nodes(40001..=40004, &transport).await;
+        // starting 2 nodes.
+        let mut nodes = setup_nodes(40001..=40002, &transport).await;
+
+        // Let's add a key to node1.
+        let node1_id = {
+            let node1 = nodes.first().unwrap();
+            let node1_chitchat = node1.chitchat();
+            node1_chitchat
+                .lock()
+                .await
+                .self_node_state()
+                .set("test_key", "test_val");
+            node1.chitchat_id().clone()
+        };
+
         {
             let node2 = nodes.get(1).unwrap();
             assert_eq!(node2.chitchat_id().advertise_port(), 40002);
@@ -593,54 +617,67 @@ mod tests {
                 &[
                     ChitchatId::for_local_test(40001),
                     ChitchatId::for_local_test(40002),
-                    ChitchatId::for_local_test(40003),
-                    ChitchatId::for_local_test(40004),
                 ],
             )
             .await;
+            let node2_chitchat = node2.chitchat();
+            // We have received node3's key
+            let value = node2_chitchat
+                .lock()
+                .await
+                .node_state(&node1_id)
+                .unwrap()
+                .get("test_key")
+                .unwrap()
+                .to_string();
+            assert_eq!(&value, "test_val");
         }
 
-        // Take node 3 down.
-        let node3 = nodes.remove(2);
-        assert_eq!(node3.chitchat_id().advertise_port(), 40003);
-        node3.shutdown().await.unwrap();
+        // Take node 1 down.
+        let node1 = nodes.remove(0);
+        assert_eq!(node1.chitchat_id().advertise_port(), 40001);
+        node1.shutdown().await.unwrap();
 
+        // Node 2 has detected that node 1 is missing.
         {
-            let node2 = nodes.get(1).unwrap();
+            let node2 = nodes.first().unwrap();
             assert_eq!(node2.chitchat_id().advertise_port(), 40002);
-            wait_for_chitchat_state(
-                node2.chitchat(),
-                &[
-                    ChitchatId::for_local_test(40_001),
-                    ChitchatId::for_local_test(40002),
-                    ChitchatId::for_local_test(40_004),
-                ],
-            )
-            .await;
+            wait_for_chitchat_state(node2.chitchat(), &[ChitchatId::for_local_test(40_002)]).await;
         }
 
-        // Restart node at localhost:40003 with new name
-        let mut new_config = ChitchatConfig::for_test(40_003);
+        // Restart node at localhost:40001 with new name
+        let mut new_config = ChitchatConfig::for_test(40_001);
         new_config.chitchat_id.node_id = "new_node".to_string();
         let new_chitchat_id = new_config.chitchat_id.clone();
-        let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_addr;
+        let seed_addr = ChitchatId::for_local_test(40_001).gossip_advertise_addr;
         new_config.seed_nodes = vec![seed_addr.to_string()];
-        let new_node_chitchat = spawn_chitchat(new_config, Vec::new(), &transport)
+        let new_node_chitchat_handle = spawn_chitchat(new_config, Vec::new(), &transport)
             .await
             .unwrap();
 
+        let new_node_chitchat = new_node_chitchat_handle.chitchat();
         wait_for_chitchat_state(
-            new_node_chitchat.chitchat(),
-            &[
-                ChitchatId::for_local_test(40_001),
-                ChitchatId::for_local_test(40_002),
-                new_chitchat_id,
-                ChitchatId::for_local_test(40_004),
-            ],
+            new_node_chitchat.clone(),
+            &[ChitchatId::for_local_test(40_002), new_chitchat_id],
         )
         .await;
 
-        nodes.push(new_node_chitchat);
+        {
+            let new_node_chitchat_guard = new_node_chitchat.lock().await;
+            let test_val = new_node_chitchat_guard
+                .node_state(&node1_id)
+                .unwrap()
+                .get("test_key")
+                .unwrap();
+            assert_eq!(test_val, "test_val");
+
+            // Let's check that node1 is seen as dead.
+            let dead_nodes: HashSet<&ChitchatId> = new_node_chitchat_guard.dead_nodes().collect();
+            assert_eq!(dead_nodes.len(), 1);
+            assert!(dead_nodes.contains(&node1_id));
+        }
+
+        nodes.push(new_node_chitchat_handle);
         shutdown_nodes(nodes).await?;
         Ok(())
     }
