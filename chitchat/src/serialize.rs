@@ -93,7 +93,7 @@ impl Deserializable for u64 {
     }
 }
 
-impl Serializable for Option<u64> {
+impl Serializable for Option<Heartbeat> {
     fn serialize(&self, buf: &mut Vec<u8>) {
         self.is_some().serialize(buf);
         if let Some(tombstone) = &self {
@@ -109,12 +109,12 @@ impl Serializable for Option<u64> {
     }
 }
 
-impl Deserializable for Option<u64> {
+impl Deserializable for Option<Heartbeat> {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let is_some: bool = Deserializable::deserialize(buf)?;
         if is_some {
-            let u64_value = Deserializable::deserialize(buf)?;
-            return Ok(Some(u64_value));
+            let heartbeat = Deserializable::deserialize(buf)?;
+            return Ok(Some(heartbeat));
         }
         Ok(None)
     }
@@ -293,18 +293,18 @@ impl Deserializable for ChitchatId {
 
 impl Serializable for Heartbeat {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        self.0.serialize(buf);
+        u64::from(*self).serialize(buf);
     }
 
     fn serialized_len(&self) -> usize {
-        self.0.serialized_len()
+        u64::from(*self).serialized_len()
     }
 }
 
 impl Deserializable for Heartbeat {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let heartbeat = u64::deserialize(buf)?;
-        Ok(Self(heartbeat))
+        Ok(Heartbeat::from(heartbeat))
     }
 }
 
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_serialize_heartbeat() {
-        test_serdeser_aux(&Heartbeat(1), 8);
+        test_serdeser_aux(&Heartbeat::from(1), 8);
     }
 
     #[test]
@@ -526,8 +526,8 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_option_u64() {
-        test_serdeser_aux(&Some(1), 9);
+    fn test_serialize_option_heartbeat() {
+        test_serdeser_aux(&Some(Heartbeat::from(1)), 9);
         test_serdeser_aux(&None, 1);
     }
 

@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
             dead_node_grace_period: Duration::from_secs(10),
             ..FailureDetectorConfig::default()
         },
-        marked_for_deletion_grace_period: 60,
+        marked_for_deletion_grace_period: Duration::from_secs(60),
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();

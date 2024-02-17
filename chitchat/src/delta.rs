@@ -116,7 +116,7 @@ impl Deserializable for DeltaOp {
                 let key = String::deserialize(buf)?;
                 let value = String::deserialize(buf)?;
                 let version = u64::deserialize(buf)?;
-                let tombstone = Option::<u64>::deserialize(buf)?;
+                let tombstone = Option::<Heartbeat>::deserialize(buf)?;
                 let versioned_value: VersionedValue = VersionedValue {
                     value,
                     version,
@@ -267,7 +267,7 @@ impl Delta {
         key: &str,
         value: &str,
         version: crate::Version,
-        tombstone: Option<u64>,
+        tombstone: Option<Heartbeat>,
     ) {
         let node_delta = self
             .node_deltas
@@ -467,7 +467,7 @@ mod tests {
 
         // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
         assert!(delta_writer.try_add_node(node1, heartbeat));
 
@@ -488,12 +488,12 @@ mod tests {
             VersionedValue {
                 value: "".to_string(),
                 version: 2,
-                tombstone: Some(0),
+                tombstone: Some(Heartbeat::default()),
             },
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes
         assert!(delta_writer.try_add_node(node2, heartbeat));
 
@@ -525,7 +525,7 @@ mod tests {
 
         // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes = 8 bytes (heartbeat) + 27 bytes (node) +  2bytes (block length)
         assert!(delta_writer.try_add_node(node1, heartbeat));
 
@@ -550,7 +550,7 @@ mod tests {
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
         assert!(delta_writer.try_add_node(node2, heartbeat));
         test_aux_delta_writer(delta_writer, 80);
@@ -572,7 +572,7 @@ mod tests {
         assert!(delta_writer.try_add_node_to_reset(ChitchatId::for_local_test(10_000)));
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
 
         // +8 bytes (heartbeat) + 27 bytes (ChitchatId) + (1 op tag) + 3 bytes (pessimistic new
         // block) = 71
@@ -600,7 +600,7 @@ mod tests {
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +8 bytes (heartbeat) + 27 bytes (ChitchatId) + 1 byte (op tag)
         // = 155
         assert!(delta_writer.try_add_node(node2, heartbeat));
@@ -614,7 +614,7 @@ mod tests {
         let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(delta_writer.try_add_node(node1, heartbeat));
 
@@ -638,7 +638,7 @@ mod tests {
         ));
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
         assert!(!delta_writer.try_add_node(node2, heartbeat));
 
@@ -652,7 +652,7 @@ mod tests {
         let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         // +37 bytes.
         assert!(delta_writer.try_add_node(node1, heartbeat));
 
@@ -688,7 +688,7 @@ mod tests {
         let mut delta_writer = DeltaSerializer::with_mtu(100);
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
 
         // + 3 bytes (block tag) + 35 bytes (node) + 1 byte (op tag)
         // = 40
@@ -724,7 +724,7 @@ mod tests {
         let mut delta_writer = DeltaSerializer::with_mtu(62);
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let heartbeat = Heartbeat(0);
+        let heartbeat = Heartbeat::default();
         assert!(delta_writer.try_add_node(node1, heartbeat));
 
         assert!(delta_writer.try_add_kv(

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Bound;
+use std::time::Duration;
 
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
@@ -19,7 +20,7 @@ use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
     node_id: ChitchatId,
-    heartbeat: Heartbeat,
+    pub(crate) heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
     max_version: Version,
     #[serde(skip)]
@@ -40,7 +41,7 @@ impl NodeState {
     fn new(node_id: ChitchatId, listeners: Listeners) -> NodeState {
         NodeState {
             node_id,
-            heartbeat: Heartbeat(0),
+            heartbeat: Heartbeat::default(),
             key_values: Default::default(),
             max_version: Default::default(),
             listeners,
@@ -48,17 +49,12 @@ impl NodeState {
     }
 
     pub fn for_test() -> NodeState {
-        NodeState {
-            node_id: ChitchatId {
-                node_id: "test-node".to_string(),
-                generation_id: 0,
-                gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
-            },
-            heartbeat: Heartbeat(0),
-            key_values: Default::default(),
-            max_version: Default::default(),
-            listeners: Listeners::default(),
-        }
+        let node_id = ChitchatId {
+            node_id: "test-node".to_string(),
+            generation_id: 0,
+            gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
+        };
+        Self::new(node_id, Listeners::default())
     }
 
     /// Returns the node's last heartbeat value.
@@ -132,13 +128,9 @@ impl NodeState {
             return;
         };
         self.max_version += 1;
-        versioned_value.tombstone = Some(self.heartbeat.0);
+        versioned_value.tombstone = Some(self.heartbeat);
         versioned_value.version = self.max_version;
         versioned_value.value = "".to_string();
-    }
-
-    pub(crate) fn update_heartbeat(&mut self) {
-        self.heartbeat.inc();
     }
 
     fn digest(&self) -> NodeDigest {
@@ -157,13 +149,13 @@ impl NodeState {
     }
 
     /// Removes the keys marked for deletion such that `tombstone + grace_period > heartbeat`.
-    fn gc_keys_marked_for_deletion(&mut self, grace_period: u64) {
-        let heartbeat = self.heartbeat.0;
+    fn gc_keys_marked_for_deletion(&mut self, grace_period: Duration) {
+        let heartbeat = self.heartbeat;
         self.key_values
             .retain(|_, versioned_value: &mut VersionedValue| {
                 versioned_value
                     .tombstone
-                    .map(|tombstone: u64| tombstone + grace_period >= heartbeat)
+                    .map(|tombstone: Heartbeat| tombstone + grace_period >= heartbeat)
                     .unwrap_or(true)
             })
     }
@@ -322,7 +314,7 @@ impl ClusterState {
 
     pub fn gc_keys_marked_for_deletion(
         &mut self,
-        marked_for_deletion_grace_period: u64,
+        marked_for_deletion_grace_period: Duration,
         dead_nodes: &HashSet<ChitchatId>,
     ) {
         for (chitchat_id, node_state) in &mut self.node_states {
@@ -341,7 +333,7 @@ impl ClusterState {
         digest: &Digest,
         mtu: usize,
         scheduled_for_deletion: &HashSet<&ChitchatId>,
-        marked_for_deletion_grace_period: u64,
+        marked_for_deletion_grace_period: Duration,
     ) -> Delta {
         let mut stale_nodes = SortedStaleNodes::default();
         let mut nodes_to_reset = Vec::new();
@@ -354,7 +346,7 @@ impl ClusterState {
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
             };
-            if node_digest.heartbeat.0 + marked_for_deletion_grace_period < node_state.heartbeat.0 {
+            if node_digest.heartbeat + marked_for_deletion_grace_period < node_state.heartbeat {
                 warn!("Node to reset {chitchat_id:?}");
                 nodes_to_reset.push(chitchat_id);
                 stale_nodes.insert(chitchat_id, node_state);
@@ -391,7 +383,7 @@ impl ClusterState {
                     VersionedValue {
                         value: String::new(),
                         version: stale_node.node_state.max_version,
-                        tombstone: Some(0),
+                        tombstone: Some(Heartbeat::default()),
                     },
                 ) {
                     return delta_serializer.finish();
@@ -546,7 +538,7 @@ mod tests {
             let node_state = NodeState::for_test();
             let stale_node = StaleNode {
                 chitchat_id: &node,
-                heartbeat: Heartbeat(0),
+                heartbeat: Heartbeat::default(),
                 node_state: &node_state,
                 floor_version: 0,
             };
@@ -567,7 +559,7 @@ mod tests {
 
             let stale_node = StaleNode {
                 chitchat_id: &node,
-                heartbeat: Heartbeat(0),
+                heartbeat: Heartbeat::default(),
                 node_state: &node_state,
                 floor_version: 1,
             };
@@ -632,14 +624,22 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = NodeState::for_test();
-        stale_nodes.offer(&node1, &node1_state, &NodeDigest::new(Heartbeat(0), 0));
+        stale_nodes.offer(
+            &node1,
+            &node1_state,
+            &NodeDigest::new(Heartbeat::default(), 0),
+        );
 
         assert_eq!(stale_nodes.stale_nodes.len(), 0);
 
         let node2 = ChitchatId::for_local_test(10_002);
         let mut node2_state = NodeState::for_test();
-        node2_state.heartbeat = Heartbeat(1);
-        stale_nodes.offer(&node2, &node2_state, &NodeDigest::new(Heartbeat(0), 0));
+        node2_state.heartbeat = Heartbeat::from(1);
+        stale_nodes.offer(
+            &node2,
+            &node2_state,
+            &NodeDigest::new(Heartbeat::default(), 0),
+        );
 
         let expected_staleness = 1;
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
@@ -649,18 +649,26 @@ mod tests {
         node3_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.offer(&node3, &node3_state, &NodeDigest::new(Heartbeat(0), 0));
+        stale_nodes.offer(
+            &node3,
+            &node3_state,
+            &NodeDigest::new(Heartbeat::default(), 0),
+        );
 
         let expected_staleness = 1;
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 2);
 
         let node4 = ChitchatId::for_local_test(10_004);
         let mut node4_state = NodeState::for_test();
-        node4_state.heartbeat = Heartbeat(1);
+        node4_state.heartbeat = Heartbeat::from(1);
         node4_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.offer(&node4, &node4_state, &NodeDigest::new(Heartbeat(0), 0));
+        stale_nodes.offer(
+            &node4,
+            &node4_state,
+            &NodeDigest::new(Heartbeat::default(), 0),
+        );
 
         let expected_staleness = 2;
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
@@ -671,7 +679,7 @@ mod tests {
         let mut stale_nodes = SortedStaleNodes::default();
         let stale_node1 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_001),
-            heartbeat: Heartbeat(0),
+            heartbeat: Heartbeat::default(),
             node_state: &NodeState::for_test(),
             floor_version: 0,
         };
@@ -679,19 +687,19 @@ mod tests {
 
         let stale_node2 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_002),
-            heartbeat: Heartbeat(0),
+            heartbeat: Heartbeat::default(),
             node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         let stale_node3 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_003),
-            heartbeat: Heartbeat(0),
+            heartbeat: Heartbeat::default(),
             node_state: &NodeState::for_test(),
             floor_version: 0,
         };
         let stale_node4 = StaleNode {
             chitchat_id: &ChitchatId::for_local_test(10_004),
-            heartbeat: Heartbeat(0),
+            heartbeat: Heartbeat::default(),
             node_state: &NodeState::for_test(),
             floor_version: 0,
         };
@@ -799,7 +807,7 @@ mod tests {
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
         let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
-        node_state.heartbeat = Heartbeat(10);
+        node_state.heartbeat = Heartbeat::from(10);
         node_state.set("key", "1");
         node_state.mark_for_deletion("key");
         assert_eq!(
@@ -807,7 +815,7 @@ mod tests {
             &VersionedValue {
                 value: "".to_string(),
                 version: 2,
-                tombstone: Some(10),
+                tombstone: Some(10.into()),
             }
         );
         node_state.set("key", "2");
@@ -836,8 +844,8 @@ mod tests {
         let digest = cluster_state.compute_digest(&HashSet::new());
 
         let mut expected_node_digests = Digest::default();
-        expected_node_digests.add_node(node1.clone(), Heartbeat(0), 1);
-        expected_node_digests.add_node(node2.clone(), Heartbeat(0), 2);
+        expected_node_digests.add_node(node1.clone(), Heartbeat::default(), 1);
+        expected_node_digests.add_node(node2.clone(), Heartbeat::default(), 2);
 
         assert_eq!(&digest, &expected_node_digests);
     }
@@ -847,13 +855,13 @@ mod tests {
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
-        node1_state.heartbeat = Heartbeat(100);
+        node1_state.heartbeat = Heartbeat::from(Duration::from_secs(100));
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.mark_for_deletion("key_a"); // Version 2. Tombstone set to heartbeat 100.
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 13); // 3
-        node1_state.heartbeat = Heartbeat(110);
+        node1_state.heartbeat = Heartbeat::from(Duration::from_secs(110));
         // No GC if tombstone (=100) + grace_period <= heartbeat (=110).
-        cluster_state.gc_keys_marked_for_deletion(10, &HashSet::new());
+        cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10), &HashSet::new());
         cluster_state
             .node_state(&node1)
             .unwrap()
@@ -867,7 +875,7 @@ mod tests {
             .get("key_b")
             .unwrap();
         // GC if tombstone (=100) + grace_period > heartbeat (=110).
-        cluster_state.gc_keys_marked_for_deletion(9, &HashSet::new());
+        cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(9), &HashSet::new());
         assert!(cluster_state
             .node_state(&node1)
             .unwrap()
@@ -896,13 +904,13 @@ mod tests {
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 1); // 1
 
         let mut delta = Delta::default();
-        delta.add_node(node1.clone(), Heartbeat(0));
+        delta.add_node(node1.clone(), Heartbeat::default());
         delta.add_kv(&node1, "key_a", "4", 4, None);
         delta.add_kv(&node1, "key_b", "2", 2, None);
 
         // Reset node 2.
         delta.add_node_to_reset(node2.clone());
-        delta.add_node(node2.clone(), Heartbeat(0));
+        delta.add_node(node2.clone(), Heartbeat::default());
         delta.add_kv(&node2, "key_d", "4", 4, None);
         cluster_state.apply_delta(delta);
 
@@ -943,20 +951,24 @@ mod tests {
         cluster_state: &ClusterState,
         digest: &Digest,
         dead_nodes: &HashSet<&ChitchatId>,
-        expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, Option<u64>)],
+        expected_delta_atoms: &[(&ChitchatId, &str, &str, Version, Option<Heartbeat>)],
     ) {
         let max_delta = cluster_state.compute_partial_delta_respecting_mtu(
             digest,
             usize::MAX,
             dead_nodes,
-            10_000,
+            Duration::from_secs(10_000),
         );
         let mut buf = Vec::new();
         max_delta.serialize(&mut buf);
         let mut mtu_per_num_entries = Vec::new();
         for mtu in 100..buf.len() {
-            let delta =
-                cluster_state.compute_partial_delta_respecting_mtu(digest, mtu, dead_nodes, 10_000);
+            let delta = cluster_state.compute_partial_delta_respecting_mtu(
+                digest,
+                mtu,
+                dead_nodes,
+                Duration::from_secs(10_000),
+            );
             let num_tuples = delta.num_tuples();
             if mtu_per_num_entries.len() == num_tuples + 1 {
                 continue;
@@ -968,12 +980,16 @@ mod tests {
         for (num_entries, &mtu) in mtu_per_num_entries.iter().enumerate() {
             let mut expected_delta = Delta::default();
             for &(node, key, val, version, tombstone) in &expected_delta_atoms[..num_entries] {
-                expected_delta.add_node(node.clone(), Heartbeat(0));
+                expected_delta.add_node(node.clone(), Heartbeat::default());
                 expected_delta.add_kv(node, key, val, version, tombstone);
             }
             {
-                let delta = cluster_state
-                    .compute_partial_delta_respecting_mtu(digest, mtu, dead_nodes, 10_000);
+                let delta = cluster_state.compute_partial_delta_respecting_mtu(
+                    digest,
+                    mtu,
+                    dead_nodes,
+                    Duration::from_secs(10_000),
+                );
                 assert_eq!(&delta, &expected_delta);
             }
             {
@@ -981,7 +997,7 @@ mod tests {
                     digest,
                     mtu + 1,
                     dead_nodes,
-                    10_000,
+                    Duration::from_secs(10_000),
                 );
                 assert_eq!(&delta, &expected_delta);
             }
@@ -1014,8 +1030,8 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node1.clone(), Heartbeat(0), 1);
-        digest.add_node(node2.clone(), Heartbeat(0), 2);
+        digest.add_node(node1.clone(), Heartbeat::default(), 1);
+        digest.add_node(node2.clone(), Heartbeat::default(), 2);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1023,7 +1039,7 @@ mod tests {
             &HashSet::new(),
             &[
                 (&node2, "key_c", "3", 3, None),
-                (&node2, "key_d", "", 5, Some(0)),
+                (&node2, "key_d", "", 5, Some(0.into())),
                 (&node1, "key_b", "2", 2, None),
             ],
         );
@@ -1036,8 +1052,8 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node1.clone(), Heartbeat(0), 1);
-        digest.add_node(node2.clone(), Heartbeat(0), 2);
+        digest.add_node(node1.clone(), Heartbeat::default(), 1);
+        digest.add_node(node2.clone(), Heartbeat::default(), 2);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1045,7 +1061,7 @@ mod tests {
             &HashSet::new(),
             &[
                 (&node2, "key_c", "3", 3, None),
-                (&node2, "key_d", "", 5, Some(0)),
+                (&node2, "key_d", "", 5, Some(0.into())),
                 (&node1, "key_b", "2", 2, None),
             ],
         );
@@ -1058,7 +1074,7 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node2.clone(), Heartbeat(0), 3);
+        digest.add_node(node2.clone(), Heartbeat::default(), 3);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1099,7 +1115,7 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
-        node1_state.heartbeat = Heartbeat(10000);
+        node1_state.heartbeat = Heartbeat::from(Duration::from_secs(10_000));
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
@@ -1109,21 +1125,21 @@ mod tests {
 
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
-        digest.add_node(node1.clone(), Heartbeat(0), 1);
+        digest.add_node(node1.clone(), Heartbeat::default(), 1);
         {
             let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
-                10_000,
+                Duration::from_secs(10_000),
             );
             assert!(delta.nodes_to_reset.is_empty());
             let mut expected_delta = Delta::default();
-            expected_delta.add_node(node1.clone(), Heartbeat(10_000));
+            expected_delta.add_node(node1.clone(), Heartbeat::from(Duration::from_secs(10_000)));
             expected_delta.add_kv(&node1, "key_b", "2", 2, None);
-            expected_delta.add_node(node2.clone(), Heartbeat(0));
+            expected_delta.add_node(node2.clone(), Heartbeat::default());
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
-            expected_delta.set_serialized_len(78);
+            expected_delta.set_serialized_len(79);
             assert_eq!(delta, expected_delta);
         }
         {
@@ -1134,16 +1150,16 @@ mod tests {
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                 &HashSet::new(),
-                9_999,
+                Duration::from_secs(9_999),
             );
             let mut expected_delta = Delta::default();
             expected_delta.add_node_to_reset(node1.clone());
-            expected_delta.add_node(node1.clone(), Heartbeat(10_000));
+            expected_delta.add_node(node1.clone(), Heartbeat::from(Duration::from_secs(10_000)));
             expected_delta.add_kv(&node1, "key_a", "1", 1, None);
             expected_delta.add_kv(&node1, "key_b", "2", 2, None);
-            expected_delta.add_node(node2.clone(), Heartbeat(0));
+            expected_delta.add_node(node2.clone(), Heartbeat::default());
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, None);
-            expected_delta.set_serialized_len(91);
+            expected_delta.set_serialized_len(92);
             assert_eq!(delta, expected_delta);
         }
     }

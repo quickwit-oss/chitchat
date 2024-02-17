@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::ops::Add;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +53,7 @@ impl ChitchatId {
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
-    pub tombstone: Option<u64>,
+    pub tombstone: Option<Heartbeat>,
 }
 
 #[cfg(test)]
@@ -72,16 +74,30 @@ pub type Version = u64;
 #[derive(
     Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize,
 )]
-pub struct Heartbeat(pub(crate) u64);
+pub struct Heartbeat(Duration);
 
-impl Heartbeat {
-    pub(crate) fn inc(&mut self) {
-        self.0 += 1;
+impl From<Duration> for Heartbeat {
+    fn from(duration: Duration) -> Self {
+        Heartbeat(duration)
+    }
+}
+
+impl Add<Duration> for Heartbeat {
+    type Output = Self;
+
+    fn add(self, rhs: Duration) -> Self::Output {
+        Self(self.0 + rhs)
     }
 }
 
 impl From<Heartbeat> for u64 {
     fn from(heartbeat: Heartbeat) -> Self {
-        heartbeat.0
+        heartbeat.0.as_millis() as u64
+    }
+}
+
+impl From<u64> for Heartbeat {
+    fn from(heartbeat_millis: u64) -> Heartbeat {
+        Heartbeat(Duration::from_millis(heartbeat_millis))
     }
 }

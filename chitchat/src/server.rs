@@ -603,7 +603,7 @@ mod tests {
 
         let node_delta = delta.get(&server_id).unwrap();
         let heartbeat = node_delta.heartbeat;
-        assert_eq!(heartbeat, Heartbeat(3));
+        assert!(heartbeat > Heartbeat::default());
 
         server_handle.shutdown().await.unwrap();
     }

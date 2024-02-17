@@ -22,7 +22,7 @@ pub struct ChitchatConfig {
     //   and the delta is populated with all keys and values.
     // - Apply delta: for a node flagged "to be reset", Chitchat will remove the node state and
     //   populate a fresh new node state with the keys and values present in the delta.
-    pub marked_for_deletion_grace_period: usize,
+    pub marked_for_deletion_grace_period: Duration,
 }
 
 impl ChitchatConfig {
@@ -37,7 +37,7 @@ impl ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            marked_for_deletion_grace_period: 10_000,
+            marked_for_deletion_grace_period: Duration::from_secs(10_000),
         }
     }
 }
@@ -56,7 +56,7 @@ impl Default for ChitchatConfig {
             failure_detector_config: Default::default(),
             // Each heartbeat increments the version, with one heartbeat each second
             // 86400 ~ 24h.
-            marked_for_deletion_grace_period: 86400,
+            marked_for_deletion_grace_period: Duration::from_secs(86_400),
         }
     }
 }

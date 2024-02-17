@@ -132,7 +132,7 @@ mod tests {
         {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat::default(), 0);
 
             let syn = ChitchatMessage::Syn {
                 cluster_id: "cluster-a".to_string(),
@@ -157,15 +157,15 @@ mod tests {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
             // +43 bytes = 27 bytes (ChitchatId) + 8 (hearbeat) + 8 (max_version).
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat::default(), 0);
 
             // 4 bytes
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), Heartbeat(0));
+            delta.add_node(node.clone(), Heartbeat::default());
             // +29 bytes.
-            delta.add_kv(&node, "key", "value", 0, Some(5));
+            delta.add_kv(&node, "key", "value", 0, Some(5.into()));
             delta.set_serialized_len(70);
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
@@ -186,9 +186,9 @@ mod tests {
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), Heartbeat(0));
+            delta.add_node(node.clone(), Heartbeat::default());
             // +29 bytes.
-            delta.add_kv(&node, "key", "value", 0, Some(5));
+            delta.add_kv(&node, "key", "value", 0, Some(5.into()));
             delta.set_serialized_len(70);
             let ack = ChitchatMessage::Ack { delta };
             test_serdeser_aux(&ack, 71);

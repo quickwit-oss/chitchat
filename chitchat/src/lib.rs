@@ -16,6 +16,7 @@ mod types;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::once;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use delta::Delta;
 use failure_detector::FailureDetector;
@@ -53,6 +54,7 @@ pub struct Chitchat {
     previous_live_nodes: HashMap<ChitchatId, Version>,
     live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
     live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
+    heartbeat_origin: Instant,
 }
 
 impl Chitchat {
@@ -71,12 +73,10 @@ impl Chitchat {
             previous_live_nodes,
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
+            heartbeat_origin: Instant::now(),
         };
 
         let self_node_state = chitchat.self_node_state();
-
-        // Immediately mark the node as alive to ensure it responds to SYN messages.
-        self_node_state.update_heartbeat();
 
         // Set initial key/value pairs.
         for (key, value) in initial_key_values {
@@ -122,7 +122,7 @@ impl Chitchat {
                     &digest,
                     delta_mtu,
                     &scheduled_for_deletion,
-                    self.config.marked_for_deletion_grace_period as u64,
+                    self.config.marked_for_deletion_grace_period,
                 );
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
@@ -137,7 +137,7 @@ impl Chitchat {
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
                     &scheduled_for_deletion,
-                    self.config.marked_for_deletion_grace_period as u64,
+                    self.config.marked_for_deletion_grace_period,
                 );
                 Some(ChitchatMessage::Ack { delta })
             }
@@ -154,10 +154,8 @@ impl Chitchat {
 
     fn gc_keys_marked_for_deletion(&mut self) {
         let dead_nodes = self.dead_nodes().cloned().collect::<HashSet<_>>();
-        self.cluster_state.gc_keys_marked_for_deletion(
-            self.config.marked_for_deletion_grace_period as u64,
-            &dead_nodes,
-        );
+        self.cluster_state
+            .gc_keys_marked_for_deletion(self.config.marked_for_deletion_grace_period, &dead_nodes);
     }
 
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
@@ -283,7 +281,8 @@ impl Chitchat {
     }
 
     pub(crate) fn update_heartbeat(&mut self) {
-        self.self_node_state().update_heartbeat();
+        let new_heartbeat: Heartbeat = Heartbeat::from(self.heartbeat_origin.elapsed());
+        self.self_node_state().heartbeat = new_heartbeat;
     }
 
     pub(crate) fn cluster_state(&self) -> &ClusterState {
@@ -402,7 +401,7 @@ mod tests {
                 initial_interval: Duration::from_millis(100),
                 ..Default::default()
             },
-            marked_for_deletion_grace_period: 10_000,
+            marked_for_deletion_grace_period: Duration::from_secs(10_000),
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
         spawn_chitchat(config, initial_kvs, transport)
