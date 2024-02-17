@@ -1,11 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-#[cfg(not(test))]
-use std::time::Instant;
 
-#[cfg(test)]
-use mock_instant::Instant;
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 use tracing::debug;
 
 use crate::ChitchatId;
@@ -287,15 +284,15 @@ impl BoundedArrayStats {
 mod tests {
     use std::time::Duration;
 
-    use mock_instant::MockClock;
     use rand::prelude::*;
 
     use super::{BoundedArrayStats, SamplingWindow};
     use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
     use crate::ChitchatId;
 
-    #[test]
-    fn test_failure_detector() {
+    #[tokio::test]
+    async fn test_failure_detector() {
+        tokio::time::pause();
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
@@ -308,7 +305,7 @@ mod tests {
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
             let chitchat_id = chitchat_ids_choices.choose(&mut rng).unwrap();
-            MockClock::advance(Duration::from_secs(*time_offset));
+            tokio::time::advance(Duration::from_secs(*time_offset)).await;
             failure_detector.report_heartbeat(chitchat_id);
         }
 
@@ -325,7 +322,7 @@ mod tests {
         assert_eq!(failure_detector.garbage_collect(), Vec::new());
 
         // stop reporting heartbeat for few seconds
-        MockClock::advance(Duration::from_secs(50));
+        tokio::time::advance(Duration::from_secs(50)).await;
         for chitchat_id in &chitchat_ids_choices {
             failure_detector.update_node_liveness(chitchat_id);
         }
@@ -338,7 +335,7 @@ mod tests {
         assert_eq!(failure_detector.garbage_collect(), Vec::new());
 
         // Wait for dead_node_grace_period & garbage collect.
-        MockClock::advance(Duration::from_secs(25 * 60 * 60));
+        tokio::time::advance(Duration::from_secs(25 * 60 * 60)).await;
         let garbage_collected_nodes = failure_detector.garbage_collect();
         assert_eq!(
             failure_detector
@@ -365,8 +362,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_failure_detector_node_state_from_live_to_down_to_live() {
+    #[tokio::test]
+    async fn test_failure_detector_node_state_from_live_to_down_to_live() {
+        tokio::time::pause();
         let mut rng = rand::thread_rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
         let intervals_choices = [1u64, 2];
@@ -374,7 +372,7 @@ mod tests {
 
         for _ in 0..=2000 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
-            MockClock::advance(Duration::from_secs(*time_offset));
+            tokio::time::advance(Duration::from_secs(*time_offset)).await;
             failure_detector.report_heartbeat(&node_1);
         }
 
@@ -388,7 +386,7 @@ mod tests {
         );
 
         // Check node-1 is down (stop reporting heartbeat).
-        MockClock::advance(Duration::from_secs(20));
+        tokio::time::advance(Duration::from_secs(20)).await;
         failure_detector.update_node_liveness(&node_1);
         assert_eq!(
             failure_detector
@@ -401,7 +399,7 @@ mod tests {
         // Check node-1 is back up (resume reporting heartbeat).
         for _ in 0..=500 {
             let time_offset = intervals_choices.choose(&mut rng).unwrap();
-            MockClock::advance(Duration::from_secs(*time_offset));
+            tokio::time::advance(Duration::from_secs(*time_offset)).await;
             failure_detector.report_heartbeat(&node_1);
         }
         failure_detector.update_node_liveness(&node_1);
@@ -414,14 +412,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_failure_detector_node_state_after_initial_interval() {
+    #[tokio::test]
+    async fn test_failure_detector_node_state_after_initial_interval() {
+        tokio::time::pause();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
         let chitchat_id = ChitchatId::for_local_test(10_001);
         failure_detector.report_heartbeat(&chitchat_id);
 
-        MockClock::advance(Duration::from_secs(1));
+        tokio::time::advance(Duration::from_secs(1)).await;
         failure_detector.update_node_liveness(&chitchat_id);
 
         let live_nodes = failure_detector
@@ -429,7 +428,7 @@ mod tests {
             .map(|chitchat_id| chitchat_id.node_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, vec!["node-10001"]);
-        MockClock::advance(Duration::from_secs(40));
+        tokio::time::advance(Duration::from_secs(40)).await;
         failure_detector.update_node_liveness(&chitchat_id);
 
         let live_nodes = failure_detector
@@ -439,13 +438,14 @@ mod tests {
         assert_eq!(live_nodes, Vec::<&str>::new());
     }
 
-    #[test]
-    fn test_sampling_window() {
+    #[tokio::test]
+    async fn test_sampling_window() {
+        tokio::time::pause();
         let mut sampling_window =
             SamplingWindow::new(10, Duration::from_secs(5), Duration::from_secs(2));
         sampling_window.report_heartbeat();
 
-        MockClock::advance(Duration::from_secs(3));
+        tokio::time::advance(Duration::from_secs(3)).await;
         sampling_window.report_heartbeat();
 
         // Now intervals window is: [2.0, 3.0].
@@ -455,13 +455,13 @@ mod tests {
         assert!((sampling_window.phi() - (0.0 / mean)).abs() < f64::EPSILON);
 
         // 1s elapsed since last reported heartbeat.
-        MockClock::advance(Duration::from_secs(1));
+        tokio::time::advance(Duration::from_secs(1)).await;
         assert!((sampling_window.phi() - (1.0 / mean)).abs() < f64::EPSILON);
 
         // Check reported heartbeat later than max_interval is ignore.
-        MockClock::advance(Duration::from_secs(5));
+        tokio::time::advance(Duration::from_secs(5)).await;
         sampling_window.report_heartbeat();
-        MockClock::advance(Duration::from_secs(2));
+        tokio::time::advance(Duration::from_secs(2)).await;
         assert!(
             (sampling_window.phi() - (2.0 / mean)).abs() < f64::EPSILON,
             "Mean value should not change."
