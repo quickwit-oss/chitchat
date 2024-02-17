@@ -350,10 +350,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use mock_instant::MockClock;
     use tokio::sync::Mutex;
     use tokio::time;
-    use tokio_stream::wrappers::IntervalStream;
     use tokio_stream::StreamExt;
 
     use super::*;
@@ -427,13 +425,6 @@ mod tests {
                 .collect::<Vec<_>>();
             chitchat_handlers.push(start_node(chitchat_id.clone(), &seeds, transport).await);
         }
-        // Make sure the failure detector's fake clock moves forward.
-        tokio::spawn(async {
-            let mut ticker = IntervalStream::new(time::interval(Duration::from_millis(50)));
-            while ticker.next().await.is_some() {
-                MockClock::advance(Duration::from_millis(50));
-            }
-        });
         chitchat_handlers
     }
 
