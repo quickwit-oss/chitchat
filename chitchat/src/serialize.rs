@@ -93,33 +93,6 @@ impl Deserializable for u64 {
     }
 }
 
-impl Serializable for Option<u64> {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        self.is_some().serialize(buf);
-        if let Some(tombstone) = &self {
-            tombstone.serialize(buf);
-        }
-    }
-    fn serialized_len(&self) -> usize {
-        if self.is_some() {
-            9
-        } else {
-            1
-        }
-    }
-}
-
-impl Deserializable for Option<u64> {
-    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let is_some: bool = Deserializable::deserialize(buf)?;
-        if is_some {
-            let u64_value = Deserializable::deserialize(buf)?;
-            return Ok(Some(u64_value));
-        }
-        Ok(None)
-    }
-}
-
 impl Serializable for bool {
     fn serialize(&self, buf: &mut Vec<u8>) {
         buf.push(*self as u8);
@@ -523,12 +496,6 @@ mod tests {
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         ]));
         test_serdeser_aux(&ipv6, 17);
-    }
-
-    #[test]
-    fn test_serialize_option_u64() {
-        test_serdeser_aux(&Some(1), 9);
-        test_serdeser_aux(&None, 1);
     }
 
     #[test]

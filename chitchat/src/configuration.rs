@@ -15,14 +15,14 @@ pub struct ChitchatConfig {
     pub failure_detector_config: FailureDetectorConfig,
     // Marked for deletion grace period expressed as a number of hearbeats.
     // Chitchat ensures a key marked for deletion is eventually deleted by three mechanisms:
-    // - Garbage collection: each heartbeat, marked for deletion keys with `tombstone +
-    //   marked_for_deletion_grace_period > node.heartbeat` are deleted.
+    // - Garbage collection: each heartbeat, marked for deletion keys with `deletion now > instant
+    //   + marked_for_deletion_grace_period` are deleted.
     // - Compute delta: for a given node digest, if `node_digest.heartbeat +
     //   marked_for_deletion_grace_period < node_state.heartbeat` the node is flagged "to be reset"
     //   and the delta is populated with all keys and values.
     // - Apply delta: for a node flagged "to be reset", Chitchat will remove the node state and
     //   populate a fresh new node state with the keys and values present in the delta.
-    pub marked_for_deletion_grace_period: usize,
+    pub marked_for_deletion_grace_period: Duration,
 }
 
 impl ChitchatConfig {
@@ -37,7 +37,7 @@ impl ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            marked_for_deletion_grace_period: 10_000,
+            marked_for_deletion_grace_period: Duration::from_secs(10_000),
         }
     }
 }
@@ -54,9 +54,7 @@ impl Default for ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            // Each heartbeat increments the version, with one heartbeat each second
-            // 86400 ~ 24h.
-            marked_for_deletion_grace_period: 86400,
+            marked_for_deletion_grace_period: Duration::from_secs(3_600 * 2), // 2h
         }
     }
 }

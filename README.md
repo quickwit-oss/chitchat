@@ -56,23 +56,25 @@ associated with a version, and replicated using the same mechanism as a KV updat
 The library will then interpret this versioned tombstone before exposing kv to
 the user.
 
-To avoid keeping deleted KV indefinitely, the library includes a GC mechanism. Any nodes containing a tombstone older than a given `grace period threshold`
-(age is measured in ticks of heartbeat), it is safe to be deleted.
+To avoid keeping deleted KV indefinitely, the library includes a GC mechanism.
+Every tombstone is associated with a monotonic timestamp.
+It is local in the sense that it is computed locally to the given node, and never shared with other servers.
+
+All KV with a timestamp older than a given `marked_for_deletion_grace_period` will be deleted upon delete operations. (Note for a given KV, GC can happen at different
+times on different nodes.)
 
 This yields the following problem. If a node was disconnected for more than
 `marked_for_deletion_grace_period`, they could have missed the deletion of a KV and never be aware of it.
 
-To address this problem, nodes that are too outdated have to reset their state.
+To address this problem, nodes keep a record of the version of the last KV they
+have GCed. Here is how it works:
 
-More accurately, let's assume a Node A sends a Syn message to Node B with a digest with an outdated version V for a node N.
-Node B will compare the version of the digest with its own version.
+Let's assume a Node A sends a Syn message to a Node B. The digest expresses that A want for updates about Node N with a version stricly greater than `V`.
+Node B will compare the version `V` of the digest with its `max_gc_version` for the node N.
 
-If V is fresher than `own version - marked_for_deletion_grace_period`,
-Node B knows that no GC has impacted Key values with a version above V. It can
-safely emit a normal delta to A.
-If however V is older than `own version - marked_for_deletion_grace_period`,
-a GC could have been executed. Instead of sending a delta to Node A, Node B will
-instruct A to reset its state.
+If `V > max_gc_version`, Node B knows that no GC has impacted Key values with a version above V. It can safely emit a normal delta to A.
+
+If however V is older, a GC could have been executed. Instead of sending a delta to Node A, Node B will instruct A to reset its state.
 
 Node A will then wipe-off whatever information it has about N, and will start syncing from a blank state.
 
