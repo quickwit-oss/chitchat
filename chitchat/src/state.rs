@@ -29,7 +29,7 @@ pub struct NodeState {
     // This is the maximum version of the last tombstone GC.
     //
     // After we GC the tombstones, we cannot safely do replication with
-    // nodes that are asking for a diff from with version lower than this.
+    // nodes that are asking for a diff with version lower than this.
     max_garbage_collected_tombstone_version: Option<Version>,
 }
 

@@ -60,7 +60,7 @@ To avoid keeping deleted KV indefinitely, the library includes a GC mechanism.
 Every tombstone is associated with a monotonic timestamp.
 It is local in the sense that it is computed locally to the given node, and never shared with other servers.
 
-All KV with a timestamp older than a given `grace_period_threshold` will be deleted upon delete operations. (Note for a given KV, GC can happen at different
+All KV with a timestamp older than a given `marked_for_deletion_grace_period` will be deleted upon delete operations. (Note for a given KV, GC can happen at different
 times on different nodes.)
 
 This yields the following problem. If a node was disconnected for more than
