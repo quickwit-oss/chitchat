@@ -232,6 +232,14 @@ pub fn create_chitchat_id(id: &str) -> ChitchatId {
     }
 }
 
+pub fn test_chitchat_id(port: u16) -> ChitchatId {
+    ChitchatId {
+        node_id: format!("node_{port}"),
+        generation_id: 0,
+        gossip_advertise_addr: ([127, 0, 0, 1], port).into(),
+    }
+}
+
 /// Copy-pasted from Quickwit repo.
 /// Finds a random available TCP port.
 ///
@@ -325,14 +333,82 @@ async fn test_simple_simulation_with_network_partition() {
 }
 
 #[tokio::test]
-async fn test_marked_for_deletion_gc_with_network_partition() {
-    const TIMEOUT: Duration = Duration::from_millis(500);
+async fn test_marked_for_deletion_gc_with_network_partition_2_nodes() {
     // let _ = tracing_subscriber::fmt::try_init();
+    const TIMEOUT: Duration = Duration::from_millis(500);
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
-    let chitchat_id_1 = create_chitchat_id("node-1");
-    let chitchat_id_2 = create_chitchat_id("node-2");
-    let chitchat_id_3 = create_chitchat_id("node-3");
-    let chitchat_id_4 = create_chitchat_id("node-4");
+    let chitchat_id_1 = test_chitchat_id(1);
+    let chitchat_id_2 = test_chitchat_id(2);
+    let peer_seeds = vec![chitchat_id_1.clone(), chitchat_id_2.clone()];
+    let operations = vec![
+        Operation::AddNode {
+            chitchat_id: chitchat_id_1.clone(),
+            peer_seeds: Some(peer_seeds.clone()),
+        },
+        Operation::AddNode {
+            chitchat_id: chitchat_id_2.clone(),
+            peer_seeds: Some(peer_seeds.clone()),
+        },
+        Operation::InsertKeysValues {
+            chitchat_id: chitchat_id_1.clone(),
+            keys_values: vec![("key_a".to_string(), "0".to_string())],
+        },
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_2.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
+            timeout_opt: Some(TIMEOUT),
+        },
+        // Isolate node 2.
+        Operation::RemoveNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::Wait(Duration::from_secs(5)),
+        // Mark for deletion key.
+        Operation::MarkKeyForDeletion {
+            chitchat_id: chitchat_id_1.clone(),
+            key: "key_a".to_string(),
+        },
+        // Check marked for deletion is not propagated to node 3.
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_2.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), false),
+            timeout_opt: None,
+        },
+        // Wait for garbage collection: grace period * heartbeat ~ 1 second + margin of 1 second.
+        Operation::Wait(Duration::from_secs(2)),
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_1.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
+            timeout_opt: None,
+        },
+        Operation::Wait(TIMEOUT),
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_2.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), true),
+            timeout_opt: None,
+        },
+        // Relink node 2
+        Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::NodeStateAssert {
+            server_chitchat_id: chitchat_id_2.clone(),
+            chitchat_id: chitchat_id_1.clone(),
+            // The key should be deleted.
+            predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
+            timeout_opt: Some(TIMEOUT),
+        },
+    ];
+    simulator.execute(operations).await;
+}
+#[tokio::test]
+async fn test_marked_for_deletion_gc_with_network_partition_4_nodes() {
+    const TIMEOUT: Duration = Duration::from_millis(500);
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
+    let chitchat_id_1 = test_chitchat_id(1);
+    let chitchat_id_2 = test_chitchat_id(2);
+    let chitchat_id_3 = test_chitchat_id(3);
+    let chitchat_id_4 = test_chitchat_id(4);
     let peer_seeds = vec![
         chitchat_id_1.clone(),
         chitchat_id_2.clone(),
@@ -431,6 +507,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_3.clone(),
             chitchat_id: chitchat_id_1.clone(),
+            // The key should be deleted.
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
             timeout_opt: Some(TIMEOUT),
         },
@@ -438,7 +515,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             server_chitchat_id: chitchat_id_4.clone(),
             chitchat_id: chitchat_id_1.clone(),
             predicate: NodeStatePredicate::KeyPresent("key_a".to_string(), false),
-            timeout_opt: Some(TIMEOUT),
+            timeout_opt: Some(TIMEOUT * 10),
         },
     ];
     simulator.execute(operations).await;

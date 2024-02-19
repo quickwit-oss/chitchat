@@ -76,7 +76,7 @@ impl Chitchat {
         let self_node_state = chitchat.self_node_state();
 
         // Immediately mark the node as alive to ensure it responds to SYN messages.
-        self_node_state.update_heartbeat();
+        self_node_state.inc_heartbeat();
 
         // Set initial key/value pairs.
         for (key, value) in initial_key_values {
@@ -94,15 +94,19 @@ impl Chitchat {
         }
     }
 
-    fn process_delta(&mut self, delta: Delta) {
-        // Warning: order matters here.
-        // `report_heartbeats` will compare the current known heartbeat with the one
-        // in the delta, while `apply_delta` is actually updating this heartbeat.
-        self.report_heartbeats(&delta);
-        self.cluster_state.apply_delta(delta);
+    /// Digest contains important information about the list of members in
+    /// the cluster.
+    fn report_heartbeats_in_digest(&mut self, digest: &Digest) {
+        for (chitchat_id, node_digest) in &digest.node_digests {
+            self.report_heartbeat(chitchat_id, node_digest.heartbeat);
+        }
     }
 
+    fn process_delta(&mut self, delta: Delta) {
+        self.cluster_state.apply_delta(delta);
+    }
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
+        self.update_self_heartbeat();
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 if cluster_id != self.cluster_id() {
@@ -113,7 +117,7 @@ impl Chitchat {
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
-
+                self.report_heartbeats_in_digest(&digest);
                 let scheduled_for_deletion: HashSet<_> =
                     self.scheduled_for_deletion_nodes().collect();
                 let self_digest = self.compute_digest(&scheduled_for_deletion);
@@ -129,6 +133,7 @@ impl Chitchat {
                 })
             }
             ChitchatMessage::SynAck { digest, delta } => {
+                self.report_heartbeats_in_digest(&digest);
                 self.process_delta(delta);
                 let scheduled_for_deletion =
                     self.scheduled_for_deletion_nodes().collect::<HashSet<_>>();
@@ -157,32 +162,21 @@ impl Chitchat {
 
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
-    fn report_heartbeats(&mut self, delta: &Delta) {
-        for node_delta in &delta.node_deltas {
-            if let Some(node_state) = self.cluster_state.node_states.get(&node_delta.chitchat_id) {
-                if node_state.heartbeat() < node_delta.heartbeat {
-                    self.failure_detector
-                        .report_heartbeat(&node_delta.chitchat_id);
-                }
-            } else {
-                self.failure_detector
-                    .report_unknown(&node_delta.chitchat_id);
-                self.failure_detector
-                    .update_node_liveness(&node_delta.chitchat_id);
-            }
+    fn report_heartbeat(&mut self, chitchat_id: &ChitchatId, heartbeat: Heartbeat) {
+        let node_state = self.cluster_state.node_state_mut(chitchat_id);
+        if node_state.try_set_heartbeat(heartbeat) {
+            self.failure_detector.report_heartbeat(chitchat_id);
         }
     }
 
     /// Marks the node as dead or alive depending on the new phi values and updates the live nodes
     /// watcher accordingly.
     pub(crate) fn update_nodes_liveness(&mut self) {
-        self.cluster_state
-            .nodes()
-            .filter(|&chitchat_id| *chitchat_id != self.config.chitchat_id)
-            .for_each(|chitchat_id| {
+        for chitchat_id in self.cluster_state.nodes() {
+            if chitchat_id != &self.config.chitchat_id {
                 self.failure_detector.update_node_liveness(chitchat_id);
-            });
-
+            }
+        }
         let current_live_nodes = self
             .live_nodes()
             .flat_map(|chitchat_id| {
@@ -278,8 +272,8 @@ impl Chitchat {
         ClusterStateSnapshot::from(&self.cluster_state)
     }
 
-    pub(crate) fn update_heartbeat(&mut self) {
-        self.self_node_state().update_heartbeat();
+    pub(crate) fn update_self_heartbeat(&mut self) {
+        self.self_node_state().inc_heartbeat();
     }
 
     pub(crate) fn cluster_state(&self) -> &ClusterState {
@@ -579,7 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dead_node_kvs_are_when_node_joins() -> anyhow::Result<()> {
+    async fn test_dead_node_kvs_are_gossiped_too_when_node_joins() -> anyhow::Result<()> {
         let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         // starting 2 nodes.
         let mut nodes = setup_nodes(40001..=40002, &transport).await;
@@ -608,7 +602,7 @@ mod tests {
             )
             .await;
             let node2_chitchat = node2.chitchat();
-            // We have received node3's key
+            // We have received node1's key
             let value = node2_chitchat
                 .lock()
                 .await
@@ -622,30 +616,30 @@ mod tests {
 
         // Take node 1 down.
         let node1 = nodes.remove(0);
-        assert_eq!(node1.chitchat_id().advertise_port(), 40001);
+        assert_eq!(node1.chitchat_id().advertise_port(), 40_001);
         node1.shutdown().await.unwrap();
 
         // Node 2 has detected that node 1 is missing.
-        {
+        let node_id2 = {
             let node2 = nodes.first().unwrap();
-            assert_eq!(node2.chitchat_id().advertise_port(), 40002);
+            assert_eq!(node2.chitchat_id().advertise_port(), 40_002);
             wait_for_chitchat_state(node2.chitchat(), &[ChitchatId::for_local_test(40_002)]).await;
-        }
+            node2.chitchat_id().clone()
+        };
 
         // Restart node at localhost:40001 with new name
         let mut new_config = ChitchatConfig::for_test(40_001);
         new_config.chitchat_id.node_id = "new_node".to_string();
         let new_chitchat_id = new_config.chitchat_id.clone();
-        let seed_addr = ChitchatId::for_local_test(40_001).gossip_advertise_addr;
+        let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_addr;
         new_config.seed_nodes = vec![seed_addr.to_string()];
         let new_node_chitchat_handle = spawn_chitchat(new_config, Vec::new(), &transport)
             .await
             .unwrap();
-
         let new_node_chitchat = new_node_chitchat_handle.chitchat();
         wait_for_chitchat_state(
             new_node_chitchat.clone(),
-            &[ChitchatId::for_local_test(40_002), new_chitchat_id],
+            &[new_chitchat_id.clone(), node_id2.clone()],
         )
         .await;
 
@@ -735,6 +729,7 @@ mod tests {
                 .node_state(&dead_chitchat_id)
                 .is_some());
         }
+
         // Wait a bit more than `dead_node_grace_period` since all nodes will not
         // notice cluster change at the same time.
         let wait_for = DEAD_NODE_GRACE_PERIOD.add(Duration::from_secs(5));
@@ -749,6 +744,7 @@ mod tests {
                 .node_state(&dead_chitchat_id)
                 .is_none());
         }
+
         shutdown_nodes(nodes).await?;
         Ok(())
     }
