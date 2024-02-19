@@ -163,7 +163,7 @@ mod tests {
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), Heartbeat(0));
+            delta.add_node(node.clone(), 0u64);
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, true);
             delta.set_serialized_len(62);
@@ -186,7 +186,7 @@ mod tests {
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), Heartbeat(0));
+            delta.add_node(node.clone(), 0u64);
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, true);
             delta.set_serialized_len(62);
