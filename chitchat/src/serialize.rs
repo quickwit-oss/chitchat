@@ -281,6 +281,40 @@ impl Deserializable for Heartbeat {
     }
 }
 
+impl<T> Serializable for Vec<T>
+where T: Serializable
+{
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        assert!(self.len() <= u16::MAX as usize);
+
+        (self.len() as u16).serialize(buf);
+        for item in self {
+            item.serialize(buf);
+        }
+    }
+
+    fn serialized_len(&self) -> usize {
+        let mut len = 2;
+        for item in self {
+            len += item.serialized_len();
+        }
+        len
+    }
+}
+
+impl<T> Deserializable for Vec<T>
+where T: Deserializable
+{
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let len = u16::deserialize(buf)? as usize;
+        let mut items = Vec::with_capacity(len);
+        for _ in 0..len {
+            items.push(T::deserialize(buf)?);
+        }
+        Ok(items)
+    }
+}
+
 /// A compressed stream writer receives a sequence of `Serializable` and
 /// serialize/compresses into blocks of a configurable size.
 ///

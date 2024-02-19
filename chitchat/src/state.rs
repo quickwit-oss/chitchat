@@ -20,7 +20,7 @@ use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
-    node_id: ChitchatId,
+    chitchat_id: ChitchatId,
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
     max_version: Version,
@@ -46,7 +46,7 @@ impl Debug for NodeState {
 impl NodeState {
     fn new(node_id: ChitchatId, listeners: Listeners) -> NodeState {
         NodeState {
-            node_id,
+            chitchat_id: node_id,
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: 0u64,
@@ -57,7 +57,7 @@ impl NodeState {
 
     pub fn for_test() -> NodeState {
         NodeState {
-            node_id: ChitchatId {
+            chitchat_id: ChitchatId {
                 node_id: "test-node".to_string(),
                 generation_id: 0,
                 gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
@@ -212,15 +212,19 @@ impl NodeState {
     }
 
     /// Sets a new versioned value to associate to a given key.
-    /// This operation is ignored if  the key value inserted has a version that is obsolete.
+    /// This operation is ignored if the key value inserted has a version that is obsolete.
     ///
     /// This method also update the max_version if necessary.
-    fn set_versioned_value(&mut self, key: String, versioned_value_update: VersionedValue) {
+    pub(crate) fn set_versioned_value(
+        &mut self,
+        key: String,
+        versioned_value_update: VersionedValue,
+    ) {
         let key_clone = key.clone();
         let key_change_event = KeyChangeEvent {
             key: key_clone.as_str(),
             value: &versioned_value_update.value,
-            node: &self.node_id,
+            node: &self.chitchat_id,
         };
         self.max_version = versioned_value_update.version.max(self.max_version);
         match self.key_values.entry(key) {

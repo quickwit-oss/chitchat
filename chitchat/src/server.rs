@@ -202,7 +202,7 @@ impl Server {
         chitchat: Arc<Mutex<Chitchat>>,
         transport: Box<dyn Socket>,
     ) -> Self {
-        let rng = SmallRng::from_rng(thread_rng()).expect("Failed to seed random generator");
+        let rng = SmallRng::from_rng(thread_rng()).expect("failed to seed random generator");
         Self {
             chitchat,
             command_rx,

@@ -81,7 +81,7 @@ impl UdpSocket {
         self.socket
             .send_to(payload, to_addr)
             .await
-            .context("Failed to send chitchat message to target")?;
+            .context("failed to send chitchat message to peer")?;
         Ok(())
     }
 }

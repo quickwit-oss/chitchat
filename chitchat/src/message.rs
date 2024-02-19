@@ -1,5 +1,3 @@
-use std::io::BufRead;
-
 use anyhow::Context;
 
 use crate::delta::Delta;
@@ -14,16 +12,25 @@ use crate::serialize::{Deserializable, Serializable};
 /// TCP Handshake.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ChitchatMessage {
-    /// Node A initiates a handshake and sends its digest.
+    /// Scuttlebutt SYN message: node A initiates a handshake and sends its digest.
     Syn { cluster_id: String, digest: Digest },
-    /// Node B returns a partial update as described
-    /// in the Scuttlebutt reconciliation algorithm,
-    /// and returns its own digest.
+    /// Scuttlebutt SYN-ACK: node B returns a partial update as described in the Scuttlebutt
+    /// reconciliation algorithm, and returns its own digest.
     SynAck { digest: Digest, delta: Delta },
-    /// Node A returns a partial update for B.
+    /// Scuttlebutt ACK: node A returns a partial update for B.
     Ack { delta: Delta },
+
     /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
+
+    /// Requests a sample of the cluster state for bootstrapping.
+    SampleSyn {
+        cluster_id: String,
+        max_samples: u16,
+        include_keys: Vec<String>,
+    },
+    /// Returns a sample of the cluster state for bootstrapping.
+    SampleAck { delta: Delta },
 }
 
 #[derive(Copy, Clone)]
@@ -33,6 +40,8 @@ enum MessageType {
     SynAck = 1u8,
     Ack = 2u8,
     BadCluster = 3u8,
+    SampleSyn = 4u8,
+    SampleAck = 5u8,
 }
 
 impl MessageType {
@@ -42,6 +51,8 @@ impl MessageType {
             1 => Some(Self::SynAck),
             2 => Some(Self::Ack),
             3 => Some(Self::BadCluster),
+            4 => Some(Self::SampleSyn),
+            5 => Some(Self::SampleAck),
             _ => None,
         }
     }
@@ -70,6 +81,20 @@ impl Serializable for ChitchatMessage {
             ChitchatMessage::BadCluster => {
                 buf.push(MessageType::BadCluster.to_code());
             }
+            ChitchatMessage::SampleSyn {
+                cluster_id,
+                max_samples,
+                include_keys,
+            } => {
+                buf.push(MessageType::SampleSyn.to_code());
+                cluster_id.serialize(buf);
+                max_samples.serialize(buf);
+                include_keys.serialize(buf);
+            }
+            ChitchatMessage::SampleAck { delta } => {
+                buf.push(MessageType::SampleAck.to_code());
+                delta.serialize(buf);
+            }
         }
     }
 
@@ -83,6 +108,16 @@ impl Serializable for ChitchatMessage {
             }
             ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
             ChitchatMessage::BadCluster => 1,
+            ChitchatMessage::SampleSyn {
+                cluster_id,
+                max_samples,
+                include_keys,
+            } => {
+                1 + cluster_id.serialized_len()
+                    + max_samples.serialized_len()
+                    + include_keys.serialized_len()
+            }
+            ChitchatMessage::SampleAck { delta } => 1 + delta.serialized_len(),
         }
     }
 }
@@ -91,10 +126,9 @@ impl Deserializable for ChitchatMessage {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .first()
-            .cloned()
+            .copied()
             .and_then(MessageType::from_code)
-            .context("Invalid message type")?;
-        buf.consume(1);
+            .context("invalid message type")?;
         match code {
             MessageType::Syn => {
                 let digest = Digest::deserialize(buf)?;
@@ -111,6 +145,20 @@ impl Deserializable for ChitchatMessage {
                 Ok(Self::Ack { delta })
             }
             MessageType::BadCluster => Ok(Self::BadCluster),
+            MessageType::SampleSyn => {
+                let cluster_id = String::deserialize(buf)?;
+                let max_samples = u16::deserialize(buf)?;
+                let include_keys = Vec::<String>::deserialize(buf)?;
+                Ok(Self::SampleSyn {
+                    cluster_id,
+                    max_samples,
+                    include_keys,
+                })
+            }
+            MessageType::SampleAck => {
+                let delta = Delta::deserialize(buf)?;
+                Ok(Self::SampleAck { delta })
+            }
         }
     }
 }
