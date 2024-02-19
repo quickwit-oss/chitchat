@@ -68,11 +68,11 @@ struct Simulator {
     transport: ChannelTransport,
     node_handles: HashMap<ChitchatId, ChitchatHandle>,
     gossip_interval: Duration,
-    marked_for_deletion_key_grace_period: usize,
+    marked_for_deletion_key_grace_period: Duration,
 }
 
 impl Simulator {
-    pub fn new(gossip_interval: Duration, marked_for_deletion_key_grace_period: usize) -> Self {
+    pub fn new(gossip_interval: Duration, marked_for_deletion_key_grace_period: Duration) -> Self {
         Self {
             transport: ChannelTransport::with_mtu(65_507),
             node_handles: HashMap::new(),
@@ -246,7 +246,7 @@ pub fn find_available_tcp_port() -> anyhow::Result<u16> {
 #[tokio::test]
 async fn test_simple_simulation_insert() {
     // let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let operations = vec![
@@ -285,7 +285,7 @@ async fn test_simple_simulation_insert() {
 #[tokio::test]
 async fn test_simple_simulation_with_network_partition() {
     // let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let operations = vec![
@@ -328,7 +328,7 @@ async fn test_simple_simulation_with_network_partition() {
 async fn test_marked_for_deletion_gc_with_network_partition() {
     const TIMEOUT: Duration = Duration::from_millis(500);
     // let _ = tracing_subscriber::fmt::try_init();
-    let mut simulator = Simulator::new(Duration::from_millis(100), 10);
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let chitchat_id_3 = create_chitchat_id("node-3");
@@ -389,7 +389,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
             predicate: NodeStatePredicate::MarkedForDeletion("key_a".to_string(), false),
             timeout_opt: None,
         },
-        // Wait for garbage collection: grace period * heartbeat ~ 1 second + margin of 1 second.
+        // Wait for garbage collection: grace period + margin of 1 second.
         Operation::Wait(Duration::from_secs(2)),
         Operation::NodeStateAssert {
             server_chitchat_id: chitchat_id_2.clone(),
@@ -451,7 +451,7 @@ async fn test_marked_for_deletion_gc_with_network_partition() {
 async fn test_simple_simulation_heavy_insert_delete() {
     // let _ = tracing_subscriber::fmt::try_init();
     let mut rng = thread_rng();
-    let mut simulator = Simulator::new(Duration::from_millis(100), 50);
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(5));
     let mut chitchat_ids = Vec::new();
     for i in 0..20 {
         chitchat_ids.push(create_chitchat_id(&format!("node-{}", i)));
@@ -520,7 +520,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     }
 
     // Wait for garbage collection to kick in.
-    // Time to wait is 10s = margin of 4s + grace_period(50) * heartbeat (100ms).
+    // Time to wait is 10s = grace_period(5s) + margin of 5s
     tokio::time::sleep(Duration::from_secs(10)).await;
     info!("Checking keys are deleted...");
     for (chitchat_id, keys) in keys_values_inserted_per_chitchat_id.clone().into_iter() {

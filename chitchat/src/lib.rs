@@ -122,7 +122,6 @@ impl Chitchat {
                     &digest,
                     delta_mtu,
                     &scheduled_for_deletion,
-                    self.config.marked_for_deletion_grace_period as u64,
                 );
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
@@ -137,7 +136,6 @@ impl Chitchat {
                     &digest,
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
                     &scheduled_for_deletion,
-                    self.config.marked_for_deletion_grace_period as u64,
                 );
                 Some(ChitchatMessage::Ack { delta })
             }
@@ -153,11 +151,8 @@ impl Chitchat {
     }
 
     fn gc_keys_marked_for_deletion(&mut self) {
-        let dead_nodes = self.dead_nodes().cloned().collect::<HashSet<_>>();
-        self.cluster_state.gc_keys_marked_for_deletion(
-            self.config.marked_for_deletion_grace_period as u64,
-            &dead_nodes,
-        );
+        self.cluster_state
+            .gc_keys_marked_for_deletion(self.config.marked_for_deletion_grace_period);
     }
 
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
@@ -402,7 +397,7 @@ mod tests {
                 initial_interval: Duration::from_millis(100),
                 ..Default::default()
             },
-            marked_for_deletion_grace_period: 10_000,
+            marked_for_deletion_grace_period: Duration::from_secs(3_600),
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
         spawn_chitchat(config, initial_kvs, transport)

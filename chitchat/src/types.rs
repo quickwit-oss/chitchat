@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 
 /// For the lifetime of a cluster, nodes can go down and come back up multiple times. They may also
 /// die permanently. A [`ChitchatId`] is composed of three components:
@@ -47,11 +48,56 @@ impl ChitchatId {
 }
 
 /// A versioned key-value pair.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[serde(
+    into = "VersionedValueForSerialization",
+    from = "VersionedValueForSerialization"
+)]
 pub struct VersionedValue {
     pub value: String,
     pub version: Version,
-    pub tombstone: Option<u64>,
+    // The tombstone instant is transient:
+    // Only the presence of a tombstone or not is serialized, and used in partial eq eq.
+    pub tombstone: Option<Instant>,
+}
+
+impl PartialEq for VersionedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value.eq(&other.value)
+            && self.version.eq(&other.version)
+            && self.tombstone.is_some().eq(&other.tombstone.is_some())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct VersionedValueForSerialization {
+    pub value: String,
+    pub version: Version,
+    pub tombstone: bool,
+}
+
+impl From<VersionedValueForSerialization> for VersionedValue {
+    fn from(versioned_value: VersionedValueForSerialization) -> Self {
+        VersionedValue {
+            value: versioned_value.value,
+            version: versioned_value.version,
+            tombstone: if versioned_value.tombstone {
+                Some(Instant::now())
+            } else {
+                None
+            },
+        }
+    }
+}
+
+impl From<VersionedValue> for VersionedValueForSerialization {
+    fn from(versioned_value: VersionedValue) -> Self {
+        VersionedValueForSerialization {
+            value: versioned_value.value,
+            version: versioned_value.version,
+            tombstone: versioned_value.tombstone.is_some(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use tokio::time::Instant;
+
 use crate::serialize::*;
 use crate::{ChitchatId, Heartbeat, VersionedValue};
 
@@ -116,7 +118,8 @@ impl Deserializable for DeltaOp {
                 let key = String::deserialize(buf)?;
                 let value = String::deserialize(buf)?;
                 let version = u64::deserialize(buf)?;
-                let tombstone = Option::<u64>::deserialize(buf)?;
+                let deleted = bool::deserialize(buf)?;
+                let tombstone = if deleted { Some(Instant::now()) } else { None };
                 let versioned_value: VersionedValue = VersionedValue {
                     value,
                     version,
@@ -182,7 +185,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                 key.serialize(buf);
                 versioned_value.value.serialize(buf);
                 versioned_value.version.serialize(buf);
-                versioned_value.tombstone.serialize(buf);
+                versioned_value.tombstone.is_some().serialize(buf);
             }
             Self::NodeToReset(chitchat_id) => {
                 buf.push(DeltaOpTag::NodeToReset.into());
@@ -204,7 +207,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                 key.serialized_len()
                     + versioned_value.value.serialized_len()
                     + versioned_value.version.serialized_len()
-                    + versioned_value.tombstone.serialized_len()
+                    + 1
             }
             Self::NodeToReset(chitchat_id) => chitchat_id.serialized_len(),
         }
@@ -267,13 +270,14 @@ impl Delta {
         key: &str,
         value: &str,
         version: crate::Version,
-        tombstone: Option<u64>,
+        deleted: bool,
     ) {
         let node_delta = self
             .node_deltas
             .iter_mut()
             .find(|node_delta| &node_delta.chitchat_id == chitchat_id)
             .unwrap();
+        let tombstone = if deleted { Some(Instant::now()) } else { None };
         node_delta.key_values.push((
             key.to_string(),
             VersionedValue {
@@ -488,7 +492,7 @@ mod tests {
             VersionedValue {
                 value: "".to_string(),
                 version: 2,
-                tombstone: Some(0),
+                tombstone: Some(Instant::now()),
             },
         ));
 
@@ -515,7 +519,7 @@ mod tests {
                 tombstone: None,
             },
         ));
-        test_aux_delta_writer(delta_writer, 99);
+        test_aux_delta_writer(delta_writer, 98);
     }
 
     #[test]
