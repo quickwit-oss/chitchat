@@ -302,9 +302,14 @@ impl ClusterState {
     }
 
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
-        // Remove nodes to reset.
-        self.node_states
-            .retain(|chitchat_id, _| !delta.nodes_to_reset.contains(chitchat_id));
+        // Clearing the node of the states to reset.
+        for node_to_reset in delta.nodes_to_reset {
+            // We don't want to remove the entire state here: the node could be alive and the
+            // live watcher panics if the state is missing.
+            if let Some(node_state) = self.node_states.get_mut(&node_to_reset) {
+                *node_state =  NodeState::new(node_to_reset, self.listeners.clone());
+            }
+        }
 
         // Apply delta.
         for node_delta in delta.node_deltas {
