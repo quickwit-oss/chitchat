@@ -185,11 +185,12 @@ impl Chitchat {
 
         let current_live_nodes = self
             .live_nodes()
-            .map(|chitchat_id| {
-                let node_state = self
-                    .node_state(chitchat_id)
-                    .expect("Node state should exist.");
-                (chitchat_id.clone(), node_state.max_version())
+            .flat_map(|chitchat_id| {
+                if let Some(node_state) = self.node_state(chitchat_id) {
+                    return Some((chitchat_id.clone(), node_state.max_version()));
+                }
+                warn!("node state for {chitchat_id:?} is absent");
+                None
             })
             .collect::<HashMap<_, _>>();
 

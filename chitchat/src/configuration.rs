@@ -54,10 +54,7 @@ impl Default for ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            // Each heartbeat increments the version, with one heartbeat each second
-            // 86400 ~ 24h.
-            // TODO set that to something much lower.
-            marked_for_deletion_grace_period: Duration::from_secs(86_400),
+            marked_for_deletion_grace_period: Duration::from_secs(3_600 * 2), // 2h
         }
     }
 }

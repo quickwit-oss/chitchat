@@ -307,7 +307,7 @@ impl ClusterState {
             // We don't want to remove the entire state here: the node could be alive and the
             // live watcher panics if the state is missing.
             if let Some(node_state) = self.node_states.get_mut(&node_to_reset) {
-                *node_state =  NodeState::new(node_to_reset, self.listeners.clone());
+                *node_state = NodeState::new(node_to_reset, self.listeners.clone());
             }
         }
 
@@ -1187,7 +1187,6 @@ mod tests {
             let mut expected_delta = Delta::default();
             expected_delta.add_node_to_reset(node1.clone());
             expected_delta.add_node(node1.clone(), Heartbeat(10_000));
-            // expected_delta.add_kv(&node1, "key_a", "1", 1, false);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.add_node(node2.clone(), Heartbeat(0));
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
