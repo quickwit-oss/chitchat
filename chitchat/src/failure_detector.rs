@@ -61,10 +61,11 @@ impl FailureDetector {
             if !self.dead_nodes.contains_key(chitchat_id) {
                 self.dead_nodes.insert(chitchat_id.clone(), Instant::now());
             }
-            // Remove current sampling window so that when the node
+            // Remove all samples but the last one, so that when the node
             // comes back online, we start with a fresh sampling window.
-            // TODO is this the right idea?
-            // self.node_samples.remove(chitchat_id);
+            if let Some(node_sample) = self.node_samples.get_mut(chitchat_id) {
+                node_sample.reset();
+            }
         }
     }
 
@@ -206,6 +207,11 @@ impl SamplingWindow {
         }
     }
 
+    /// Forget about all previous intervals.
+    pub fn reset(&mut self) {
+        self.intervals.clear();
+    }
+
     /// Reports a heartbeat.
     pub fn report_heartbeat(&mut self) {
         let now = Instant::now();
@@ -257,6 +263,12 @@ impl BoundedArrayStats {
             index: 0,
             sum: 0.0,
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.index = 0;
+        self.is_filled = false;
+        self.sum = 0.0f64;
     }
 
     /// Returns the mean.
