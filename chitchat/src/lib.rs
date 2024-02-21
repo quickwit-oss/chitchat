@@ -13,21 +13,29 @@ mod state;
 pub mod transport;
 mod types;
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::once;
 use std::net::SocketAddr;
+use std::time::Duration;
 
+use anyhow::bail;
 use delta::Delta;
 use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
+use itertools::Itertools;
 pub use listener::ListenerHandle;
+use rand::seq::SliceRandom;
 pub use serialize::Serializable;
 use tokio::sync::watch;
+use tokio::time::timeout;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{error, warn};
+use transport::Transport;
 
 pub use self::configuration::ChitchatConfig;
 pub use self::state::{ClusterStateSnapshot, NodeState};
+use crate::delta::DeltaSerializer;
 use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
 pub use crate::server::{spawn_chitchat, ChitchatHandle};
@@ -85,6 +93,77 @@ impl Chitchat {
         chitchat
     }
 
+    /// Gathers samples from the cluster state by connecting to the peer seeds in a random order
+    /// until `max_samples` are collected.
+    pub async fn sample_from_seeds(
+        &mut self,
+        transport: &dyn Transport,
+        gossip_listen_addr: SocketAddr,
+        max_samples: u16,
+        include_keys: Vec<String>,
+    ) -> anyhow::Result<HashMap<ChitchatId, HashMap<String, VersionedValue>>> {
+        // Using a random UDP port for one-time use.
+        let mut socket = transport
+            .open(SocketAddr::new(gossip_listen_addr.ip(), 0))
+            .await?;
+
+        let mut seed_addrs: Vec<SocketAddr> = self.cluster_state.seed_addrs().into_iter().collect();
+        seed_addrs.shuffle(&mut rand::thread_rng());
+
+        let mut node_states = HashMap::with_capacity(max_samples as usize);
+
+        for seed_addr in seed_addrs {
+            let sample_syn = ChitchatMessage::SampleSyn {
+                cluster_id: self.config.cluster_id.clone(),
+                max_samples,
+                include_keys: include_keys.clone(),
+            };
+            if let Err(io_error) = socket.send(seed_addr, sample_syn).await {
+                error!(error=%io_error, "failed to send sample SYN message");
+                continue;
+            }
+            let delta = match timeout(Duration::from_secs(5), socket.recv()).await {
+                Ok(Ok((_, ChitchatMessage::SampleAck { delta }))) => delta,
+                Ok(Ok((_, ChitchatMessage::BadCluster))) => bail!("bad cluster"),
+                Ok(Ok((_, chitchat_message))) => {
+                    panic!(
+                        "expected `SampleAck` or `BadCluster` message, got {:?}",
+                        chitchat_message
+                    )
+                }
+                Ok(Err(io_error)) => {
+                    error!(error=%io_error, "failed to receive sample ACK message");
+                    continue;
+                }
+                Err(_elapsed) => {
+                    warn!("timed out while waiting for sample ACK message");
+                    continue;
+                }
+            };
+            for node_delta in delta.node_deltas {
+                let node_state: &mut HashMap<String, VersionedValue> =
+                    node_states.entry(node_delta.chitchat_id).or_default();
+
+                for (key, value) in node_delta.key_values {
+                    match node_state.entry(key) {
+                        Entry::Vacant(vacant_entry) => {
+                            vacant_entry.insert(value);
+                        }
+                        Entry::Occupied(mut occupied_entry) => {
+                            if value.version > occupied_entry.get().version {
+                                occupied_entry.insert(value);
+                            }
+                        }
+                    }
+                }
+            }
+            if node_states.len() >= max_samples as usize {
+                break;
+            }
+        }
+        Ok(node_states)
+    }
+
     pub(crate) fn create_syn_message(&self) -> ChitchatMessage {
         let scheduled_for_deletion: HashSet<_> = self.scheduled_for_deletion_nodes().collect();
         let digest = self.compute_digest(&scheduled_for_deletion);
@@ -105,15 +184,17 @@ impl Chitchat {
     fn process_delta(&mut self, delta: Delta) {
         self.cluster_state.apply_delta(delta);
     }
+
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
         self.update_self_heartbeat();
+
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 if cluster_id != self.cluster_id() {
                     warn!(
                         our_cluster_id=%self.cluster_id(),
                         their_cluster_id=%cluster_id,
-                        "Received SYN message addressed to a different cluster."
+                        "received SYN message addressed to a different cluster"
                     );
                     return Some(ChitchatMessage::BadCluster);
                 }
@@ -149,7 +230,52 @@ impl Chitchat {
                 None
             }
             ChitchatMessage::BadCluster => {
-                warn!("Message rejected by peer: wrong cluster.");
+                warn!("message rejected by peer: wrong cluster");
+                None
+            }
+            ChitchatMessage::SampleSyn {
+                cluster_id,
+                max_samples,
+                include_keys,
+            } => {
+                if cluster_id != self.cluster_id() {
+                    warn!(
+                        our_cluster_id=%self.cluster_id(),
+                        their_cluster_id=%cluster_id,
+                        "received sample SYN message addressed to a different cluster"
+                    );
+                    return Some(ChitchatMessage::BadCluster);
+                }
+                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1;
+                let mut delta_serializer = DeltaSerializer::with_mtu(delta_mtu);
+
+                // Sample live nodes with the highest heartbeat, which are the most likely to have
+                // up-to-date data.
+                for (chitchat_id, node_state) in self
+                    .live_nodes_watcher_rx
+                    .borrow()
+                    .iter()
+                    .sorted_unstable_by(|(_, left), (_, right)| {
+                        left.heartbeat().cmp(&right.heartbeat()).reverse()
+                    })
+                    .take(max_samples as usize)
+                {
+                    if !delta_serializer.try_add_node(chitchat_id.clone(), 0) {
+                        break;
+                    }
+                    for include_key in &include_keys {
+                        if let Some(value) = node_state.get_versioned(include_key) {
+                            if !delta_serializer.try_add_kv(include_key, value.clone()) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let delta = delta_serializer.finish();
+                Some(ChitchatMessage::SampleAck { delta })
+            }
+            ChitchatMessage::SampleAck { .. } => {
+                warn!("received unexpected sample ACK message");
                 None
             }
         }
@@ -270,6 +396,20 @@ impl Chitchat {
     /// Returns a serializable snapshot of the cluster state.
     pub fn state_snapshot(&self) -> ClusterStateSnapshot {
         ClusterStateSnapshot::from(&self.cluster_state)
+    }
+
+    pub fn insert_or_update_node(
+        &mut self,
+        chitchat_id: &ChitchatId,
+        key_values: impl Iterator<Item = (String, VersionedValue)>,
+    ) -> Version {
+        // TODO: How to insert in failure detector without reporting a heartbeat?
+        let node_state = self.cluster_state.node_state_mut(chitchat_id);
+
+        for (key, value) in key_values {
+            node_state.set_versioned_value(key, value)
+        }
+        node_state.max_version()
     }
 
     pub(crate) fn update_self_heartbeat(&mut self) {
@@ -828,5 +968,82 @@ mod tests {
 
         assert_eq!(counter_self_key.load(Ordering::SeqCst), 2);
         assert_eq!(counter_other_key.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_chitchat_sample() {
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let ports = 12_001u16..=12_005;
+        let nodes = setup_nodes(ports.clone(), &transport).await;
+
+        for (idx, node) in nodes.iter().enumerate() {
+            node.with_chitchat(|chitchat| {
+                chitchat
+                    .self_node_state()
+                    .set("foo", format!("foo-value-{}", 12_001 + idx));
+                chitchat
+                    .self_node_state()
+                    .set("bar", format!("bar-value-{}", 12_001 + idx));
+            })
+            .await;
+        }
+
+        let node = nodes.first().unwrap();
+        let live_nodes_watcher = node.chitchat().lock().await.live_nodes_watcher();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            live_nodes_watcher
+                .skip_while(|live_nodes| live_nodes.len() < nodes.len())
+                .next(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let ChitchatMessage::SampleAck { delta } = node
+            .with_chitchat(|chitchat| {
+                let sample_syn = ChitchatMessage::SampleSyn {
+                    cluster_id: "default-cluster".to_string(),
+                    max_samples: 3,
+                    include_keys: vec!["foo".to_string(), "qux".to_string()],
+                };
+                chitchat.process_message(sample_syn)
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("expected `SampleAck` message");
+        };
+        assert_eq!(delta.node_deltas.len(), 3);
+
+        for node_delta in &delta.node_deltas {
+            assert_eq!(node_delta.key_values.len(), 1);
+            assert_eq!(node_delta.key_values[0].0, "foo");
+            assert_eq!(
+                node_delta.key_values[0].1.value,
+                format!("foo-value-{}", node_delta.chitchat_id.advertise_port())
+            );
+        }
+        // The first node has no seeds.
+        let node = nodes.last().unwrap();
+        let gossip_listen_addr: SocketAddr = "127.0.0.1:12000".parse().unwrap();
+        let node_states = node
+            .chitchat()
+            .lock()
+            .await
+            .sample_from_seeds(&transport, gossip_listen_addr, 3, vec!["foo".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(node_states.len(), 3);
+
+        for (chitchat_id, node_state) in node_states {
+            assert_eq!(node_state.len(), 1);
+            assert_eq!(
+                node_state.get("foo").unwrap().value,
+                format!("foo-value-{}", chitchat_id.advertise_port())
+            );
+        }
+        shutdown_nodes(nodes).await.unwrap();
     }
 }

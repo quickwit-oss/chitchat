@@ -11,19 +11,29 @@ use crate::serialize::{Deserializable, Serializable};
 /// Each variant represents a step of the gossip "handshake"
 /// between node A and node B.
 /// The names {SYN, SYN-ACK, ACK} of the different steps are borrowed from
-/// TCP Handshake.
+/// TCP handshake.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ChitchatMessage {
-    /// Node A initiates a handshake and sends its digest.
+    /// Scuttlebutt SYN: node A initiates a handshake and sends its digest.
     Syn { cluster_id: String, digest: Digest },
-    /// Node B returns a partial update as described
-    /// in the Scuttlebutt reconciliation algorithm,
-    /// and returns its own digest.
+    /// Scuttlebutt SYN-ACK: node B returns a partial update as described in the Scuttlebutt
+    /// reconciliation algorithm and its own digest.
     SynAck { digest: Digest, delta: Delta },
-    /// Node A returns a partial update for B.
+    /// Scuttlebutt ACK: node A returns a partial update for B.
     Ack { delta: Delta },
+
     /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
+
+    /// Requests a sample of the node's cluster state for bootstrapping. `max_samples` and
+    /// `include_keys` define how many nodes and which key-value pairs to return in the sample.
+    SampleSyn {
+        cluster_id: String,
+        max_samples: u16,
+        include_keys: Vec<String>,
+    },
+    /// Returns the requested sample serialized as a delta.
+    SampleAck { delta: Delta },
 }
 
 #[derive(Copy, Clone)]
@@ -33,6 +43,8 @@ enum MessageType {
     SynAck = 1u8,
     Ack = 2u8,
     BadCluster = 3u8,
+    SampleSyn = 4u8,
+    SampleAck = 5u8,
 }
 
 impl MessageType {
@@ -42,6 +54,8 @@ impl MessageType {
             1 => Some(Self::SynAck),
             2 => Some(Self::Ack),
             3 => Some(Self::BadCluster),
+            4 => Some(Self::SampleSyn),
+            5 => Some(Self::SampleAck),
             _ => None,
         }
     }
@@ -70,6 +84,20 @@ impl Serializable for ChitchatMessage {
             ChitchatMessage::BadCluster => {
                 buf.push(MessageType::BadCluster.to_code());
             }
+            ChitchatMessage::SampleSyn {
+                cluster_id,
+                max_samples,
+                include_keys,
+            } => {
+                buf.push(MessageType::SampleSyn.to_code());
+                cluster_id.serialize(buf);
+                max_samples.serialize(buf);
+                include_keys.serialize(buf);
+            }
+            ChitchatMessage::SampleAck { delta } => {
+                buf.push(MessageType::SampleAck.to_code());
+                delta.serialize(buf);
+            }
         }
     }
 
@@ -83,6 +111,16 @@ impl Serializable for ChitchatMessage {
             }
             ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
             ChitchatMessage::BadCluster => 1,
+            ChitchatMessage::SampleSyn {
+                cluster_id,
+                max_samples,
+                include_keys,
+            } => {
+                1 + cluster_id.serialized_len()
+                    + max_samples.serialized_len()
+                    + include_keys.serialized_len()
+            }
+            ChitchatMessage::SampleAck { delta } => 1 + delta.serialized_len(),
         }
     }
 }
@@ -91,9 +129,9 @@ impl Deserializable for ChitchatMessage {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .first()
-            .cloned()
+            .copied()
             .and_then(MessageType::from_code)
-            .context("Invalid message type")?;
+            .context("invalid message type")?;
         buf.consume(1);
         match code {
             MessageType::Syn => {
@@ -111,6 +149,22 @@ impl Deserializable for ChitchatMessage {
                 Ok(Self::Ack { delta })
             }
             MessageType::BadCluster => Ok(Self::BadCluster),
+            MessageType::SampleSyn => {
+                let cluster_id = String::deserialize(buf)?;
+                let max_samples = u16::deserialize(buf)?;
+                let include_keys = Vec::<String>::deserialize(buf)?;
+                let sample_syn = Self::SampleSyn {
+                    cluster_id,
+                    max_samples,
+                    include_keys,
+                };
+                Ok(sample_syn)
+            }
+            MessageType::SampleAck => {
+                let delta = Delta::deserialize(buf)?;
+                let sample_ack = Self::SampleAck { delta };
+                Ok(sample_ack)
+            }
         }
     }
 }
@@ -198,5 +252,33 @@ mod tests {
     #[test]
     fn test_bad_cluster() {
         test_serdeser_aux(&ChitchatMessage::BadCluster, 1);
+    }
+
+    #[test]
+    fn test_sample_syn() {
+        // 1 byte
+        let sample_syn = ChitchatMessage::SampleSyn {
+            cluster_id: "".to_string(), // 2 bytes
+            max_samples: 0,             // 2 bytes
+            include_keys: Vec::new(),   // 2 bytes
+        };
+        test_serdeser_aux(&sample_syn, 7);
+
+        // 1 byte
+        let sample_syn = ChitchatMessage::SampleSyn {
+            cluster_id: "test-cluster".to_string(),      // 14 bytes
+            max_samples: 10,                             // 2 bytes
+            include_keys: vec!["readiness".to_string()], // 13 bytes
+        };
+        test_serdeser_aux(&sample_syn, 30);
+    }
+
+    #[test]
+    fn test_sample_ack() {
+        // 1 byte
+        let sample_ack = ChitchatMessage::SampleAck {
+            delta: Delta::default(), // 1 byte
+        };
+        test_serdeser_aux(&sample_ack, 2);
     }
 }

@@ -28,7 +28,7 @@ impl UdpSocket {
     pub async fn open(bind_addr: SocketAddr) -> anyhow::Result<UdpSocket> {
         let socket = tokio::net::UdpSocket::bind(bind_addr)
             .await
-            .with_context(|| format!("Failed to bind to {bind_addr}/UDP for gossip."))?;
+            .with_context(|| format!("failed to bind to {bind_addr}/UDP for gossip"))?;
         Ok(UdpSocket {
             buf_send: Vec::with_capacity(MAX_UDP_DATAGRAM_PAYLOAD_SIZE),
             buf_recv: Box::new([0u8; MAX_UDP_DATAGRAM_PAYLOAD_SIZE]),
@@ -81,7 +81,7 @@ impl UdpSocket {
         self.socket
             .send_to(payload, to_addr)
             .await
-            .context("Failed to send chitchat message to target")?;
+            .context("failed to send chitchat message to peer")?;
         Ok(())
     }
 }
