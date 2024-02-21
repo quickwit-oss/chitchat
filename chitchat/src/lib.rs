@@ -163,6 +163,9 @@ impl Chitchat {
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
     fn report_heartbeat(&mut self, chitchat_id: &ChitchatId, heartbeat: Heartbeat) {
+        if chitchat_id == &self.config.chitchat_id {
+            return;
+        }
         let node_state = self.cluster_state.node_state_mut(chitchat_id);
         if node_state.try_set_heartbeat(heartbeat) {
             self.failure_detector.report_heartbeat(chitchat_id);
@@ -192,12 +195,14 @@ impl Chitchat {
             let live_nodes = current_live_nodes
                 .keys()
                 .cloned()
-                .map(|chitchat_id| {
-                    let node_state = self
-                        .node_state(&chitchat_id)
-                        .expect("Node state should exist.")
-                        .clone();
-                    (chitchat_id, node_state)
+                .flat_map(|chitchat_id| {
+                    let node_state = self.node_state(&chitchat_id)?;
+                    if let Some(liveness_extra_predicate) = &self.config.liveness_predicate {
+                        if !liveness_extra_predicate(node_state) {
+                            return None;
+                        }
+                    }
+                    Some((chitchat_id, node_state.clone()))
                 })
                 .collect::<BTreeMap<_, _>>();
             self.previous_live_nodes = current_live_nodes;
@@ -375,6 +380,16 @@ mod tests {
         }
     }
 
+    async fn start_node_with_config(
+        transport: &dyn Transport,
+        config: ChitchatConfig,
+    ) -> ChitchatHandle {
+        let initial_kvs: Vec<(String, String)> = Vec::new();
+        spawn_chitchat(config, initial_kvs, transport)
+            .await
+            .unwrap()
+    }
+
     async fn start_node(
         chitchat_id: ChitchatId,
         seeds: &[String],
@@ -393,11 +408,9 @@ mod tests {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: Duration::from_secs(3_600),
+            liveness_predicate: None,
         };
-        let initial_kvs: Vec<(String, String)> = Vec::new();
-        spawn_chitchat(config, initial_kvs, transport)
-            .await
-            .unwrap()
+        start_node_with_config(transport, config).await
     }
 
     async fn setup_nodes(
@@ -482,6 +495,132 @@ mod tests {
         }
         run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
+    }
+
+    #[tokio::test]
+    async fn test_live_node_channel() {
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let nodes = setup_nodes(20001..=20005, &transport).await;
+        let node2 = nodes.get(1).unwrap();
+        let mut live_rx = node2.chitchat().lock().await.live_nodes_watcher();
+        let live_members = loop {
+            let live_members = live_rx.next().await.unwrap();
+            if live_members.len() == 5 {
+                break live_members;
+            }
+        };
+        for node in &nodes {
+            assert!(live_members.contains_key(node.chitchat_id()));
+        }
+        shutdown_nodes(nodes).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_live_node_channel_with_extra_predicate() {
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let chitchat_ids: Vec<ChitchatId> = (1..=3).map(ChitchatId::for_local_test).collect();
+        let make_config = |chitchat_id: &ChitchatId| ChitchatConfig {
+            chitchat_id: chitchat_id.clone(),
+            cluster_id: "default-cluster".to_string(),
+            gossip_interval: Duration::from_millis(100),
+            listen_addr: chitchat_id.gossip_advertise_addr,
+            seed_nodes: vec![chitchat_ids[0].gossip_advertise_addr.to_string()],
+            failure_detector_config: FailureDetectorConfig {
+                dead_node_grace_period: DEAD_NODE_GRACE_PERIOD,
+                phi_threshold: 5.0,
+                initial_interval: Duration::from_millis(100),
+                ..Default::default()
+            },
+            marked_for_deletion_grace_period: Duration::from_secs(3_600),
+            liveness_predicate: Some(Box::new(|node_state| {
+                node_state.get("READY") == Some("true")
+            })),
+        };
+        let mut nodes = Vec::new();
+        for chitchat_id in &chitchat_ids {
+            let config = make_config(chitchat_id);
+            let chitchat_handle = start_node_with_config(&transport, config).await;
+            nodes.push(chitchat_handle);
+        }
+
+        let mut num_nodes = 0;
+        assert!(tokio::time::timeout(Duration::from_secs(1), async {
+            let mut live_rx = nodes[2].chitchat().lock().await.live_nodes_watcher();
+            loop {
+                let live_members = live_rx.next().await.unwrap();
+                num_nodes = live_members.len();
+                if live_members.len() == 3 {
+                    break live_members;
+                }
+            }
+        })
+        .await
+        .is_err());
+        assert_eq!(num_nodes, 0);
+
+        nodes[0]
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set("READY", "true");
+        nodes[1]
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set("READY", "true");
+        nodes[2]
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set("READY", "true");
+
+        let mut live_rx = nodes[2].chitchat().lock().await.live_nodes_watcher();
+        let live_members = loop {
+            let live_members = live_rx.next().await.unwrap();
+            if live_members.len() == 3 {
+                break live_members;
+            }
+        };
+        for node in &nodes {
+            assert!(live_members.contains_key(node.chitchat_id()));
+        }
+
+        nodes[0]
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .mark_for_deletion("READY");
+
+        let live_members = loop {
+            let live_members = live_rx.next().await.unwrap();
+            if live_members.len() == 2 {
+                break live_members;
+            }
+        };
+        assert!(live_members.contains_key(&chitchat_ids[1]));
+        assert!(live_members.contains_key(&chitchat_ids[2]));
+
+        nodes[1]
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set("READY", "false");
+
+        let live_members = loop {
+            let live_members = live_rx.next().await.unwrap();
+            if live_members.len() == 1 {
+                break live_members;
+            }
+        };
+
+        assert!(live_members.contains_key(&chitchat_ids[2]));
+
+        shutdown_nodes(nodes).await.unwrap();
     }
 
     #[tokio::test]

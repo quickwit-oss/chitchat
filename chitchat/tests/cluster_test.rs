@@ -215,6 +215,7 @@ impl Simulator {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
+            liveness_predicate: None,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)
             .await

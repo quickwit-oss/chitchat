@@ -137,7 +137,6 @@ pub async fn spawn_chitchat(
         spawn_dns_refresh_loop(&config.seed_nodes).await;
 
     let socket = transport.open(config.listen_addr).await?;
-
     let chitchat_id = config.chitchat_id.clone();
 
     let chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs, initial_key_values);
