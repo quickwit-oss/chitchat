@@ -109,9 +109,16 @@ impl NodeState {
             .count()
     }
 
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.get_versioned(key)
-            .map(|versioned_value| versioned_value.value.as_str())
+        let versioned_value = self.get_versioned(key)?;
+        if versioned_value.tombstone.is_some() {
+            return None;
+        }
+        Some(versioned_value.value.as_str())
     }
 
     pub fn get_versioned(&self, key: &str) -> Option<&VersionedValue> {

@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         },
         marked_for_deletion_grace_period: Duration::from_secs(60),
     };
-    let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
+    let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport, None).await?;
     let chitchat = chitchat_handler.chitchat();
     let api = Api { chitchat };
     let api_service = OpenApiService::new(api, "Hello World", "1.0")

@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::message::ChitchatMessage;
 use crate::transport::{Socket, Transport};
-use crate::{Chitchat, ChitchatConfig, ChitchatId};
+use crate::{Chitchat, ChitchatConfig, ChitchatId, LivenessExtraPredicate};
 
 /// Number of nodes picked for random gossip.
 const GOSSIP_COUNT: usize = 3;
@@ -130,6 +130,7 @@ pub async fn spawn_chitchat(
     config: ChitchatConfig,
     initial_key_values: Vec<(String, String)>,
     transport: &dyn Transport,
+    liveness_extra_predicate_opt: Option<LivenessExtraPredicate>,
 ) -> anyhow::Result<ChitchatHandle> {
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -140,7 +141,7 @@ pub async fn spawn_chitchat(
 
     let chitchat_id = config.chitchat_id.clone();
 
-    let chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs, initial_key_values);
+    let chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs, initial_key_values, liveness_extra_predicate_opt);
     let chitchat_arc = Arc::new(Mutex::new(chitchat));
     let chitchat_arc_clone = chitchat_arc.clone();
 
@@ -464,7 +465,7 @@ mod tests {
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let peer_addr: SocketAddr = ([127u8, 0u8, 0u8, 1u8], 1111u16).into();
         let mut peer_transport = transport.open(peer_addr).await.unwrap();
-        let server = spawn_chitchat(test_config, Vec::new(), &transport)
+        let server = spawn_chitchat(test_config, Vec::new(), &transport, None)
             .await
             .unwrap();
         server.gossip(peer_addr).unwrap();
@@ -497,8 +498,8 @@ mod tests {
         let config1 = ChitchatConfig::for_test(1);
         let addr1 = config1.chitchat_id.gossip_advertise_addr;
 
-        let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds(), Vec::new());
-        let _handler = spawn_chitchat(config1, Vec::new(), &transport)
+        let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds(), Vec::new(), None);
+        let _handler = spawn_chitchat(config1, Vec::new(), &transport, None)
             .await
             .unwrap();
 
@@ -523,11 +524,11 @@ mod tests {
             .await
             .unwrap();
         let outsider =
-            Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
+            Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds(), Vec::new(), None);
 
         let server_config = ChitchatConfig::for_test(2223);
         let server_addr = server_config.chitchat_id.gossip_advertise_addr;
-        let _handler = spawn_chitchat(server_config, Vec::new(), &transport)
+        let _handler = spawn_chitchat(server_config, Vec::new(), &transport, None)
             .await
             .unwrap();
 
@@ -551,7 +552,7 @@ mod tests {
         let mut client_config = ChitchatConfig::for_test(5552);
         let client_addr = client_config.chitchat_id.gossip_advertise_addr;
         client_config.seed_nodes = vec![seed_addr.to_string()];
-        let _handler = spawn_chitchat(client_config, Vec::new(), &transport)
+        let _handler = spawn_chitchat(client_config, Vec::new(), &transport, None)
             .await
             .unwrap();
 
@@ -570,13 +571,13 @@ mod tests {
         let test_config = ChitchatConfig::for_test(1);
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
         let mut test_chitchat =
-            Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds(), Vec::new());
+            Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds(), Vec::new(), None);
         let mut test_transport = transport.open(test_addr).await.unwrap();
 
         let server_config = ChitchatConfig::for_test(2);
         let server_id = server_config.chitchat_id.clone();
         let server_addr = server_config.chitchat_id.gossip_advertise_addr;
-        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
+        let server_handle = spawn_chitchat(server_config, Vec::new(), &transport, None)
             .await
             .unwrap();
 
@@ -626,7 +627,7 @@ mod tests {
         let node1_config = ChitchatConfig::for_test(6663);
         let node1_id = node1_config.chitchat_id.clone();
         let node1_addr = node1_config.chitchat_id.gossip_advertise_addr;
-        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport)
+        let node1 = spawn_chitchat(node1_config, Vec::new(), &transport, None)
             .await
             .unwrap();
 
@@ -645,7 +646,7 @@ mod tests {
         let mut node2_config = ChitchatConfig::for_test(6664);
         node2_config.seed_nodes = vec![node1_addr.to_string()];
         let node2_id = node2_config.chitchat_id.clone();
-        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport)
+        let node2 = spawn_chitchat(node2_config, Vec::new(), &transport, None)
             .await
             .unwrap();
         {

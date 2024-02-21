@@ -45,6 +45,8 @@ pub use crate::types::{ChitchatId, Heartbeat, Version, VersionedValue};
 /// or so.
 pub(crate) const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 
+pub type LivenessExtraPredicate = Box<dyn Fn(&NodeState) -> bool + Send>;
+
 pub struct Chitchat {
     config: ChitchatConfig,
     cluster_state: ClusterState,
@@ -53,6 +55,7 @@ pub struct Chitchat {
     previous_live_nodes: HashMap<ChitchatId, Version>,
     live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
     live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
+    liveness_extra_predicate_opt: Option<LivenessExtraPredicate>,
 }
 
 impl Chitchat {
@@ -60,6 +63,7 @@ impl Chitchat {
         config: ChitchatConfig,
         seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
         initial_key_values: Vec<(String, String)>,
+        liveness_extra_predicate_opt: Option<LivenessExtraPredicate>,
     ) -> Self {
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let previous_live_nodes = HashMap::new();
@@ -71,6 +75,7 @@ impl Chitchat {
             previous_live_nodes,
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
+            liveness_extra_predicate_opt,
         };
 
         let self_node_state = chitchat.self_node_state();
@@ -192,12 +197,14 @@ impl Chitchat {
             let live_nodes = current_live_nodes
                 .keys()
                 .cloned()
-                .map(|chitchat_id| {
-                    let node_state = self
-                        .node_state(&chitchat_id)
-                        .expect("Node state should exist.")
-                        .clone();
-                    (chitchat_id, node_state)
+                .flat_map(|chitchat_id| {
+                    let node_state = self.node_state(&chitchat_id)?;
+                    if let Some(liveness_extra_predicate) = &self.liveness_extra_predicate_opt {
+                        if !liveness_extra_predicate(node_state) {
+                            return None;
+                        }
+                    }
+                    Some((chitchat_id, node_state.clone()))
                 })
                 .collect::<BTreeMap<_, _>>();
             self.previous_live_nodes = current_live_nodes;
@@ -395,7 +402,7 @@ mod tests {
             marked_for_deletion_grace_period: Duration::from_secs(3_600),
         };
         let initial_kvs: Vec<(String, String)> = Vec::new();
-        spawn_chitchat(config, initial_kvs, transport)
+        spawn_chitchat(config, initial_kvs, transport, None)
             .await
             .unwrap()
     }
@@ -460,6 +467,7 @@ mod tests {
                 ("key1a".to_string(), "1".to_string()),
                 ("key2a".to_string(), "2".to_string()),
             ],
+            None
         );
         let node_config2 = ChitchatConfig::for_test(10_002);
         let mut node2 = Chitchat::with_chitchat_id_and_seeds(
@@ -469,6 +477,7 @@ mod tests {
                 ("key1b".to_string(), "1".to_string()),
                 ("key2b".to_string(), "2".to_string()),
             ],
+            None
         );
         run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
@@ -633,7 +642,7 @@ mod tests {
         let new_chitchat_id = new_config.chitchat_id.clone();
         let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_addr;
         new_config.seed_nodes = vec![seed_addr.to_string()];
-        let new_node_chitchat_handle = spawn_chitchat(new_config, Vec::new(), &transport)
+        let new_node_chitchat_handle = spawn_chitchat(new_config, Vec::new(), &transport, None)
             .await
             .unwrap();
         let new_node_chitchat = new_node_chitchat_handle.chitchat();
@@ -757,6 +766,7 @@ mod tests {
             node_config1,
             empty_seeds.clone(),
             vec![("self1:suffix1".to_string(), "hello1".to_string())],
+            None
         );
         let counter_self_key: Arc<AtomicUsize> = Default::default();
         let counter_other_key: Arc<AtomicUsize> = Default::default();
@@ -792,6 +802,7 @@ mod tests {
             node_config2,
             empty_seeds,
             vec![("other:suffix".to_string(), "hello".to_string())],
+            None
         );
 
         assert_eq!(counter_self_key.load(Ordering::SeqCst), 0);
