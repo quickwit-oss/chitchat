@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crate::{ChitchatId, FailureDetectorConfig, NodeState};
 
-pub type LivenessPredicate = Box<dyn Fn(&NodeState) -> bool + Send>;
+/// User-defined predicate liveness predication applied on top of the output of the failure
+/// detector.
+pub type ExtraLivenessPredicate = Box<dyn Fn(&NodeState) -> bool + Send>;
 
 /// A struct for configuring a Chitchat instance.
 pub struct ChitchatConfig {
@@ -28,7 +30,7 @@ pub struct ChitchatConfig {
     // Extra lifeness predicate that can be used to define what a node being "live" means.
     // It can be used for instance, to only surface the nodes that are both alive according
     // to the failure detector, but also have a given set of required keys.
-    pub liveness_predicate: Option<LivenessPredicate>,
+    pub extra_liveness_predicate: Option<ExtraLivenessPredicate>,
 }
 
 impl ChitchatConfig {
@@ -44,7 +46,7 @@ impl ChitchatConfig {
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
             marked_for_deletion_grace_period: Duration::from_secs(10_000),
-            liveness_predicate: None,
+            extra_liveness_predicate: None,
         }
     }
 }
@@ -62,7 +64,7 @@ impl Default for ChitchatConfig {
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
             marked_for_deletion_grace_period: Duration::from_secs(3_600 * 2), // 2h
-            liveness_predicate: None,
+            extra_liveness_predicate: None,
         }
     }
 }

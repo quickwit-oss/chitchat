@@ -121,7 +121,7 @@ impl NodeState {
         Some(versioned_value.value.as_str())
     }
 
-    /// If the key is tombstoned, this method will still return the versioned values.
+    /// If the key is tombstoned, this method will still return the versioned value.
     pub fn get_versioned(&self, key: &str) -> Option<&VersionedValue> {
         self.key_values.get(key)
     }

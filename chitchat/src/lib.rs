@@ -163,7 +163,7 @@ impl Chitchat {
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
     fn report_heartbeat(&mut self, chitchat_id: &ChitchatId, heartbeat: Heartbeat) {
-        if chitchat_id == &self.config.chitchat_id {
+        if chitchat_id == self.self_chitchat_id() {
             return;
         }
         let node_state = self.cluster_state.node_state_mut(chitchat_id);
@@ -197,7 +197,7 @@ impl Chitchat {
                 .cloned()
                 .flat_map(|chitchat_id| {
                     let node_state = self.node_state(&chitchat_id)?;
-                    if let Some(liveness_extra_predicate) = &self.config.liveness_predicate {
+                    if let Some(liveness_extra_predicate) = &self.config.extra_liveness_predicate {
                         if !liveness_extra_predicate(node_state) {
                             return None;
                         }
@@ -408,7 +408,7 @@ mod tests {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: Duration::from_secs(3_600),
-            liveness_predicate: None,
+            extra_liveness_predicate: None,
         };
         start_node_with_config(transport, config).await
     }
@@ -532,7 +532,7 @@ mod tests {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: Duration::from_secs(3_600),
-            liveness_predicate: Some(Box::new(|node_state| {
+            extra_liveness_predicate: Some(Box::new(|node_state| {
                 node_state.get("READY") == Some("true")
             })),
         };
