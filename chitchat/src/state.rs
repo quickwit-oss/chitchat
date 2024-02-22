@@ -108,11 +108,20 @@ impl NodeState {
             .count()
     }
 
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.get_versioned(key)
-            .map(|versioned_value| versioned_value.value.as_str())
+    /// Returns false if the key is inexistant or marked for deletion.
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
     }
 
+    pub fn get(&self, key: &str) -> Option<&str> {
+        let versioned_value = self.get_versioned(key)?;
+        if versioned_value.tombstone.is_some() {
+            return None;
+        }
+        Some(versioned_value.value.as_str())
+    }
+
+    /// If the key is tombstoned, this method will still return the versioned value.
     pub fn get_versioned(&self, key: &str) -> Option<&VersionedValue> {
         self.key_values.get(key)
     }

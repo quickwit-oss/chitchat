@@ -29,6 +29,7 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
             ..Default::default()
         },
         marked_for_deletion_grace_period: Duration::from_secs(10_000),
+        extra_liveness_predicate: None,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
 }
