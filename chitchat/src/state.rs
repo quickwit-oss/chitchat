@@ -482,7 +482,7 @@ impl Ord for Staleness {
         // Unknown nodes get gossiped first.
         self.is_unknown.cmp(&other.is_unknown).then_with(|| {
             // Then nodes with the highest number of stale records get higher priority.
-            self.num_stale_records.cmp(&other.num_stale_records)
+            self.num_stale_key_values.cmp(&other.num_stale_key_values)
         })
     }
 }
@@ -512,19 +512,17 @@ struct SortedStaleNodes<'a> {
 /// the node is not a candidate for gossip.
 fn staleness_score(node_state: &NodeState, floor_version: u64) -> Option<Staleness> {
     let is_unknown = floor_version == 0u64;
-    let num_stale_kv = if is_unknown {
+    let num_stale_key_values = if is_unknown {
         node_state.num_key_values()
     } else {
         node_state.stale_key_values(floor_version).count()
     };
-    // We don't return None if the node is unknown yet because we want to make
-    // sure the node is added to the neighbors's list.
-    if !is_unknown && num_stale_kv == 0 {
+    if !is_unknown && num_stale_key_values == 0 {
         return None;
     }
     Some(Staleness {
         is_unknown,
-        num_stale_records: num_stale_kv,
+        num_stale_key_values,
     })
 }
 
@@ -719,7 +717,7 @@ mod tests {
         stale_nodes.insert(&node2, &node2_state);
         let expected_staleness = Staleness {
             is_unknown: true,
-            num_stale_records: 1,
+            num_stale_key_values: 1,
         };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
@@ -734,7 +732,7 @@ mod tests {
         stale_nodes.insert(&node3, &node3_state);
         let expected_staleness = Staleness {
             is_unknown: true,
-            num_stale_records: 2,
+            num_stale_key_values: 2,
         };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
@@ -773,7 +771,7 @@ mod tests {
         assert_eq!(stale_nodes.stale_nodes.len(), 1);
         let expected_staleness = Staleness {
             is_unknown: false,
-            num_stale_records: 2,
+            num_stale_key_values: 2,
         };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
