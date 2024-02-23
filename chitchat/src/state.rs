@@ -471,14 +471,14 @@ impl ClusterState {
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Staleness {
     is_unknown: bool,
-    num_stale_records: usize,
+    num_stale_key_values: usize,
 }
 
-/// The ord should be considered a "priority". The higher the faster a node's
+/// The ord should be considered a "priority". The higher, the faster a node's
 /// information is gossiped.
 impl Ord for Staleness {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Nodes get gossiped in priority.
+        // Nodes are gossiped in order of priority:
         // Unknown nodes get gossiped first.
         self.is_unknown.cmp(&other.is_unknown).then_with(|| {
             // Then nodes with the highest number of stale records get higher priority.
@@ -501,12 +501,12 @@ struct SortedStaleNodes<'a> {
 
 /// The `staleness_score` is used to decide which node should be gossiped first.
 /// `floor_version` is the version (transmitted in the digest), below which
-/// all of the records have already been received.
+/// all the records have already been received.
 ///
-/// There is no such thing as a KV for version 0. So if `floor_version == 0`
+/// There is no such thing as a KV for version 0. So if `floor_version == 0`,
 /// it means the node is entirely new.
 /// We artificially prioritize those nodes to make sure their membership (in quickwit the service
-/// key for instnace) and initial KVs spread rapidly.
+/// key for instance) and initial KVs spread rapidly.
 ///
 /// If no KV is stale, there is nothing to gossip, and we simply return `None`:
 /// the node is not a candidate for gossip.
