@@ -61,10 +61,11 @@ impl FailureDetector {
             if !self.dead_nodes.contains_key(chitchat_id) {
                 self.dead_nodes.insert(chitchat_id.clone(), Instant::now());
             }
-            // Remove current sampling window so that when the node
+            // Remove all samples, so that when the node
             // comes back online, we start with a fresh sampling window.
-            // TODO is this the right idea?
-            // self.node_samples.remove(chitchat_id);
+            if let Some(node_sample) = self.node_samples.get_mut(chitchat_id) {
+                node_sample.reset();
+            }
         }
     }
 
@@ -77,8 +78,9 @@ impl FailureDetector {
                 garbage_collected_nodes.push(chitchat_id.clone())
             }
         }
-        for chitchat_id in garbage_collected_nodes.iter() {
+        for chitchat_id in &garbage_collected_nodes {
             self.dead_nodes.remove(chitchat_id);
+            self.node_samples.remove(chitchat_id);
         }
         garbage_collected_nodes
     }
@@ -222,6 +224,11 @@ impl SamplingWindow {
         self.last_heartbeat = Some(now);
     }
 
+    /// Forget about all previous intervals.
+    pub fn reset(&mut self) {
+        self.intervals.clear();
+    }
+
     /// Computes the sampling window's phi value.
     /// Returns `None` if have not received two heartbeat yet.
     pub fn phi(&self) -> Option<f64> {
@@ -277,6 +284,12 @@ impl BoundedArrayStats {
         } else {
             self.index += 1;
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.index = 0;
+        self.is_filled = false;
+        self.sum = 0f64;
     }
 
     fn len(&self) -> usize {
@@ -514,6 +527,23 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
 
         assert_nearly_equal(sampling_window.phi().unwrap(), 2.0f64 / mean);
+
+        tokio::time::advance(Duration::from_secs(100)).await;
+        sampling_window.reset();
+
+        // To revive, a single sample is not sufficient.
+        sampling_window.report_heartbeat();
+        assert!(sampling_window.phi().is_none());
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        sampling_window.report_heartbeat();
+
+        tokio::time::advance(Duration::from_secs(4)).await;
+
+        // Now intervals window is: [2.0]. With additive smoothing we get:
+        let new_mean = (2.0 + 2.0 * 5.0) / (1.0f64 + 5.0f64);
+
+        assert_nearly_equal(sampling_window.phi().unwrap(), 4.0f64 / new_mean);
     }
 
     #[track_caller]
