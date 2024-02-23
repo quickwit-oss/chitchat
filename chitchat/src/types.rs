@@ -1,4 +1,5 @@
-use std::{fmt::Debug, net::SocketAddr};
+use std::fmt::Debug;
+use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -26,7 +27,11 @@ pub struct ChitchatId {
 
 impl Debug for ChitchatId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.node_id.as_str(), self.generation_id, self.gossip_advertise_addr)
+        write!(
+            f,
+            "{}:{}:{}",
+            &self.node_id, self.generation_id, self.gossip_advertise_addr
+        )
     }
 }
 
@@ -64,14 +69,41 @@ pub struct VersionedValue {
     pub version: Version,
     // The tombstone instant is transient:
     // Only the presence of a tombstone or not is serialized, and used in partial eq eq.
-    pub tombstone: Option<Instant>,
+    pub(crate) tombstone: Option<Instant>,
+}
+
+impl VersionedValue {
+    pub fn new(value: String, version: Version, is_tombstone: bool) -> VersionedValue {
+        VersionedValue {
+            value,
+            version,
+            tombstone: if is_tombstone {
+                Some(Instant::now())
+            } else {
+                None
+            },
+        }
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        self.tombstone.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn for_test(value: &str, version: Version) -> Self {
+        Self {
+            value: value.to_string(),
+            version,
+            tombstone: None,
+        }
+    }
 }
 
 impl PartialEq for VersionedValue {
     fn eq(&self, other: &Self) -> bool {
         self.value.eq(&other.value)
             && self.version.eq(&other.version)
-            && self.tombstone.is_some().eq(&other.tombstone.is_some())
+            && self.is_tombstone().eq(&other.is_tombstone())
     }
 }
 
@@ -79,20 +111,16 @@ impl PartialEq for VersionedValue {
 struct VersionedValueForSerialization {
     pub value: String,
     pub version: Version,
-    pub tombstone: bool,
+    pub is_tombstone: bool,
 }
 
 impl From<VersionedValueForSerialization> for VersionedValue {
     fn from(versioned_value: VersionedValueForSerialization) -> Self {
-        VersionedValue {
-            value: versioned_value.value,
-            version: versioned_value.version,
-            tombstone: if versioned_value.tombstone {
-                Some(Instant::now())
-            } else {
-                None
-            },
-        }
+        VersionedValue::new(
+            versioned_value.value,
+            versioned_value.version,
+            versioned_value.is_tombstone,
+        )
     }
 }
 
@@ -101,18 +129,7 @@ impl From<VersionedValue> for VersionedValueForSerialization {
         VersionedValueForSerialization {
             value: versioned_value.value,
             version: versioned_value.version,
-            tombstone: versioned_value.tombstone.is_some(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl VersionedValue {
-    pub fn for_test(value: &str, version: Version) -> Self {
-        Self {
-            value: value.to_string(),
-            version,
-            tombstone: None,
+            is_tombstone: versioned_value.tombstone.is_some(),
         }
     }
 }

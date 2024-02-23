@@ -11,17 +11,17 @@ use crate::serialize::{Deserializable, Serializable};
 /// Each variant represents a step of the gossip "handshake"
 /// between node A and node B.
 /// The names {SYN, SYN-ACK, ACK} of the different steps are borrowed from
-/// TCP Handshake.
+/// TCP handshake.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ChitchatMessage {
-    /// Node A initiates a handshake and sends its digest.
+    /// Scuttlebutt SYN: node A initiates a handshake and sends its digest.
     Syn { cluster_id: String, digest: Digest },
-    /// Node B returns a partial update as described
-    /// in the Scuttlebutt reconciliation algorithm,
-    /// and returns its own digest.
+    /// Scuttlebutt SYN-ACK: node B returns a partial update as described in the Scuttlebutt
+    /// reconciliation algorithm and its own digest.
     SynAck { digest: Digest, delta: Delta },
-    /// Node A returns a partial update for B.
+    /// Scuttlebutt ACK: node A returns a partial update for B.
     Ack { delta: Delta },
+
     /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
 }
@@ -91,9 +91,9 @@ impl Deserializable for ChitchatMessage {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let code = buf
             .first()
-            .cloned()
+            .copied()
             .and_then(MessageType::from_code)
-            .context("Invalid message type")?;
+            .context("invalid message type")?;
         buf.consume(1);
         match code {
             MessageType::Syn => {

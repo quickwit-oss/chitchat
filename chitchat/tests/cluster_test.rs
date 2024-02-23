@@ -58,7 +58,7 @@ impl NodeStatePredicate {
             }
             NodeStatePredicate::MarkedForDeletion(key, marked) => {
                 debug!(key=%key, marked=marked, "assert-key-marked-for-deletion");
-                node_state.get_versioned(key).unwrap().tombstone.is_some() == *marked
+                node_state.get_versioned(key).unwrap().is_tombstone() == *marked
             }
         }
     }
@@ -215,6 +215,7 @@ impl Simulator {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
+            catchup_callback: None,
             extra_liveness_predicate: None,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)

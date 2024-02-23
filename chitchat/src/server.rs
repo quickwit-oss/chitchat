@@ -65,12 +65,12 @@ async fn resolve_seed_host(seed_host: &str, seed_addrs: &mut HashSet<SocketAddr>
         Ok(resolved_seed_addrs) => {
             for seed_addr in resolved_seed_addrs {
                 if seed_addrs.insert(seed_addr) {
-                    debug!(seed_host=%seed_host, seed_addr=%seed_addr, "Resolved peer seed host.");
+                    debug!(seed_host=%seed_host, seed_addr=%seed_addr, "resolved peer seed host");
                 }
             }
         }
         Err(error) => {
-            warn!(seed_host=%seed_host, error=?error, "Failed to lookup host.");
+            warn!(seed_host=%seed_host, error=?error, "failed to lookup host");
         }
     };
 }
@@ -201,7 +201,7 @@ impl Server {
         chitchat: Arc<Mutex<Chitchat>>,
         transport: Box<dyn Socket>,
     ) -> Self {
-        let rng = SmallRng::from_rng(thread_rng()).expect("Failed to seed random generator");
+        let rng = SmallRng::from_rng(thread_rng()).expect("failed to seed random generator");
         Self {
             chitchat,
             command_rx,
@@ -633,7 +633,7 @@ mod tests {
             .chitchat()
             .lock()
             .await
-            .live_nodes_watcher()
+            .live_nodes_watch_stream()
             .skip_while(|live_nodes| live_nodes.is_empty());
 
         {
