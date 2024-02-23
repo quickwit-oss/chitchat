@@ -109,7 +109,9 @@ impl Chitchat {
 
     /// Executes the catch-up callback if necessary.
     fn maybe_trigger_catchup_callback(&self, delta: &Delta) {
-        if !delta.nodes_to_reset.is_empty() {
+        let has_reset = delta.node_deltas.iter()
+            .any(|node_delta| node_delta.from_version == 0 && node_delta.last_gc_version > 0);
+        if has_reset {
             if let Some(catchup_callback) = &self.config.catchup_callback {
                 info!("executing catch-up callback");
                 catchup_callback();

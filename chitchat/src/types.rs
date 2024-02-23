@@ -30,7 +30,9 @@ impl Debug for ChitchatId {
         write!(
             f,
             "{}:{}:{}",
-            &self.node_id, self.generation_id, self.gossip_advertise_addr
+            self.node_id.as_str(),
+            self.generation_id,
+            self.gossip_advertise_addr
         )
     }
 }
