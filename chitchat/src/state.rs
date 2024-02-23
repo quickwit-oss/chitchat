@@ -413,9 +413,16 @@ impl ClusterState {
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;
             };
-            let should_reset = node_state.last_gc_version > node_digest.max_version;
+            // TODO: We have problem here. If after the delta we end up with a max version that is
+            // not high enough to bring us to `last_gc_version`, we might get reset again
+            // and again.
+            let should_reset =
+                node_state.last_gc_version > node_digest.max_version && node_digest.max_version > 0;
             if should_reset {
-                warn!("Node to reset {chitchat_id:?}");
+                warn!(
+                    "Node to reset {chitchat_id:?} last gc version: {} max version: {}",
+                    node_state.last_gc_version, node_digest.max_version
+                );
                 nodes_to_reset.push(chitchat_id);
                 stale_nodes.insert(chitchat_id, node_state);
                 continue;

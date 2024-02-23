@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fmt::Debug, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -14,7 +14,7 @@ use tokio::time::Instant;
 /// leaves and rejoins the cluster. Backends such as Cassandra or Quickwit typically use the node's
 /// startup time as the `generation_id`. Applications with stable state across restarts can use a
 /// constant `generation_id`, for instance, `0`.
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ChitchatId {
     /// An identifier unique across the cluster.
     pub node_id: String,
@@ -22,6 +22,12 @@ pub struct ChitchatId {
     pub generation_id: u64,
     /// The socket address peers should use to gossip with the node.
     pub gossip_advertise_addr: SocketAddr,
+}
+
+impl Debug for ChitchatId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.node_id.as_str(), self.generation_id, self.gossip_advertise_addr)
+    }
 }
 
 impl ChitchatId {
