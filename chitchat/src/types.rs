@@ -4,6 +4,9 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
+use crate::serialize::Deserializable;
+use crate::Serializable;
+
 /// For the lifetime of a cluster, nodes can go down and come back up multiple times. They may also
 /// die permanently. A [`ChitchatId`] is composed of three components:
 /// - `node_id`: an identifier unique across the cluster.
@@ -30,7 +33,9 @@ impl Debug for ChitchatId {
         write!(
             f,
             "{}:{}:{}",
-            &self.node_id, self.generation_id, self.gossip_advertise_addr
+            self.node_id.as_str(),
+            self.generation_id,
+            self.gossip_advertise_addr
         )
     }
 }
@@ -104,6 +109,64 @@ impl PartialEq for VersionedValue {
         self.value.eq(&other.value)
             && self.version.eq(&other.version)
             && self.is_tombstone().eq(&other.is_tombstone())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub(crate) struct KeyValueMutation {
+    pub(crate) key: String,
+    pub(crate) value: String,
+    pub(crate) version: Version,
+    pub(crate) tombstone: bool,
+}
+
+impl<'a> From<&'a KeyValueMutation> for KeyValueMutationRef<'a> {
+    fn from(mutation: &'a KeyValueMutation) -> KeyValueMutationRef<'a> {
+        KeyValueMutationRef {
+            key: mutation.key.as_str(),
+            value: mutation.value.as_str(),
+            version: mutation.version,
+            tombstone: mutation.tombstone,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
+pub(crate) struct KeyValueMutationRef<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) value: &'a str,
+    pub(crate) version: Version,
+    pub(crate) tombstone: bool,
+}
+
+impl<'a> Serializable for KeyValueMutationRef<'a> {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        Serializable::serialize(self.key, buf);
+        Serializable::serialize(self.value, buf);
+        Serializable::serialize(&self.version, buf);
+        Serializable::serialize(&self.tombstone, buf);
+    }
+
+    fn serialized_len(&self) -> usize {
+        Serializable::serialized_len(self.key)
+            + Serializable::serialized_len(self.value)
+            + Serializable::serialized_len(&self.version)
+            + Serializable::serialized_len(&self.tombstone)
+    }
+}
+
+impl Deserializable for KeyValueMutation {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let key: String = Deserializable::deserialize(buf)?;
+        let value: String = Deserializable::deserialize(buf)?;
+        let version: u64 = Deserializable::deserialize(buf)?;
+        let tombstone: bool = Deserializable::deserialize(buf)?;
+        Ok(KeyValueMutation {
+            key,
+            value,
+            version,
+            tombstone,
+        })
     }
 }
 
