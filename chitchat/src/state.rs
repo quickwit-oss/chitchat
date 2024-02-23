@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
@@ -250,12 +251,12 @@ impl NodeState {
         }
     }
 
-    fn set_with_version(&mut self, key: String, value: String, version: Version) {
+    fn set_with_version(&mut self, key: impl ToString, value: impl ToString, version: Version) {
         assert!(version > self.max_version);
         self.set_versioned_value(
-            key,
+            key.to_string(),
             VersionedValue {
-                value,
+                value: value.to_string(),
                 version,
                 tombstone: None,
             },
@@ -463,20 +464,88 @@ impl ClusterState {
     }
 }
 
+/// Score used to decide which member should be gossiped first.
+///
 /// Number of stale key-value pairs carried by the node. A key-value is considered stale if its
 /// local version is higher than the max version of the digest, also called "floor version".
-type Staleness = usize;
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+struct Staleness {
+    is_unknown: bool,
+    max_version: u64,
+    num_stale_key_values: usize,
+}
+
+/// The ord should be considered a "priority". The higher, the faster a node's
+/// information is gossiped.
+impl Ord for Staleness {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Nodes get gossiped in priority.
+        // Unknown nodes get gossiped first.
+        // If several nodes are unknown, the one with the lowest max_version gets gossiped first.
+        // This is a bit of a hack to make sure we know about the metastore
+        // as soon as possible in quickwit, even when the indexer's chitchat state is bloated.
+        //
+        // Within known nodes, the one with the highest number of stale records gets gossiped first,
+        // as described in the scuttlebutt paper.
+        self.is_unknown.cmp(&other.is_unknown).then_with(|| {
+            if self.is_unknown {
+                self.max_version.cmp(&other.max_version).reverse()
+            } else {
+                // Then nodes with the highest number of stale records get higher priority.
+                self.num_stale_key_values.cmp(&other.num_stale_key_values)
+            }
+        })
+    }
+}
+
+impl PartialOrd for Staleness {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Sorts the stale nodes in decreasing order of staleness.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct SortedStaleNodes<'a> {
     stale_nodes: BTreeMap<Staleness, Vec<StaleNode<'a>>>,
+}
+
+/// The `staleness_score` is used to decide which node should be gossiped first.
+/// `floor_version` is the version (transmitted in the digest), below which
+/// all the records have already been received.
+///
+/// There is no such thing as a KV for version 0. So if `floor_version == 0`,
+/// it means the node is entirely new.
+/// We artificially prioritize those nodes to make sure their membership (in quickwit the service
+/// key for instance) and initial KVs spread rapidly.
+///
+/// If no KV is stale, there is nothing to gossip, and we simply return `None`:
+/// the node is not a candidate for gossip.
+fn staleness_score(node_state: &NodeState, floor_version: u64) -> Option<Staleness> {
+    let is_unknown = floor_version == 0u64;
+    let num_stale_key_values = if is_unknown {
+        node_state.num_key_values()
+    } else {
+        node_state.stale_key_values(floor_version).count()
+    };
+    if !is_unknown && num_stale_key_values == 0 {
+        return None;
+    }
+    Some(Staleness {
+        is_unknown,
+        max_version: node_state.max_version,
+        num_stale_key_values,
+    })
 }
 
 impl<'a> SortedStaleNodes<'a> {
     /// Adds a node to the list of stale nodes.
     fn insert(&mut self, chitchat_id: &'a ChitchatId, node_state: &'a NodeState) {
-        let staleness = node_state.num_key_values() + 1; // +1 for the heartbeat.
+        let Some(staleness) = staleness_score(node_state, 0u64) else {
+            // The node does not have any stale key values.
+            return;
+        };
+
         let floor_version = 0;
         let stale_node = StaleNode {
             chitchat_id,
@@ -496,23 +565,20 @@ impl<'a> SortedStaleNodes<'a> {
         node_state: &'a NodeState,
         node_digest: &NodeDigest,
     ) {
-        let heartbeat: Heartbeat = node_digest.heartbeat.max(node_state.heartbeat);
         let floor_version = node_digest.max_version;
-        let mut staleness = node_state.stale_key_values(floor_version).count();
-        if heartbeat > node_digest.heartbeat {
-            staleness += 1;
-        }
-        if staleness > 0 {
-            let stale_node = StaleNode {
-                chitchat_id,
-                node_state,
-                floor_version,
-            };
-            self.stale_nodes
-                .entry(staleness)
-                .or_default()
-                .push(stale_node);
-        }
+        let Some(staleness) = staleness_score(node_state, floor_version) else {
+            // The node does not have any stale KV.
+            return;
+        };
+        let stale_node = StaleNode {
+            chitchat_id,
+            node_state,
+            floor_version,
+        };
+        self.stale_nodes
+            .entry(staleness)
+            .or_default()
+            .push(stale_node);
     }
 
     /// Returns an iterator over the stale nodes sorted in decreasing order of staleness.
@@ -646,38 +712,36 @@ mod tests {
         let mut stale_nodes = SortedStaleNodes::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = NodeState::for_test();
-        stale_nodes.insert(&node1, &node1_state);
-
-        let expected_staleness = 1;
-        assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
-
         let node2 = ChitchatId::for_local_test(10_002);
-        let mut node2_state = NodeState::for_test();
-        node2_state
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.insert(&node2, &node2_state);
+        let node3 = ChitchatId::for_local_test(10_003);
 
-        let expected_staleness = 2;
+        // No stale KV. We still insert the node!
+        // That way it will get a node state, and be a candidate for gossip later.
+        let node_state1 = NodeState::for_test();
+        stale_nodes.insert(&node1, &node_state1);
+        assert_eq!(stale_nodes.stale_nodes.len(), 1);
+
+        let mut node2_state = NodeState::for_test();
+        node2_state.set_with_version("key_a", "value_a", 1);
+        stale_nodes.insert(&node2, &node2_state);
+        let expected_staleness = Staleness {
+            is_unknown: true,
+            max_version: 0,
+            num_stale_key_values: 0,
+        };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
 
-        let node3 = ChitchatId::for_local_test(10_003);
         let mut node3_state = NodeState::for_test();
-        node3_state
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node3_state.set_with_version("key_b", "value_b", 2);
+        node3_state.set_with_version("key_c", "value_c", 3);
+
         stale_nodes.insert(&node3, &node3_state);
-
-        let expected_staleness = 2;
-        assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 2);
-
-        let num_nodes = stale_nodes
-            .stale_nodes
-            .values()
-            .map(|nodes| nodes.len())
-            .sum::<usize>();
-        assert_eq!(num_nodes, 3);
+        let expected_staleness = Staleness {
+            is_unknown: true,
+            max_version: 3,
+            num_stale_key_values: 3,
+        };
+        assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
 
     #[test]
@@ -686,75 +750,121 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = NodeState::for_test();
-        stale_nodes.offer(&node1, &node1_state, &NodeDigest::new(Heartbeat(0), 0));
-
-        assert_eq!(stale_nodes.stale_nodes.len(), 0);
+        stale_nodes.offer(&node1, &node1_state, &NodeDigest::new(Heartbeat(0), 1));
+        // No stale records. This is not a candidate for gossip.
+        assert!(stale_nodes.stale_nodes.is_empty());
 
         let node2 = ChitchatId::for_local_test(10_002);
         let mut node2_state = NodeState::for_test();
-        node2_state.heartbeat = Heartbeat(1);
-        stale_nodes.offer(&node2, &node2_state, &NodeDigest::new(Heartbeat(0), 0));
+        node2_state
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        stale_nodes.offer(&node2, &node2_state, &NodeDigest::new(Heartbeat(0), 1));
+        // No stale records (due to the floor version). This is not a candidate for gossip.
+        assert!(stale_nodes.stale_nodes.is_empty());
 
-        let expected_staleness = 1;
-        assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
-
-        let node3 = ChitchatId::for_local_test(10_003);
+        let node3 = ChitchatId::for_local_test(10_002);
         let mut node3_state = NodeState::for_test();
         node3_state
             .key_values
             .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.offer(&node3, &node3_state, &NodeDigest::new(Heartbeat(0), 0));
-
-        let expected_staleness = 1;
-        assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 2);
-
-        let node4 = ChitchatId::for_local_test(10_004);
-        let mut node4_state = NodeState::for_test();
-        node4_state.heartbeat = Heartbeat(1);
-        node4_state
+        node3_state
             .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.offer(&node4, &node4_state, &NodeDigest::new(Heartbeat(0), 0));
-
-        let expected_staleness = 2;
+            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node3_state
+            .key_values
+            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
+        stale_nodes.offer(&node3, &node3_state, &NodeDigest::new(Heartbeat(0), 1));
+        assert_eq!(stale_nodes.stale_nodes.len(), 1);
+        let expected_staleness = Staleness {
+            is_unknown: false,
+            max_version: 1,
+            num_stale_key_values: 2,
+        };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
     }
 
     #[test]
     fn test_sorted_stale_nodes_into_iter() {
         let mut stale_nodes = SortedStaleNodes::default();
-        let stale_node1 = StaleNode {
-            chitchat_id: &ChitchatId::for_local_test(10_001),
-            node_state: &NodeState::for_test(),
-            floor_version: 0,
-        };
-        stale_nodes.stale_nodes.insert(1, vec![stale_node1]);
+        let node1 = ChitchatId::for_local_test(10_001);
+        let mut node_state1 = NodeState::for_test();
+        node_state1
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        node_state1
+            .key_values
+            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node_state1
+            .key_values
+            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
+        stale_nodes.offer(&node1, &node_state1, &NodeDigest::new(Heartbeat(0), 1));
+        // 2 stale values.
 
-        let stale_node2 = StaleNode {
-            chitchat_id: &ChitchatId::for_local_test(10_002),
-            node_state: &NodeState::for_test(),
-            floor_version: 0,
-        };
-        let stale_node3 = StaleNode {
-            chitchat_id: &ChitchatId::for_local_test(10_003),
-            node_state: &NodeState::for_test(),
-            floor_version: 0,
-        };
-        let stale_node4 = StaleNode {
-            chitchat_id: &ChitchatId::for_local_test(10_004),
-            node_state: &NodeState::for_test(),
-            floor_version: 0,
-        };
-        stale_nodes
-            .stale_nodes
-            .insert(2, vec![stale_node2, stale_node3, stale_node4]);
+        let node2 = ChitchatId::for_local_test(10_002);
+        let mut node_state2 = NodeState::for_test();
+        node_state2
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        node_state2
+            .key_values
+            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node_state2
+            .key_values
+            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 5));
+        stale_nodes.offer(&node2, &node_state2, &NodeDigest::new(Heartbeat(0), 2));
+        // 1 stale value.
 
+        let node3 = ChitchatId::for_local_test(10_003);
+        let mut node_state3 = NodeState::for_test();
+        node_state3
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        node_state3
+            .key_values
+            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node_state3
+            .key_values
+            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
+        stale_nodes.offer(&node3, &node_state3, &NodeDigest::new(Heartbeat(0), 7));
+        // 0 stale values.
+
+        let node4 = ChitchatId::for_local_test(10_004);
+        let mut node_state4 = NodeState::for_test();
+        node_state4
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        node_state4
+            .key_values
+            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
+        node_state4
+            .key_values
+            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 5));
+        node_state4
+            .key_values
+            .insert("key_d".to_string(), VersionedValue::for_test("value_d", 7));
+        stale_nodes.offer(&node4, &node_state4, &NodeDigest::new(Heartbeat(0), 1));
+
+        // 3 stale values
+        let node5 = ChitchatId::for_local_test(10_005);
+        let node_state5 = NodeState::for_test();
+        stale_nodes.insert(&node5, &node_state5);
+
+        // 0 stale values
+        let node6 = ChitchatId::for_local_test(10_006);
+        let mut node_state6 = NodeState::for_test();
+        node_state6
+            .key_values
+            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
+        stale_nodes.insert(&node6, &node_state6);
+
+        // 1 stale values
         assert_eq!(
             stale_nodes
                 .into_iter()
                 .map(|stale_node| stale_node.chitchat_id.gossip_advertise_addr.port())
                 .collect::<Vec<_>>(),
-            vec![10_003, 10_002, 10_004, 10_001]
+            vec![10_005, 10_006, 10_004, 10_001, 10_002]
         );
     }
 
@@ -1155,7 +1265,6 @@ mod tests {
 
         {
             let mut digest = Digest::default();
-            let node1 = ChitchatId::for_local_test(10_001);
             digest.add_node(node1.clone(), Heartbeat(0), 1);
             let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
@@ -1164,10 +1273,10 @@ mod tests {
             );
             assert!(delta.nodes_to_reset.is_empty());
             let mut expected_delta = Delta::default();
-            expected_delta.add_node(node1.clone(), 0u64);
-            expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.add_node(node2.clone(), 0u64);
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
+            expected_delta.add_node(node1.clone(), 0u64);
+            expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.set_serialized_len(73);
             assert_eq!(delta, expected_delta);
         }
@@ -1189,12 +1298,12 @@ mod tests {
             );
             assert!(delta.nodes_to_reset.is_empty());
             let mut expected_delta = Delta::default();
+            expected_delta.add_node(node2.clone(), 0u64);
+            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
             expected_delta.add_node(node1.clone(), 0u64);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.add_kv(&node1, "key_a", "", 3, true);
-            expected_delta.add_node(node2.clone(), 0u64);
-            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
-            expected_delta.set_serialized_len(83);
+            expected_delta.set_serialized_len(87);
             assert_eq!(delta, expected_delta);
         }
 
@@ -1214,13 +1323,13 @@ mod tests {
                 &HashSet::new(),
             );
             let mut expected_delta = Delta::default();
+            expected_delta.add_node(node2.clone(), 0u64);
+            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
             expected_delta.add_node_to_reset(node1.clone());
             expected_delta.add_node(node1.clone(), 3u64);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
-            expected_delta.add_node(node2.clone(), 0u64);
-            expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
-            expected_delta.set_serialized_len(80);
-            assert_eq!(delta, expected_delta);
+            expected_delta.set_serialized_len(83);
+            assert_eq!(&delta, &expected_delta);
         }
     }
 
