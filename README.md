@@ -19,14 +19,6 @@ Rather than sending the entire state, the algorithm makes it possibly to
 only transfer updates or deltas of the state.
 In addition, delta can be partial in order to fit a UDP packet.
 
-All nodes keep updating an heartbeat key,
-so that any node should keep receiving updates from about
-any live nodes.
-
-Not receiving any update from node for a given amount of time can therefore be
-regarded as a sign of failure. Rather than using a hard threshold,
-we use phi-accrual detection to dynamically compute a threshold.
-
 We also abuse `chitchat` in Quickwit and use it like a reliable broadcast,
 with different caveats.
 
@@ -41,12 +33,12 @@ https://www.youtube.com/watch?v=FuP1Fvrv6ZQ
 
 # Heartbeat
 
-In order to get a constant flow of updates to feed into phi-accrual detection,
-chitchat's node state includes a key-value called `heartbeat`. The heartbeat of a given node,  starts at 0, and is incremented once after each round of gossip initiated.
+All nodes keep updating an heartbeat counter, dissmenited in digest messages.
+As a result, all nodes keeps receiving updates from about any live nodes.
 
-Nodes then report all heartbeat updates to a phi-accrual detector to
-assess the liveness of this node. Liveness is a local concept. Every single
-node computes its own vision of the liveness of all other nodes.
+Not receiving any heartbeat update from a node for a given amount of time can therefore be
+regarded as a sign of failure. Rather than using a hard threshold, we use phi-accrual detection to dynamically compute a threshold.
+Liveness is a local concept. Every single node computes its own vision of the liveness of all other nodes.
 
 # KV deletion
 
@@ -60,23 +52,20 @@ To avoid keeping deleted KV indefinitely, the library includes a GC mechanism.
 Every tombstone is associated with a monotonic timestamp.
 It is local in the sense that it is computed locally to the given node, and never shared with other servers.
 
-All KV with a timestamp older than a given `marked_for_deletion_grace_period` will be deleted upon delete operations. (Note for a given KV, GC can happen at different
-times on different nodes.)
+All KV with a timestamp older than a given `marked_for_deletion_grace_period` will be deleted upon garbage collection. (Note for a given KV, GC can happen at different times on different nodes.)
 
-This yields the following problem. If a node was disconnected for more than
-`marked_for_deletion_grace_period`, they could have missed the deletion of a KV and never be aware of it.
+This yields the following problem: if a node was disconnected for more than `marked_for_deletion_grace_period`, they could have missed the deletion of a KV and never be aware of it.
 
-To address this problem, nodes keep a record of the version of the last KV they
-have GCed. Here is how it works:
+To address this problem, each node locally keeps a record of the version of the last KV they have GCed (for every single other node).
+Here is how it works:
 
-Let's assume a Node A sends a Syn message to a Node B. The digest expresses that A want for updates about Node N with a version stricly greater than `V`.
-Node B will compare the version `V` of the digest with its `max_gc_version` for the node N.
+Let's assume a Node A sends a Syn message to a Node B. The digest expresses that A want for updates about Node N with a version stricly greater than `V`.  Node B will compare the version `V` of the digest with its `max_gc_version` for the node N.
 
 If `V > max_gc_version`, Node B knows that no GC has impacted Key values with a version above V. It can safely emit a normal delta to A.
 
-If however V is older, a GC could have been executed. Instead of sending a delta to Node A, Node B will instruct A to reset its state.
+If however V is older, a GC could have been executed. Instead of sending a delta to Node A, Node B will instruct A to reset its state by sending a delta start from version `0`.
 
-Node A will then wipe-off whatever information it has about N, and will start syncing from a blank state.
+Node A, upon reception of the delta, will wipe-off whatever information it has about N, and will start syncing from a blank state.
 
 # Node deletion
 
