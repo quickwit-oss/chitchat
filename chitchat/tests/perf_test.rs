@@ -29,6 +29,7 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
             ..Default::default()
         },
         marked_for_deletion_grace_period: Duration::from_secs(10_000),
+        catchup_callback: None,
         extra_liveness_predicate: None,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
@@ -48,7 +49,7 @@ async fn wait_until<P: Fn(&BTreeMap<ChitchatId, NodeState>) -> bool>(
     predicate: P,
 ) -> Duration {
     let start = Instant::now();
-    let mut node_watcher = handle.chitchat().lock().await.live_nodes_watcher();
+    let mut node_watcher = handle.chitchat().lock().await.live_nodes_watch_stream();
     while let Some(nodes) = node_watcher.next().await {
         if predicate(&nodes) {
             break;

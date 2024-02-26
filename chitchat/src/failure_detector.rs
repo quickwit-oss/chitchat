@@ -311,6 +311,12 @@ mod tests {
     use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
     use crate::ChitchatId;
 
+    impl FailureDetector {
+        pub fn contains_node(&self, chitchat_id: &ChitchatId) -> bool {
+            self.node_samples.contains_key(chitchat_id)
+        }
+    }
+
     #[test]
     fn test_failure_detector_does_not_see_a_node_as_alive_with_a_single_heartbeat() {
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());

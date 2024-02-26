@@ -185,7 +185,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                 key.serialize(buf);
                 versioned_value.value.serialize(buf);
                 versioned_value.version.serialize(buf);
-                versioned_value.tombstone.is_some().serialize(buf);
+                versioned_value.is_tombstone().serialize(buf);
             }
             Self::NodeToReset(chitchat_id) => {
                 buf.push(DeltaOpTag::NodeToReset.into());

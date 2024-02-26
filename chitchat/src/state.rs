@@ -21,7 +21,7 @@ use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
-    node_id: ChitchatId,
+    chitchat_id: ChitchatId,
     heartbeat: Heartbeat,
     key_values: BTreeMap<String, VersionedValue>,
     max_version: Version,
@@ -45,9 +45,9 @@ impl Debug for NodeState {
 }
 
 impl NodeState {
-    fn new(node_id: ChitchatId, listeners: Listeners) -> NodeState {
+    fn new(chitchat_id: ChitchatId, listeners: Listeners) -> NodeState {
         NodeState {
-            node_id,
+            chitchat_id,
             heartbeat: Heartbeat(0),
             key_values: Default::default(),
             max_version: 0u64,
@@ -56,9 +56,17 @@ impl NodeState {
         }
     }
 
+    pub fn last_gc_version(&self) -> Version {
+        self.last_gc_version
+    }
+
+    pub(crate) fn set_last_gc_version(&mut self, last_gc_version: Version) {
+        self.last_gc_version = last_gc_version;
+    }
+
     pub fn for_test() -> NodeState {
         NodeState {
-            node_id: ChitchatId {
+            chitchat_id: ChitchatId {
                 node_id: "test-node".to_string(),
                 generation_id: 0,
                 gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
@@ -81,11 +89,19 @@ impl NodeState {
         self.max_version
     }
 
-    /// Returns an iterator over the keys matching the given predicate, excluding keys marked for
-    /// deletion.
-    pub fn key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        self.internal_iter_key_values()
-            .filter(|&(_, versioned_value)| versioned_value.tombstone.is_none())
+    /// Returns an iterator over keys matching the given predicate.
+    /// Disclaimer: This also returns keys marked for deletion.
+    pub fn key_values_including_deleted(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
+        self.key_values
+            .iter()
+            .map(|(key, versioned_value)| (key.as_str(), versioned_value))
+    }
+
+    /// Returns an iterator over all of the (non-deleted) key-values.
+    pub fn key_values(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.key_values_including_deleted()
+            .filter(|(_, versioned_value)| !versioned_value.is_tombstone())
+            .map(|(key, versioned_value)| (key, versioned_value.value.as_str()))
     }
 
     /// Returns key values matching a prefix
@@ -97,16 +113,13 @@ impl NodeState {
         self.key_values
             .range::<str, _>(range)
             .take_while(move |(key, _)| key.starts_with(prefix))
-            .map(|(key, record)| (key.as_str(), record))
-            .filter(|&(_, versioned_value)| versioned_value.tombstone.is_none())
+            .filter(|&(_, versioned_value)| !versioned_value.is_tombstone())
+            .map(|(key, versioned_value)| (key.as_str(), versioned_value))
     }
 
     /// Returns the number of key-value pairs, excluding keys marked for deletion.
     pub fn num_key_values(&self) -> usize {
-        self.key_values
-            .values()
-            .filter(|versioned_value| versioned_value.tombstone.is_none())
-            .count()
+        self.key_values().count()
     }
 
     /// Returns false if the key is inexistant or marked for deletion.
@@ -116,7 +129,7 @@ impl NodeState {
 
     pub fn get(&self, key: &str) -> Option<&str> {
         let versioned_value = self.get_versioned(key)?;
-        if versioned_value.tombstone.is_some() {
+        if versioned_value.is_tombstone() {
             return None;
         }
         Some(versioned_value.value.as_str())
@@ -151,9 +164,9 @@ impl NodeState {
             return;
         };
         self.max_version += 1;
-        versioned_value.tombstone = Some(Instant::now());
         versioned_value.version = self.max_version;
         versioned_value.value = "".to_string();
+        versioned_value.tombstone = Some(Instant::now());
     }
 
     pub(crate) fn inc_heartbeat(&mut self) {
@@ -179,33 +192,35 @@ impl NodeState {
         }
     }
 
-    /// Returns an iterator over keys matching the given predicate.
-    /// Not public as it returns also keys marked for deletion.
-    fn internal_iter_key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        self.key_values
-            .iter()
-            .map(|(key, record)| (key.as_str(), record))
-    }
-
     /// Removes the keys marked for deletion such that `tombstone + grace_period > heartbeat`.
     fn gc_keys_marked_for_deletion(&mut self, grace_period: Duration) {
         let now = Instant::now();
         let mut max_deleted_version = self.last_gc_version;
-        self.key_values
-            .retain(|_, versioned_value: &mut VersionedValue| {
-                let Some(deleted_instant) = versioned_value.tombstone else {
-                    // The KV is not deleted. We keep it!
-                    return true;
-                };
-                if now < deleted_instant + grace_period {
-                    // We haved not passed the grace period yet. We keep it!
-                    return true;
-                }
-                // We have exceeded the tombstone grace period. Time to remove it.
-                max_deleted_version = versioned_value.version.max(max_deleted_version);
-                false
-            });
+        self.retain_key_values(|_, versioned_value: &VersionedValue| {
+            let Some(deleted_instant) = versioned_value.tombstone else {
+                // The KV is not deleted. We keep it!
+                return true;
+            };
+            if now < deleted_instant + grace_period {
+                // We haved not passed the grace period yet. We keep it!
+                return true;
+            }
+            // We have exceeded the tombstone grace period. Time to remove it.
+            max_deleted_version = versioned_value.version.max(max_deleted_version);
+            false
+        });
         self.last_gc_version = max_deleted_version;
+    }
+
+    /// Retains the key-value pairs for which the predicate returns `true` and removes the other
+    /// ones definitively. In other words, this method does not add tombstones.
+    ///
+    /// Most often, you don't want to call this method but rather `mark_for_deletion`.
+    pub(crate) fn retain_key_values(
+        &mut self,
+        mut predicate: impl FnMut(&str, &VersionedValue) -> bool,
+    ) {
+        self.key_values.retain(|key, value| predicate(key, value));
     }
 
     /// Returns an iterator over the versioned values that are strictly greater than
@@ -217,22 +232,27 @@ impl NodeState {
         floor_version: u64,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
         // TODO optimize by checking the max version.
-        self.internal_iter_key_values()
+        self.key_values_including_deleted()
             .filter(move |(_key, versioned_value)| versioned_value.version > floor_version)
     }
 
     /// Sets a new versioned value to associate to a given key.
-    /// This operation is ignored if  the key value inserted has a version that is obsolete.
+    /// This operation is ignored if the key value inserted has a version that is obsolete.
     ///
     /// This method also update the max_version if necessary.
-    fn set_versioned_value(&mut self, key: String, versioned_value_update: VersionedValue) {
+    pub(crate) fn set_versioned_value(
+        &mut self,
+        key: String,
+        versioned_value_update: VersionedValue,
+    ) {
         let key_clone = key.clone();
         let key_change_event = KeyChangeEvent {
             key: key_clone.as_str(),
             value: &versioned_value_update.value,
-            node: &self.node_id,
+            node: &self.chitchat_id,
         };
         self.max_version = versioned_value_update.version.max(self.max_version);
+
         match self.key_values.entry(key) {
             Entry::Occupied(mut occupied) => {
                 let occupied_versioned_value = occupied.get_mut();
@@ -246,7 +266,7 @@ impl NodeState {
                 vacant.insert(versioned_value_update.clone());
             }
         };
-        if versioned_value_update.tombstone.is_none() {
+        if !versioned_value_update.is_tombstone() {
             self.listeners.trigger_event(key_change_event);
         }
     }
@@ -973,7 +993,7 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "");
             assert_eq!(versioned_value.version, 2u64);
-            assert!(&versioned_value.tombstone.is_some());
+            assert!(&versioned_value.is_tombstone());
         }
 
         // Overriding the same key
@@ -982,7 +1002,7 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
-            assert!(&versioned_value.tombstone.is_none());
+            assert!(!versioned_value.is_tombstone());
         }
     }
 
