@@ -107,11 +107,11 @@ impl Chitchat {
         self.cluster_state.apply_delta(delta);
     }
 
-    /// Executes the catchup callback if necessary.
+    /// Executes the catch-up callback if necessary.
     fn maybe_trigger_catchup_callback(&self, delta: &Delta) {
         if !delta.nodes_to_reset.is_empty() {
             if let Some(catchup_callback) = &self.config.catchup_callback {
-                info!("executing catchup callback");
+                info!("executing catch-up callback");
                 catchup_callback();
             }
         }
