@@ -578,6 +578,12 @@ mod tests {
         let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
+        server_handle
+            .chitchat()
+            .lock()
+            .await
+            .self_node_state()
+            .set("key", "value");
 
         // Add our test socket to the server's nodes.
         server_handle

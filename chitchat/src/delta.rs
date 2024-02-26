@@ -30,7 +30,7 @@ impl Delta {
             std::iter::once(DeltaOpRef::Node {
                 chitchat_id: &node_delta.chitchat_id,
                 last_gc_version: node_delta.last_gc_version,
-                from_version: node_delta.from_version,
+                from_version_excluded: node_delta.from_version_excluded,
             })
             .chain(node_delta.key_values.iter().map(|(key, versioned_value)| {
                 DeltaOpRef::KeyValue {
@@ -38,6 +38,11 @@ impl Delta {
                     versioned_value,
                 }
             }))
+            .chain({
+                node_delta
+                    .max_version
+                    .map(|max_version| DeltaOpRef::SetMaxVersion { max_version })
+            })
         })
     }
 }
@@ -46,11 +51,14 @@ enum DeltaOp {
     Node {
         chitchat_id: ChitchatId,
         last_gc_version: Version,
-        from_version: u64,
+        from_version_excluded: u64,
     },
     KeyValue {
         key: String,
         versioned_value: VersionedValue,
+    },
+    SetMaxVersion {
+        max_version: Version,
     },
 }
 
@@ -58,11 +66,14 @@ enum DeltaOpRef<'a> {
     Node {
         chitchat_id: &'a ChitchatId,
         last_gc_version: Version,
-        from_version: u64,
+        from_version_excluded: u64,
     },
     KeyValue {
         key: &'a str,
         versioned_value: &'a VersionedValue,
+    },
+    SetMaxVersion {
+        max_version: Version,
     },
 }
 
@@ -70,6 +81,7 @@ enum DeltaOpRef<'a> {
 enum DeltaOpTag {
     Node = 0u8,
     KeyValue = 1u8,
+    SetMaxVersion = 2u8,
 }
 
 impl TryFrom<u8> for DeltaOpTag {
@@ -104,7 +116,7 @@ impl Deserializable for DeltaOp {
                 Ok(DeltaOp::Node {
                     chitchat_id,
                     last_gc_version,
-                    from_version,
+                    from_version_excluded: from_version,
                 })
             }
             DeltaOpTag::KeyValue => {
@@ -123,6 +135,10 @@ impl Deserializable for DeltaOp {
                     versioned_value,
                 })
             }
+            DeltaOpTag::SetMaxVersion => {
+                let max_version = Version::deserialize(buf)?;
+                Ok(DeltaOp::SetMaxVersion { max_version })
+            }
         }
     }
 }
@@ -133,11 +149,11 @@ impl DeltaOp {
             DeltaOp::Node {
                 chitchat_id,
                 last_gc_version,
-                from_version,
+                from_version_excluded: from_version,
             } => DeltaOpRef::Node {
                 chitchat_id,
                 last_gc_version: *last_gc_version,
-                from_version: *from_version,
+                from_version_excluded: *from_version,
             },
             DeltaOp::KeyValue {
                 key,
@@ -145,6 +161,9 @@ impl DeltaOp {
             } => DeltaOpRef::KeyValue {
                 key,
                 versioned_value,
+            },
+            DeltaOp::SetMaxVersion { max_version } => DeltaOpRef::SetMaxVersion {
+                max_version: *max_version,
             },
         }
     }
@@ -166,7 +185,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
             Self::Node {
                 chitchat_id,
                 last_gc_version,
-                from_version,
+                from_version_excluded: from_version,
             } => {
                 buf.push(DeltaOpTag::Node.into());
                 chitchat_id.serialize(buf);
@@ -183,6 +202,10 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                 versioned_value.version.serialize(buf);
                 versioned_value.is_tombstone().serialize(buf);
             }
+            Self::SetMaxVersion { max_version } => {
+                buf.push(DeltaOpTag::SetMaxVersion.into());
+                max_version.serialize(buf);
+            }
         }
     }
 
@@ -191,7 +214,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
             Self::Node {
                 chitchat_id,
                 last_gc_version,
-                from_version,
+                from_version_excluded: from_version,
             } => {
                 chitchat_id.serialized_len()
                     + last_gc_version.serialized_len()
@@ -206,6 +229,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                     + versioned_value.version.serialized_len()
                     + 1
             }
+            Self::SetMaxVersion { max_version } => max_version.serialized_len(),
         }
     }
 }
@@ -261,8 +285,9 @@ impl Delta {
         self.node_deltas.push(NodeDelta {
             chitchat_id,
             last_gc_version,
-            from_version,
+            from_version_excluded: from_version,
             key_values: Vec::new(),
+            max_version: None,
         });
     }
 
@@ -319,9 +344,10 @@ pub(crate) struct NodeDelta {
     //
     // Inspect the code in `prepare_apply_delta(..)` to see the rules on how `from_version`
     // and `last_gc_version` are used.
-    pub from_version: Version,
+    pub from_version_excluded: Version,
     pub last_gc_version: Version,
     pub key_values: Vec<(String, VersionedValue)>,
+    pub max_version: Option<Version>,
 }
 
 #[cfg(test)]
@@ -350,7 +376,7 @@ impl DeltaBuilder {
             DeltaOp::Node {
                 chitchat_id,
                 last_gc_version,
-                from_version,
+                from_version_excluded,
             } => {
                 self.flush();
                 anyhow::ensure!(!self.existing_nodes.contains(&chitchat_id));
@@ -358,8 +384,9 @@ impl DeltaBuilder {
                 self.current_node_delta = Some(NodeDelta {
                     chitchat_id,
                     last_gc_version,
-                    from_version,
+                    from_version_excluded,
                     key_values: Vec::new(),
+                    max_version: None,
                 });
             }
             DeltaOp::KeyValue {
@@ -380,6 +407,12 @@ impl DeltaBuilder {
                 current_node_delta
                     .key_values
                     .push((key.to_string(), versioned_value));
+            }
+            DeltaOp::SetMaxVersion { max_version } => {
+                let Some(current_node_delta) = self.current_node_delta.as_mut() else {
+                    anyhow::bail!("received a key-value op without a node op before.");
+                };
+                current_node_delta.max_version = Some(max_version);
             }
         }
         Ok(())
@@ -420,6 +453,11 @@ impl DeltaSerializer {
         }
     }
 
+    pub fn try_set_max_version(&mut self, max_version: Version) -> bool {
+        let key_value_op = DeltaOp::SetMaxVersion { max_version };
+        self.try_add_op(key_value_op)
+    }
+
     fn try_add_op(&mut self, delta_op: DeltaOp) -> bool {
         if self
             .compressed_stream_writer
@@ -452,7 +490,7 @@ impl DeltaSerializer {
         let new_node_op = DeltaOp::Node {
             chitchat_id,
             last_gc_version,
-            from_version,
+            from_version_excluded: from_version,
         };
         self.try_add_op(new_node_op)
     }
@@ -531,7 +569,7 @@ mod tests {
     #[test]
     fn test_delta_serialization_simple_node() {
         // 1 bytes (End tag)
-        let mut delta_writer = DeltaSerializer::with_mtu(128);
+        let mut delta_writer = DeltaSerializer::with_mtu(140);
 
         // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
         let node1 = ChitchatId::for_local_test(10_001);
@@ -608,9 +646,9 @@ mod tests {
         let node2 = ChitchatId::for_local_test(10_002);
         // +8 bytes (last gc version) + 27 bytes (ChitchatId) + 1 byte (op tag)
         // = 155
-        assert!(delta_writer.try_add_node(node2, 0u64, false));
+        assert!(delta_writer.try_add_node(node2, 0u64, 0));
         // The block got compressed.
-        test_aux_delta_writer(delta_writer, 85);
+        test_aux_delta_writer(delta_writer, 80);
     }
 
     #[test]
@@ -620,7 +658,7 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(delta_writer.try_add_node(node1, 0, false));
+        assert!(delta_writer.try_add_node(node1, 0, 0));
 
         // +23 bytes.
         assert!(delta_writer.try_add_kv(
@@ -643,7 +681,7 @@ mod tests {
 
         let node2 = ChitchatId::for_local_test(10_002);
         // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (ChitchatId).
-        assert!(!delta_writer.try_add_node(node2, 0u64, false));
+        assert!(!delta_writer.try_add_node(node2, 0u64, 1u64));
 
         // The block got compressed.
         test_aux_delta_writer(delta_writer, 72);
@@ -658,7 +696,7 @@ mod tests {
 
         // + 3 bytes (block tag) + 35 bytes (node) + 1 byte (op tag)
         // = 40
-        assert!(delta_writer.try_add_node(node1, 0u64, false));
+        assert!(delta_writer.try_add_node(node1, 0u64, 1u64));
 
         // +23 bytes (kv) + 1 (op tag) + 3 bytes (pessimistic block tag)
         // = 67
@@ -681,7 +719,7 @@ mod tests {
                 tombstone: None,
             }
         ));
-        test_aux_delta_writer(delta_writer, 64);
+        test_aux_delta_writer(delta_writer, 72);
     }
 
     #[test]
@@ -690,7 +728,7 @@ mod tests {
         let mut delta_writer = DeltaSerializer::with_mtu(62);
 
         let node1 = ChitchatId::for_local_test(10_001);
-        assert!(delta_writer.try_add_node(node1, 0u64, false));
+        assert!(delta_writer.try_add_node(node1, 0u64, 1u64));
 
         assert!(delta_writer.try_add_kv(
             "key11",
@@ -728,6 +766,6 @@ mod tests {
                 num_valid_tags += 1;
             }
         }
-        assert_eq!(num_valid_tags, 3);
+        assert_eq!(num_valid_tags, 2);
     }
 }

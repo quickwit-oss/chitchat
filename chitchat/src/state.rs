@@ -12,7 +12,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::delta::{Delta, DeltaSerializer, NodeDelta};
 use crate::digest::{Digest, NodeDigest};
@@ -119,19 +119,23 @@ impl NodeState {
             .map(|(key, versioned_value)| (key, versioned_value.value.as_str()))
     }
 
+    pub fn set_max_version(&mut self, max_version: Version) {
+        self.max_version = max_version;
+    }
+
     // Prepare the node state to receive a delta.
     // Returns `true` if the delta can be applied. In that case, the node state may be mutated (if a
     // reset is required) Returns `false` if the delta cannot be applied. In that case, the node
     // state is not modified.
     #[must_use]
     fn prepare_apply_delta(&mut self, node_delta: &NodeDelta) -> bool {
-        if node_delta.from_version > self.max_version {
+        if node_delta.from_version_excluded > self.max_version {
             // This delta is coming from the future.
             // We probably experienced a reset and this delta is not usable for us anymore.
             // This is not a bug, it can happen, but we just need to ignore it!
             info!(
                 node=?node_delta.chitchat_id,
-                from_version=node_delta.from_version,
+                from_version=node_delta.from_version_excluded,
                 last_gc_version=node_delta.last_gc_version,
                 current_last_gc_version=self.last_gc_version,
                 "received delta from the future, ignoring it"
@@ -148,30 +152,77 @@ impl NodeState {
         // This delta might be missing tombstones with version within
         // (`node_state.max_version`..`last_gc_version`].
         //
-        // It is ok if we never received the associated tombstones to begin
+        // It is ok if we don't have the associated values to begin
         // with.
         if self.last_gc_version >= node_delta.last_gc_version {
             return true;
         }
 
-        if node_delta.from_version == 0 {
-            // We are out of sync. This delta is an invitation to `reset` our state.
-            info!(
+        if node_delta.from_version_excluded > 0 {
+            warn!(
                 node=?node_delta.chitchat_id,
+                from_version=node_delta.from_version_excluded,
                 last_gc_version=node_delta.last_gc_version,
                 current_last_gc_version=self.last_gc_version,
-                "resetting node");
-            *self = NodeState::new(node_delta.chitchat_id.clone(), self.listeners.clone());
-            self.last_gc_version = node_delta.last_gc_version;
-            true
-        } else {
-            error!(
+                "received an inapplicable delta, ignoring it");
+        }
+
+        let Some(delta_max_version) = node_delta
+            .key_values
+            .iter()
+            .map(|(_, v)| v.version)
+            .max()
+            .or(node_delta.max_version)
+        else {
+            // This can happen if we just hit the mtu at the moment
+            // of writing the SetMaxVersion operation.
+            return false;
+        };
+
+        if delta_max_version <= self.max_version() {
+            // There is not point apply in this delta as it is not bringing us to a newer state.
+            warn!(
                 node=?node_delta.chitchat_id,
-                from_version=node_delta.from_version,
+                from_version=node_delta.from_version_excluded,
+                delta_max_version=delta_max_version,
                 last_gc_version=node_delta.last_gc_version,
                 current_last_gc_version=self.last_gc_version,
-                "received an invalid delta and ignoring it, please report");
-            false
+                "received a delta that does not bring us to a fresher state, ignoring it");
+            return false;
+        }
+
+        // We are out of sync. This delta is an invitation to `reset` our state.
+        info!(
+            node=?node_delta.chitchat_id,
+            last_gc_version=node_delta.last_gc_version,
+            current_last_gc_version=self.last_gc_version,
+            "resetting node");
+        *self = NodeState::new(node_delta.chitchat_id.clone(), self.listeners.clone());
+        if let Some(max_version) = node_delta.max_version {
+            self.max_version = max_version;
+        }
+        // We need to reset our `last_gc_version`.
+        self.last_gc_version = node_delta.last_gc_version;
+        true
+    }
+
+    fn apply_delta(&mut self, node_delta: NodeDelta) {
+        info!(delta=?node_delta);
+        if !self.prepare_apply_delta(&node_delta) {
+            return;
+        }
+        let current_max_version = self.max_version();
+        for (key, versioned_value) in node_delta.key_values {
+            if versioned_value.tombstone.is_some() {
+                // We don't want to keep any tombstone before `last_gc_version`.
+                if versioned_value.version <= self.last_gc_version {
+                    continue;
+                }
+            }
+            if versioned_value.version <= current_max_version {
+                continue;
+            }
+            self.set_versioned_value(key, versioned_value);
         }
     }
 
@@ -418,13 +469,7 @@ impl ClusterState {
         // Apply delta.
         for node_delta in delta.node_deltas {
             let node_state = self.node_state_mut(&node_delta.chitchat_id);
-            if !node_state.prepare_apply_delta(&node_delta) {
-                continue;
-            }
-            for (key, versioned_value) in node_delta.key_values {
-                node_state.max_version = node_state.max_version.max(versioned_value.version);
-                node_state.set_versioned_value(key, versioned_value);
-            }
+            node_state.apply_delta(node_delta);
         }
     }
 
@@ -469,7 +514,7 @@ impl ClusterState {
             // We have garbage collected some tombstones that the other node does not know about
             // yet. A reset is needed.
             let should_reset = node_digest.max_version < node_state.last_gc_version;
-            let from_version = if should_reset {
+            let from_version_excluded = if should_reset {
                 warn!(
                     "Node to reset {chitchat_id:?} last gc version: {} max version: {}",
                     node_state.last_gc_version, node_digest.max_version
@@ -478,7 +523,7 @@ impl ClusterState {
             } else {
                 node_digest.max_version
             };
-            stale_nodes.offer(chitchat_id, node_state, from_version);
+            stale_nodes.offer(chitchat_id, node_state, from_version_excluded);
         }
         let mut delta_serializer = DeltaSerializer::with_mtu(mtu);
 
@@ -486,16 +531,25 @@ impl ClusterState {
             if !delta_serializer.try_add_node(
                 stale_node.chitchat_id.clone(),
                 stale_node.node_state.last_gc_version,
-                stale_node.from_version,
+                stale_node.from_version_excluded,
             ) {
                 break;
             };
+
+            let mut added_something = false;
             for (key, versioned_value) in stale_node.stale_key_values() {
                 if !delta_serializer.try_add_kv(key, versioned_value.clone()) {
                     return delta_serializer.finish();
                 }
+                added_something = true;
+            }
+            // There aren't any key-values in the state_node apparently.
+            // Let's add a specific instruction to the delta to set the max version.
+            if !added_something {
+                delta_serializer.try_set_max_version(stale_node.node_state.max_version);
             }
         }
+
         delta_serializer.finish()
     }
 }
@@ -558,15 +612,15 @@ struct SortedStaleNodes<'a> {
 /// If no KV is stale, there is nothing to gossip, and we simply return `None`:
 /// the node is not a candidate for gossip.
 fn staleness_score(node_state: &NodeState, floor_version: u64) -> Option<Staleness> {
+    if node_state.max_version() <= floor_version {
+        return None;
+    }
     let is_unknown = floor_version == 0u64;
     let num_stale_key_values = if is_unknown {
         node_state.num_key_values()
     } else {
         node_state.stale_key_values(floor_version).count()
     };
-    if !is_unknown && num_stale_key_values == 0 {
-        return None;
-    }
     Some(Staleness {
         is_unknown,
         max_version: node_state.max_version,
@@ -575,33 +629,23 @@ fn staleness_score(node_state: &NodeState, floor_version: u64) -> Option<Stalene
 }
 
 impl<'a> SortedStaleNodes<'a> {
-    // /// Adds a node to the list of stale nodes.
-    // fn insert(&mut self, chitchat_id: &'a ChitchatId, node_state: &'a NodeState) {
-    //     let Some(staleness) = staleness_score(node_state, 0u64) else {
-    //         // The node does not have any stale key values.
-    //         return;
-    //     };
-    //     let stale_node = StaleNode {
-    //         chitchat_id,
-    //         node_state,
-    //         from_version: 0u64,
-    //     };
-    //     self.stale_nodes
-    //         .entry(staleness)
-    //         .or_default()
-    //         .push(stale_node);
-    // }
-
-    /// Evaluates whether the node should be added to the list of stale nodes.
-    fn offer(&mut self, chitchat_id: &'a ChitchatId, node_state: &'a NodeState, from_version: u64) {
-        let Some(staleness) = staleness_score(node_state, from_version) else {
+    /// Adds a to the list of stale nodes.
+    /// If the node is not stale (meaning we have no fresher Key Values to share), then this
+    /// function simply returns.
+    fn offer(
+        &mut self,
+        chitchat_id: &'a ChitchatId,
+        node_state: &'a NodeState,
+        from_version_excluded: u64,
+    ) {
+        let Some(staleness) = staleness_score(node_state, from_version_excluded) else {
             // The node does not have any stale KV.
             return;
         };
         let stale_node = StaleNode {
             chitchat_id,
             node_state,
-            from_version,
+            from_version_excluded,
         };
         self.stale_nodes
             .entry(staleness)
@@ -629,14 +673,14 @@ impl<'a> SortedStaleNodes<'a> {
 struct StaleNode<'a> {
     chitchat_id: &'a ChitchatId,
     node_state: &'a NodeState,
-    from_version: u64,
+    from_version_excluded: u64,
 }
 
 impl<'a> StaleNode<'a> {
     /// Iterates over the stale key-value pairs in decreasing order of staleness.
     fn stale_key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
         self.node_state
-            .stale_key_values(self.from_version)
+            .stale_key_values(self.from_version_excluded)
             .sorted_unstable_by_key(|(_, versioned_value)| versioned_value.version)
     }
 }
@@ -697,8 +741,7 @@ mod tests {
             let stale_node = StaleNode {
                 chitchat_id: &node,
                 node_state: &node_state,
-                floor_version: 0,
-                need_reset: false,
+                from_version_excluded: 0u64,
             };
             assert!(stale_node.stale_key_values().next().is_none());
         }
@@ -718,8 +761,7 @@ mod tests {
             let stale_node = StaleNode {
                 chitchat_id: &node,
                 node_state: &node_state,
-                floor_version: 1,
-                need_reset: false,
+                from_version_excluded: 1u64,
             };
             assert_eq!(
                 stale_node.stale_key_values().collect::<Vec<_>>(),
@@ -747,16 +789,18 @@ mod tests {
 
         // No stale KV. We still insert the node!
         // That way it will get a node state, and be a candidate for gossip later.
-        let node_state1 = NodeState::for_test();
-        stale_nodes.insert(&node1, &node_state1);
+        let mut node_state1 = NodeState::for_test();
+        node_state1.set_max_version(2);
+
+        stale_nodes.offer(&node1, &node_state1, 0u64);
         assert_eq!(stale_nodes.stale_nodes.len(), 1);
 
         let mut node2_state = NodeState::for_test();
         node2_state.set_with_version("key_a", "value_a", 1);
-        stale_nodes.insert(&node2, &node2_state);
+        stale_nodes.offer(&node2, &node2_state, 0u64);
         let expected_staleness = Staleness {
             is_unknown: true,
-            max_version: 0,
+            max_version: 1,
             num_stale_key_values: 0,
         };
         assert_eq!(stale_nodes.stale_nodes[&expected_staleness].len(), 1);
@@ -765,7 +809,7 @@ mod tests {
         node3_state.set_with_version("key_b", "value_b", 2);
         node3_state.set_with_version("key_c", "value_c", 3);
 
-        stale_nodes.insert(&node3, &node3_state);
+        stale_nodes.offer(&node3, &node3_state, 0u64);
         let expected_staleness = Staleness {
             is_unknown: true,
             max_version: 3,
@@ -780,31 +824,23 @@ mod tests {
 
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = NodeState::for_test();
-        stale_nodes.offer(&node1, &node1_state, &NodeDigest::new(Heartbeat(0), 1));
+        stale_nodes.offer(&node1, &node1_state, 1u64);
         // No stale records. This is not a candidate for gossip.
         assert!(stale_nodes.stale_nodes.is_empty());
 
         let node2 = ChitchatId::for_local_test(10_002);
         let mut node2_state = NodeState::for_test();
-        node2_state
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.offer(&node2, &node2_state, &NodeDigest::new(Heartbeat(0), 1));
+        node2_state.set_with_version("key_a", "value_a", 1);
+        stale_nodes.offer(&node2, &node2_state, 1u64);
         // No stale records (due to the floor version). This is not a candidate for gossip.
         assert!(stale_nodes.stale_nodes.is_empty());
 
         let node3 = ChitchatId::for_local_test(10_002);
         let mut node3_state = NodeState::for_test();
-        node3_state
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        node3_state
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-        node3_state
-            .key_values
-            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
-        stale_nodes.offer(&node3, &node3_state, &NodeDigest::new(Heartbeat(0), 1));
+        node3_state.set_with_version("key_a", "value_a", 1);
+        node3_state.set_with_version("key_b", "value_b", 2);
+        node3_state.set_with_version("key_c", "value_c", 3);
+        stale_nodes.offer(&node3, &node3_state, 1u64);
         assert_eq!(stale_nodes.stale_nodes.len(), 1);
         let expected_staleness = Staleness {
             is_unknown: false,
@@ -819,74 +855,46 @@ mod tests {
         let mut stale_nodes = SortedStaleNodes::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let mut node_state1 = NodeState::for_test();
-        node_state1
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        node_state1
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-        node_state1
-            .key_values
-            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
-        stale_nodes.offer(&node1, &node_state1, &NodeDigest::new(Heartbeat(0), 1));
+        node_state1.set_with_version("key_a", "value_a", 1);
+        node_state1.set_with_version("key_b", "value_b", 2);
+        node_state1.set_with_version("key_c", "value_c", 3);
+        stale_nodes.offer(&node1, &node_state1, 1u64);
         // 2 stale values.
 
         let node2 = ChitchatId::for_local_test(10_002);
         let mut node_state2 = NodeState::for_test();
-        node_state2
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        node_state2
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-        node_state2
-            .key_values
-            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 5));
-        stale_nodes.offer(&node2, &node_state2, &NodeDigest::new(Heartbeat(0), 2));
+        node_state2.set_with_version("key_a", "value", 1);
+        node_state2.set_with_version("key_b", "value_b", 2);
+        node_state2.set_with_version("key_c", "value_c", 5);
+        stale_nodes.offer(&node2, &node_state2, 2u64);
         // 1 stale value.
 
         let node3 = ChitchatId::for_local_test(10_003);
         let mut node_state3 = NodeState::for_test();
-        node_state3
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        node_state3
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-        node_state3
-            .key_values
-            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 3));
-        stale_nodes.offer(&node3, &node_state3, &NodeDigest::new(Heartbeat(0), 7));
+        node_state3.set_with_version("key_a", "value_a", 1);
+        node_state3.set_with_version("key_b", "value_b", 2);
+        node_state3.set_with_version("key_c", "value_c", 3);
+        stale_nodes.offer(&node3, &node_state3, 7u64);
         // 0 stale values.
 
         let node4 = ChitchatId::for_local_test(10_004);
         let mut node_state4 = NodeState::for_test();
-        node_state4
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        node_state4
-            .key_values
-            .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-        node_state4
-            .key_values
-            .insert("key_c".to_string(), VersionedValue::for_test("value_c", 5));
-        node_state4
-            .key_values
-            .insert("key_d".to_string(), VersionedValue::for_test("value_d", 7));
-        stale_nodes.offer(&node4, &node_state4, &NodeDigest::new(Heartbeat(0), 1));
+        node_state4.set_with_version("key_a", "value_a", 1);
+        node_state4.set_with_version("key_b", "value_b", 2);
+        node_state4.set_with_version("key_c", "value_c", 5);
+        node_state4.set_with_version("key_d", "value_d", 7);
+        stale_nodes.offer(&node4, &node_state4, 1);
 
         // 3 stale values
         let node5 = ChitchatId::for_local_test(10_005);
         let node_state5 = NodeState::for_test();
-        stale_nodes.insert(&node5, &node_state5);
+        stale_nodes.offer(&node5, &node_state5, 0);
 
         // 0 stale values
         let node6 = ChitchatId::for_local_test(10_006);
         let mut node_state6 = NodeState::for_test();
-        node_state6
-            .key_values
-            .insert("key_a".to_string(), VersionedValue::for_test("value_a", 1));
-        stale_nodes.insert(&node6, &node_state6);
+        node_state6.set_with_version("key_a", "value_a", 1);
+        stale_nodes.offer(&node6, &node_state6, 0u64);
 
         // 1 stale values
         assert_eq!(
@@ -894,7 +902,7 @@ mod tests {
                 .into_iter()
                 .map(|stale_node| stale_node.chitchat_id.gossip_advertise_addr.port())
                 .collect::<Vec<_>>(),
-            vec![10_005, 10_006, 10_004, 10_001, 10_002]
+            vec![10_006, 10_004, 10_001, 10_002]
         );
     }
 
@@ -1093,7 +1101,7 @@ mod tests {
         delta.add_kv(&node1, "key_b", "2", 2, false);
 
         // We reset node 2
-        delta.add_node(node2.clone(), 0u64, true);
+        delta.add_node(node2.clone(), 3, 0);
         delta.add_kv(&node2, "key_d", "4", 4, false);
         cluster_state.apply_delta(delta);
 
@@ -1303,7 +1311,7 @@ mod tests {
             let mut expected_delta = Delta::default();
             expected_delta.add_node(node2.clone(), 0u64, 0u64);
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
-            expected_delta.add_node(node1.clone(), 0u64, 0u64);
+            expected_delta.add_node(node1.clone(), 0u64, 1u64);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.set_serialized_len(76);
             assert_eq!(delta, expected_delta);
@@ -1327,10 +1335,10 @@ mod tests {
             let mut expected_delta = Delta::default();
             expected_delta.add_node(node2.clone(), 0u64, 0u64);
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
-            expected_delta.add_node(node1.clone(), 0u64, false);
+            expected_delta.add_node(node1.clone(), 0u64, 1u64);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
             expected_delta.add_kv(&node1, "key_a", "", 3, true);
-            expected_delta.set_serialized_len(91);
+            expected_delta.set_serialized_len(90);
             assert_eq!(delta, expected_delta);
         }
 
@@ -1339,7 +1347,7 @@ mod tests {
         tokio::time::advance(DELETE_GRACE_PERIOD).await;
         cluster_state
             .node_state_mut(&node1)
-            .gc_keys_marked_for_deletion(Duration::from_secs(10));
+            .gc_keys_marked_for_deletion(DELETE_GRACE_PERIOD);
 
         {
             let mut digest = Digest::default();
@@ -1350,11 +1358,12 @@ mod tests {
                 &HashSet::new(),
             );
             let mut expected_delta = Delta::default();
-            expected_delta.add_node(node2.clone(), 0u64, true);
+            expected_delta.add_node(node2.clone(), 0u64, 0u64);
             expected_delta.add_kv(&node2.clone(), "key_c", "3", 2, false);
-            expected_delta.add_node(node1.clone(), 3u64, true);
+            // Last gc set to 3 and from version to 0. That's a reset right there.
+            expected_delta.add_node(node1.clone(), 3u64, 0u64);
             expected_delta.add_kv(&node1, "key_b", "2", 2, false);
-            expected_delta.set_serialized_len(83);
+            expected_delta.set_serialized_len(75);
             assert_eq!(&delta, &expected_delta);
         }
     }
@@ -1375,5 +1384,188 @@ mod tests {
             .map(|(key, _v)| key)
             .collect();
         assert_eq!(node_states, &["Europe:", "Europe:Italy"]);
+    }
+
+    #[test]
+    fn test_node_apply_delta_simple() {
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 1);
+        node_state.set_with_version("key_b", "val_a", 2);
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 2,
+            last_gc_version: 0u64,
+            max_version: None,
+            key_values: vec![
+                (
+                    "key_c".to_string(),
+                    VersionedValue {
+                        value: "val_c".to_string(),
+                        version: 4,
+                        tombstone: None,
+                    },
+                ),
+                (
+                    "key_b".to_string(),
+                    VersionedValue {
+                        value: "val_b2".to_string(),
+                        version: 3,
+                        tombstone: None,
+                    },
+                ),
+            ],
+        };
+        node_state.apply_delta(node_delta);
+        assert_eq!(node_state.num_key_values(), 3);
+        assert_eq!(node_state.max_version(), 4);
+        assert_eq!(node_state.last_gc_version, 0);
+        assert_eq!(node_state.get("key_a").unwrap(), "val_a");
+        assert_eq!(node_state.get("key_b").unwrap(), "val_b2");
+        assert_eq!(node_state.get("key_c").unwrap(), "val_c");
+    }
+
+    // Here we check that the accessor that dismiss resetting a Kv to the same value is not
+    // used in apply delta. Resetting to the same value is very possible in reality several updates
+    // happened in a row but were shadowed by the scuttlebutt logic. We DO need to update the
+    // version.
+    #[test]
+    fn test_node_apply_same_value_different_version() {
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 1);
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 1,
+            last_gc_version: 0,
+            max_version: None,
+            key_values: vec![(
+                "key_a".to_string(),
+                VersionedValue {
+                    value: "val_a".to_string(),
+                    version: 3,
+                    tombstone: None,
+                },
+            )],
+        };
+        node_state.apply_delta(node_delta);
+        let versioned_a = node_state.get_versioned("key_a").unwrap();
+        assert_eq!(versioned_a.version, 3);
+        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(&versioned_a.value, "val_a");
+    }
+
+    #[test]
+    fn test_node_skip_delta_from_the_future() {
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 5);
+        assert_eq!(node_state.max_version(), 5);
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 6, // we skipped version 6 here.
+            last_gc_version: 0,
+            max_version: None,
+            key_values: vec![(
+                "key_a".to_string(),
+                VersionedValue {
+                    value: "new_val".to_string(),
+                    version: 7,
+                    tombstone: None,
+                },
+            )],
+        };
+        node_state.apply_delta(node_delta);
+        let versioned_a = node_state.get_versioned("key_a").unwrap();
+        assert_eq!(versioned_a.version, 5);
+        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(&versioned_a.value, "val_a");
+    }
+
+    #[tokio::test]
+    async fn test_node_apply_delta_different_last_gc_is_ok_if_below_max_version() {
+        tokio::time::pause();
+        const GC_PERIOD: Duration = Duration::from_secs(10);
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 17);
+        node_state.mark_for_deletion("key_a");
+        tokio::time::advance(GC_PERIOD).await;
+        node_state.gc_keys_marked_for_deletion(GC_PERIOD);
+        assert_eq!(node_state.last_gc_version, 18);
+        assert_eq!(node_state.max_version(), 18);
+        node_state.set_with_version("key_a", "val_a", 31);
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 31, // we skipped version 6 here.
+            last_gc_version: 30,
+            max_version: None,
+            key_values: vec![(
+                "key_a".to_string(),
+                VersionedValue {
+                    value: "new_val".to_string(),
+                    version: 32,
+                    tombstone: None,
+                },
+            )],
+        };
+        node_state.apply_delta(node_delta);
+        let versioned_a = node_state.get_versioned("key_a").unwrap();
+        assert_eq!(versioned_a.version, 32);
+        assert_eq!(node_state.max_version(), 32);
+        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(&versioned_a.value, "new_val");
+    }
+
+    #[tokio::test]
+    async fn test_node_apply_delta_on_reset_fresher_version() {
+        tokio::time::pause();
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 17);
+        assert_eq!(node_state.max_version(), 17);
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 0, // we skipped version 6 here.
+            last_gc_version: 30,
+            max_version: None,
+            key_values: vec![(
+                "key_b".to_string(),
+                VersionedValue {
+                    value: "val_b".to_string(),
+                    version: 32,
+                    tombstone: None,
+                },
+            )],
+        };
+        node_state.apply_delta(node_delta);
+        assert!(node_state.get_versioned("key_a").is_none());
+        let versioned_b = node_state.get_versioned("key_b").unwrap();
+        assert_eq!(versioned_b.version, 32);
+    }
+
+    #[tokio::test]
+    async fn test_node_apply_delta_no_reset_if_older_version() {
+        tokio::time::pause();
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "val_a", 31);
+        node_state.set_with_version("key_b", "val_b2", 32);
+        assert_eq!(node_state.max_version(), 32);
+        // This does look like a valid reset, but we are already at version 32.
+        // Let's ignore this.
+        let node_delta = NodeDelta {
+            chitchat_id: node_state.node_id.clone(),
+            from_version_excluded: 0, // we skipped version 6 here.
+            last_gc_version: 17,
+            max_version: None,
+            key_values: vec![(
+                "key_b".to_string(),
+                VersionedValue {
+                    value: "val_b".to_string(),
+                    version: 30,
+                    tombstone: None,
+                },
+            )],
+        };
+        node_state.apply_delta(node_delta);
+        assert_eq!(node_state.max_version, 32);
+        let versioned_b = node_state.get_versioned("key_b").unwrap();
+        assert_eq!(versioned_b.version, 32);
+        assert_eq!(versioned_b.value, "val_b2");
     }
 }

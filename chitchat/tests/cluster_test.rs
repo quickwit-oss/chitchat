@@ -83,7 +83,7 @@ impl Simulator {
 
     pub async fn execute(&mut self, operations: Vec<Operation>) {
         for operation in operations {
-            debug!("Execute operation {operation:?}");
+            info!("Execute operation {operation:?}");
             match operation {
                 Operation::AddNode {
                     chitchat_id,
@@ -405,6 +405,7 @@ async fn test_marked_for_deletion_gc_with_network_partition_2_nodes() {
 }
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition_4_nodes() {
+    let _ = tracing_subscriber::fmt::try_init();
     const TIMEOUT: Duration = Duration::from_millis(500);
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = test_chitchat_id(1);
