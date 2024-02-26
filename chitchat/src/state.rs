@@ -196,31 +196,29 @@ impl NodeState {
     fn gc_keys_marked_for_deletion(&mut self, grace_period: Duration) {
         let now = Instant::now();
         let mut max_deleted_version = self.last_gc_version;
-        self.retain_key_values(|_, versioned_value: &VersionedValue| {
-            let Some(deleted_instant) = versioned_value.tombstone else {
-                // The KV is not deleted. We keep it!
-                return true;
-            };
-            if now < deleted_instant + grace_period {
-                // We haved not passed the grace period yet. We keep it!
-                return true;
-            }
-            // We have exceeded the tombstone grace period. Time to remove it.
-            max_deleted_version = versioned_value.version.max(max_deleted_version);
-            false
-        });
+        self.key_values
+            .retain(|_, versioned_value: &mut VersionedValue| {
+                let Some(deleted_instant) = versioned_value.tombstone else {
+                    // The KV is not deleted. We keep it!
+                    return true;
+                };
+                if now < deleted_instant + grace_period {
+                    // We haved not passed the grace period yet. We keep it!
+                    return true;
+                }
+                // We have exceeded the tombstone grace period. Time to remove it.
+                max_deleted_version = versioned_value.version.max(max_deleted_version);
+                false
+            });
         self.last_gc_version = max_deleted_version;
     }
 
-    /// Retains the key-value pairs for which the predicate returns `true` and removes the other
-    /// ones definitively. In other words, this method does not add tombstones.
+    /// Removes a key-value pair without marking it for deletion.
     ///
-    /// Most often, you don't want to call this method but rather `mark_for_deletion`.
-    pub(crate) fn retain_key_values(
-        &mut self,
-        mut predicate: impl FnMut(&str, &VersionedValue) -> bool,
-    ) {
-        self.key_values.retain(|key, value| predicate(key, value));
+    /// Most of the time, you do not want to call this method but,
+    /// `mark_for_deletion` instead.
+    pub(crate) fn remove_key_value_internal(&mut self, key: &str) {
+        self.key_values.remove(key);
     }
 
     /// Returns an iterator over the versioned values that are strictly greater than

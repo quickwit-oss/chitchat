@@ -310,16 +310,26 @@ impl Chitchat {
     ) {
         let node_state = self.cluster_state.node_state_mut(chitchat_id);
 
-        // If the node is new, we must ensure that the failure detector is aware of it.
+        if node_state.max_version() >= max_version {
+            return;
+        }
         if node_state.max_version() == 0 {
             self.failure_detector.report_heartbeat(chitchat_id);
         }
-        node_state.retain_key_values(|_key, value| value.version > max_version);
-        node_state.set_last_gc_version(last_gc_version);
-
+        // We don't want to call listeners for keys that are already up to date so we must do this
+        // dance instead of clearing the node state and then setting the new values.
+        let mut previous_keys: HashSet<String> = node_state
+            .key_values_including_deleted()
+            .map(|(key, _)| key.to_string())
+            .collect();
         for (key, value) in key_values {
+            previous_keys.remove(&key);
             node_state.set_versioned_value(key, value)
         }
+        for key in previous_keys {
+            node_state.remove_key_value_internal(&key);
+        }
+        node_state.set_last_gc_version(last_gc_version);
     }
 
     pub(crate) fn update_self_heartbeat(&mut self) {
@@ -1075,19 +1085,54 @@ mod tests {
 
         node.reset_node_state(
             &chitchat_id,
-            [(
-                "qux".to_string(),
-                VersionedValue::new("baz".to_string(), 2, false),
-            )]
+            [
+                (
+                    "qux".to_string(),
+                    VersionedValue::new("baz".to_string(), 2, false),
+                ),
+                (
+                    "toto".to_string(),
+                    VersionedValue::new("tutu".to_string(), 4, false),
+                ),
+            ]
             .into_iter(),
-            2,
+            4,
             1337,
         );
         let node_state = node.cluster_state.node_state(&chitchat_id).unwrap();
         assert_eq!(node_state.num_key_values(), 2);
         assert_eq!(node_state.get("qux"), Some("baz"));
+        assert_eq!(node_state.get("toto"), Some("tutu"));
+        assert_eq!(node_state.max_version(), 4);
+        assert_eq!(node_state.last_gc_version(), 1337);
+
+        let chitchat_id = ChitchatId::for_local_test(10_004);
+        let node_state = node.cluster_state.node_state_mut(&chitchat_id);
+        node_state.set("foo", "bar");
+        node_state.set("qux", "baz");
+        node_state.set("toto", "titi");
+
+        node.reset_node_state(
+            &chitchat_id,
+            [
+                (
+                    "foo".to_string(),
+                    VersionedValue::new("bar".to_string(), 1, false),
+                ),
+                (
+                    "qux".to_string(),
+                    VersionedValue::new("baz".to_string(), 2, false),
+                ),
+            ]
+            .into_iter(),
+            2,
+            1337,
+        );
+        let node_state = node.cluster_state.node_state(&chitchat_id).unwrap();
+        assert_eq!(node_state.num_key_values(), 3);
+        assert_eq!(node_state.get("foo"), Some("bar"));
+        assert_eq!(node_state.get("qux"), Some("baz"));
         assert_eq!(node_state.get("toto"), Some("titi"));
         assert_eq!(node_state.max_version(), 3);
-        assert_eq!(node_state.last_gc_version(), 1337);
     }
 }
