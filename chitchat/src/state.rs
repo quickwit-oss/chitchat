@@ -170,7 +170,7 @@ impl NodeState {
         let Some(delta_max_version) = node_delta
             .key_values
             .iter()
-            .map(|(_, v)| v.version)
+            .map(|key_value_mutation| key_value_mutation.version)
             .max()
             .or(node_delta.max_version)
         else {
@@ -206,23 +206,33 @@ impl NodeState {
         true
     }
 
-    fn apply_delta(&mut self, node_delta: NodeDelta) {
+    fn apply_delta(&mut self, node_delta: NodeDelta, now: Instant) {
         info!(delta=?node_delta);
         if !self.prepare_apply_delta(&node_delta) {
             return;
         }
         let current_max_version = self.max_version();
-        for (key, versioned_value) in node_delta.key_values {
-            if versioned_value.tombstone.is_some() {
+        for key_value_mutation in node_delta.key_values {
+            if key_value_mutation.version <= current_max_version {
+                // We already know about this KV.
+                continue;
+            }
+            if key_value_mutation.tombstone {
                 // We don't want to keep any tombstone before `last_gc_version`.
-                if versioned_value.version <= self.last_gc_version {
+                if key_value_mutation.version <= self.last_gc_version {
                     continue;
                 }
             }
-            if versioned_value.version <= current_max_version {
-                continue;
-            }
-            self.set_versioned_value(key, versioned_value);
+            let versioned_value = VersionedValue {
+                value: key_value_mutation.value,
+                version: key_value_mutation.version,
+                tombstone: if key_value_mutation.tombstone {
+                    Some(now)
+                } else {
+                    None
+                },
+            };
+            self.set_versioned_value(key_value_mutation.key, versioned_value);
         }
     }
 
@@ -466,10 +476,11 @@ impl ClusterState {
     }
 
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
+        let now = Instant::now();
         // Apply delta.
         for node_delta in delta.node_deltas {
             let node_state = self.node_state_mut(&node_delta.chitchat_id);
-            node_state.apply_delta(node_delta);
+            node_state.apply_delta(node_delta, now);
         }
     }
 
@@ -731,6 +742,7 @@ fn random_generator() -> impl Rng {
 mod tests {
     use super::*;
     use crate::serialize::Serializable;
+    use crate::types::KeyValueMutation;
     use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 
     #[test]
@@ -1392,30 +1404,26 @@ mod tests {
         node_state.set_with_version("key_a", "val_a", 1);
         node_state.set_with_version("key_b", "val_a", 2);
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 2,
             last_gc_version: 0u64,
             max_version: None,
             key_values: vec![
-                (
-                    "key_c".to_string(),
-                    VersionedValue {
-                        value: "val_c".to_string(),
-                        version: 4,
-                        tombstone: None,
-                    },
-                ),
-                (
-                    "key_b".to_string(),
-                    VersionedValue {
-                        value: "val_b2".to_string(),
-                        version: 3,
-                        tombstone: None,
-                    },
-                ),
+                KeyValueMutation {
+                    key: "key_c".to_string(),
+                    value: "val_c".to_string(),
+                    version: 4,
+                    tombstone: false,
+                },
+                KeyValueMutation {
+                    key: "key_b".to_string(),
+                    value: "val_b2".to_string(),
+                    version: 3,
+                    tombstone: false,
+                },
             ],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         assert_eq!(node_state.num_key_values(), 3);
         assert_eq!(node_state.max_version(), 4);
         assert_eq!(node_state.last_gc_version, 0);
@@ -1433,20 +1441,18 @@ mod tests {
         let mut node_state = NodeState::for_test();
         node_state.set_with_version("key_a", "val_a", 1);
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 1,
             last_gc_version: 0,
             max_version: None,
-            key_values: vec![(
-                "key_a".to_string(),
-                VersionedValue {
-                    value: "val_a".to_string(),
-                    version: 3,
-                    tombstone: None,
-                },
-            )],
+            key_values: vec![KeyValueMutation {
+                key: "key_a".to_string(),
+                value: "val_a".to_string(),
+                version: 3,
+                tombstone: false,
+            }],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 3);
         assert!(versioned_a.tombstone.is_none());
@@ -1459,20 +1465,18 @@ mod tests {
         node_state.set_with_version("key_a", "val_a", 5);
         assert_eq!(node_state.max_version(), 5);
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 6, // we skipped version 6 here.
             last_gc_version: 0,
             max_version: None,
-            key_values: vec![(
-                "key_a".to_string(),
-                VersionedValue {
-                    value: "new_val".to_string(),
-                    version: 7,
-                    tombstone: None,
-                },
-            )],
+            key_values: vec![KeyValueMutation {
+                key: "key_a".to_string(),
+                value: "new_val".to_string(),
+                version: 7,
+                tombstone: false,
+            }],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 5);
         assert!(versioned_a.tombstone.is_none());
@@ -1492,20 +1496,18 @@ mod tests {
         assert_eq!(node_state.max_version(), 18);
         node_state.set_with_version("key_a", "val_a", 31);
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 31, // we skipped version 6 here.
             last_gc_version: 30,
             max_version: None,
-            key_values: vec![(
-                "key_a".to_string(),
-                VersionedValue {
-                    value: "new_val".to_string(),
-                    version: 32,
-                    tombstone: None,
-                },
-            )],
+            key_values: vec![KeyValueMutation {
+                key: "key_a".to_string(),
+                value: "new_val".to_string(),
+                version: 32,
+                tombstone: false,
+            }],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 32);
         assert_eq!(node_state.max_version(), 32);
@@ -1520,20 +1522,18 @@ mod tests {
         node_state.set_with_version("key_a", "val_a", 17);
         assert_eq!(node_state.max_version(), 17);
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 0, // we skipped version 6 here.
             last_gc_version: 30,
             max_version: None,
-            key_values: vec![(
-                "key_b".to_string(),
-                VersionedValue {
-                    value: "val_b".to_string(),
-                    version: 32,
-                    tombstone: None,
-                },
-            )],
+            key_values: vec![KeyValueMutation {
+                key: "key_b".to_string(),
+                value: "val_b".to_string(),
+                version: 32,
+                tombstone: false,
+            }],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         assert!(node_state.get_versioned("key_a").is_none());
         let versioned_b = node_state.get_versioned("key_b").unwrap();
         assert_eq!(versioned_b.version, 32);
@@ -1549,20 +1549,18 @@ mod tests {
         // This does look like a valid reset, but we are already at version 32.
         // Let's ignore this.
         let node_delta = NodeDelta {
-            chitchat_id: node_state.node_id.clone(),
+            chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 0, // we skipped version 6 here.
             last_gc_version: 17,
             max_version: None,
-            key_values: vec![(
-                "key_b".to_string(),
-                VersionedValue {
-                    value: "val_b".to_string(),
-                    version: 30,
-                    tombstone: None,
-                },
-            )],
+            key_values: vec![KeyValueMutation {
+                key: "key_b".to_string(),
+                value: "val_b".to_string(),
+                version: 30,
+                tombstone: false,
+            }],
         };
-        node_state.apply_delta(node_delta);
+        node_state.apply_delta(node_delta, Instant::now());
         assert_eq!(node_state.max_version, 32);
         let versioned_b = node_state.get_versioned("key_b").unwrap();
         assert_eq!(versioned_b.version, 32);

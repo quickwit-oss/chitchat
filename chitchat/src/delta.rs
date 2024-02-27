@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 
-use tokio::time::Instant;
-
 use crate::serialize::*;
+use crate::types::{KeyValueMutation, KeyValueMutationRef};
 use crate::{ChitchatId, Version, VersionedValue};
 
 /// A delta is the message we send to another node to update it.
@@ -32,12 +31,12 @@ impl Delta {
                 last_gc_version: node_delta.last_gc_version,
                 from_version_excluded: node_delta.from_version_excluded,
             })
-            .chain(node_delta.key_values.iter().map(|(key, versioned_value)| {
-                DeltaOpRef::KeyValue {
-                    key,
-                    versioned_value,
-                }
-            }))
+            .chain(
+                node_delta
+                    .key_values
+                    .iter()
+                    .map(|key_value_mutation| DeltaOpRef::KeyValue(key_value_mutation.into())),
+            )
             .chain({
                 node_delta
                     .max_version
@@ -53,10 +52,7 @@ enum DeltaOp {
         last_gc_version: Version,
         from_version_excluded: u64,
     },
-    KeyValue {
-        key: String,
-        versioned_value: VersionedValue,
-    },
+    KeyValue(KeyValueMutation),
     SetMaxVersion {
         max_version: Version,
     },
@@ -68,10 +64,7 @@ enum DeltaOpRef<'a> {
         last_gc_version: Version,
         from_version_excluded: u64,
     },
-    KeyValue {
-        key: &'a str,
-        versioned_value: &'a VersionedValue,
-    },
+    KeyValue(KeyValueMutationRef<'a>),
     SetMaxVersion {
         max_version: Version,
     },
@@ -112,11 +105,11 @@ impl Deserializable for DeltaOp {
             DeltaOpTag::Node => {
                 let chitchat_id = ChitchatId::deserialize(buf)?;
                 let last_gc_version = Version::deserialize(buf)?;
-                let from_version = u64::deserialize(buf)?;
+                let from_version_excluded = u64::deserialize(buf)?;
                 Ok(DeltaOp::Node {
                     chitchat_id,
                     last_gc_version,
-                    from_version_excluded: from_version,
+                    from_version_excluded,
                 })
             }
             DeltaOpTag::KeyValue => {
@@ -124,16 +117,12 @@ impl Deserializable for DeltaOp {
                 let value = String::deserialize(buf)?;
                 let version = u64::deserialize(buf)?;
                 let deleted = bool::deserialize(buf)?;
-                let tombstone = if deleted { Some(Instant::now()) } else { None };
-                let versioned_value: VersionedValue = VersionedValue {
+                Ok(DeltaOp::KeyValue(KeyValueMutation {
+                    key,
                     value,
                     version,
-                    tombstone,
-                };
-                Ok(DeltaOp::KeyValue {
-                    key,
-                    versioned_value,
-                })
+                    tombstone: deleted,
+                }))
             }
             DeltaOpTag::SetMaxVersion => {
                 let max_version = Version::deserialize(buf)?;
@@ -149,19 +138,15 @@ impl DeltaOp {
             DeltaOp::Node {
                 chitchat_id,
                 last_gc_version,
-                from_version_excluded: from_version,
+                from_version_excluded,
             } => DeltaOpRef::Node {
                 chitchat_id,
                 last_gc_version: *last_gc_version,
-                from_version_excluded: *from_version,
+                from_version_excluded: *from_version_excluded,
             },
-            DeltaOp::KeyValue {
-                key,
-                versioned_value,
-            } => DeltaOpRef::KeyValue {
-                key,
-                versioned_value,
-            },
+            DeltaOp::KeyValue(key_value_mutation) => {
+                DeltaOpRef::KeyValue(key_value_mutation.into())
+            }
             DeltaOp::SetMaxVersion { max_version } => DeltaOpRef::SetMaxVersion {
                 max_version: *max_version,
             },
@@ -192,15 +177,9 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                 last_gc_version.serialize(buf);
                 from_version.serialize(buf);
             }
-            Self::KeyValue {
-                key,
-                versioned_value,
-            } => {
+            Self::KeyValue(key_value_mutation_ref) => {
                 buf.push(DeltaOpTag::KeyValue.into());
-                key.serialize(buf);
-                versioned_value.value.serialize(buf);
-                versioned_value.version.serialize(buf);
-                versioned_value.is_tombstone().serialize(buf);
+                key_value_mutation_ref.serialize(buf);
             }
             Self::SetMaxVersion { max_version } => {
                 buf.push(DeltaOpTag::SetMaxVersion.into());
@@ -220,15 +199,7 @@ impl<'a> Serializable for DeltaOpRef<'a> {
                     + last_gc_version.serialized_len()
                     + from_version.serialized_len()
             }
-            Self::KeyValue {
-                key,
-                versioned_value,
-            } => {
-                key.serialized_len()
-                    + versioned_value.value.serialized_len()
-                    + versioned_value.version.serialized_len()
-                    + 1
-            }
+            Self::KeyValue(key_value_mutation_ref) => key_value_mutation_ref.serialized_len(),
             Self::SetMaxVersion { max_version } => max_version.serialized_len(),
         }
     }
@@ -304,15 +275,12 @@ impl Delta {
             .iter_mut()
             .find(|node_delta| &node_delta.chitchat_id == chitchat_id)
             .unwrap();
-        let tombstone = if deleted { Some(Instant::now()) } else { None };
-        node_delta.key_values.push((
-            key.to_string(),
-            VersionedValue {
-                value: value.to_string(),
-                version,
-                tombstone,
-            },
-        ));
+        node_delta.key_values.push(KeyValueMutation {
+            key: key.to_string(),
+            value: value.to_string(),
+            version,
+            tombstone: deleted,
+        });
     }
 
     pub(crate) fn set_serialized_len(&mut self, serialized_len: usize) {
@@ -346,7 +314,7 @@ pub(crate) struct NodeDelta {
     // and `last_gc_version` are used.
     pub from_version_excluded: Version,
     pub last_gc_version: Version,
-    pub key_values: Vec<(String, VersionedValue)>,
+    pub key_values: Vec<KeyValueMutation>,
     pub max_version: Option<Version>,
 }
 
@@ -389,24 +357,17 @@ impl DeltaBuilder {
                     max_version: None,
                 });
             }
-            DeltaOp::KeyValue {
-                key,
-                versioned_value,
-            } => {
+            DeltaOp::KeyValue(key_value_mutation) => {
                 let Some(current_node_delta) = self.current_node_delta.as_mut() else {
                     anyhow::bail!("received a key-value op without a node op before.");
                 };
-                if let Some((_last_key, last_versioned_value)) =
-                    current_node_delta.key_values.last()
-                {
+                if let Some(previous_key_value_mutation) = current_node_delta.key_values.last() {
                     anyhow::ensure!(
-                        last_versioned_value.version < versioned_value.version,
+                        previous_key_value_mutation.version < key_value_mutation.version,
                         "kv version should be increasing"
                     );
                 }
-                current_node_delta
-                    .key_values
-                    .push((key.to_string(), versioned_value));
+                current_node_delta.key_values.push(key_value_mutation);
             }
             DeltaOp::SetMaxVersion { max_version } => {
                 let Some(current_node_delta) = self.current_node_delta.as_mut() else {
@@ -473,10 +434,13 @@ impl DeltaSerializer {
 
     /// Returns false if the KV could not be added because the payload would exceed the mtu.
     pub fn try_add_kv(&mut self, key: &str, versioned_value: VersionedValue) -> bool {
-        let key_value_op = DeltaOp::KeyValue {
+        let key_value_mutation = KeyValueMutation {
             key: key.to_string(),
-            versioned_value,
+            value: versioned_value.value,
+            version: versioned_value.version,
+            tombstone: versioned_value.tombstone.is_some(),
         };
+        let key_value_op = DeltaOp::KeyValue(key_value_mutation);
         self.try_add_op(key_value_op)
     }
 
@@ -503,6 +467,8 @@ impl DeltaSerializer {
 
 #[cfg(test)]
 mod tests {
+    use tokio::time::Instant;
+
     use super::*;
 
     #[test]

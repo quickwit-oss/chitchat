@@ -109,8 +109,9 @@ impl Chitchat {
 
     /// Executes the catch-up callback if necessary.
     fn maybe_trigger_catchup_callback(&self, delta: &Delta) {
-        let has_reset = delta.node_deltas.iter()
-            .any(|node_delta| node_delta.from_version_excluded == 0 && node_delta.last_gc_version > 0);
+        let has_reset = delta.node_deltas.iter().any(|node_delta| {
+            node_delta.from_version_excluded == 0 && node_delta.last_gc_version > 0
+        });
         if has_reset {
             if let Some(catchup_callback) = &self.config.catchup_callback {
                 info!("executing catch-up callback");
@@ -1048,7 +1049,8 @@ mod tests {
         node.process_delta(delta);
 
         let mut delta = Delta::default();
-        delta.add_node_to_reset(ChitchatId::for_local_test(10_002));
+        let chitchat_id = ChitchatId::for_local_test(10_002);
+        delta.add_node(chitchat_id, 1000u64, 0u64);
         node.process_delta(delta);
 
         assert_eq!(catchup_callback_counter.load(Ordering::Acquire), 1);
