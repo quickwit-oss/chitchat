@@ -517,23 +517,31 @@ impl ClusterState {
                 continue;
             }
 
-            let Some(node_digest) = digest.node_digests.get(chitchat_id) else {
-                stale_nodes.offer(chitchat_id, node_state, 0u64);
+            let digest_max_version: Version = digest
+                .node_digests
+                .get(chitchat_id)
+                .map(|node_digest| node_digest.max_version)
+                .unwrap_or(0u64);
+
+            if node_state.max_version <= digest_max_version {
+                // Our version is actually older than the version of the digest.
+                // We have no update to offer.
                 continue;
-            };
+            }
 
             // We have garbage collected some tombstones that the other node does not know about
             // yet. A reset is needed.
-            let should_reset = node_digest.max_version < node_state.last_gc_version;
+            let should_reset = digest_max_version < node_state.last_gc_version;
             let from_version_excluded = if should_reset {
                 warn!(
                     "Node to reset {chitchat_id:?} last gc version: {} max version: {}",
-                    node_state.last_gc_version, node_digest.max_version
+                    node_state.last_gc_version, digest_max_version
                 );
                 0u64
             } else {
-                node_digest.max_version
+                digest_max_version
             };
+
             stale_nodes.offer(chitchat_id, node_state, from_version_excluded);
         }
         let mut delta_serializer = DeltaSerializer::with_mtu(mtu);
