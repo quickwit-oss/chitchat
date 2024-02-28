@@ -567,8 +567,16 @@ mod tests {
     fn test_chitchat_dead_node_liveness() {
         let node_config1 = ChitchatConfig::for_test(10_001);
         let empty_seeds = watch::channel(Default::default()).1;
+<<<<<<< HEAD
         let mut node1 =
             Chitchat::with_chitchat_id_and_seeds(node_config1, empty_seeds.clone(), Vec::new());
+=======
+        let mut node1 = Chitchat::with_chitchat_id_and_seeds(
+            node_config1,
+            empty_seeds.clone(),
+            Vec::new(),
+        );
+>>>>>>> c90de78 (Resetted nodes were briefly identified as alive.)
         let chitchat_id = ChitchatId::for_local_test(10u16);
         node1.reset_node_state(&chitchat_id, std::iter::empty(), 10_000, 10u64);
         node1.report_heartbeat(&chitchat_id, Heartbeat(10_000u64));
