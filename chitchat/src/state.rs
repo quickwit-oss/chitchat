@@ -175,8 +175,16 @@ impl NodeState {
 
     /// Attempts to set the heartbeat of another node.
     /// If the value is actually not an update, just ignore the data and return false.
+    /// As a corner case, the first value is not considered an update.
+    ///
     /// Otherwise, returns true.
     pub fn try_set_heartbeat(&mut self, heartbeat_new_value: Heartbeat) -> bool {
+        if self.heartbeat.0 == 0 {
+            // This is the first heartbeat.
+            // Let's set it, but we do not consider it as an update.
+            self.heartbeat = heartbeat_new_value;
+            return false;
+        }
         if heartbeat_new_value > self.heartbeat {
             self.heartbeat = heartbeat_new_value;
             true
