@@ -313,9 +313,15 @@ impl Chitchat {
         if node_state.max_version() >= max_version {
             return;
         }
-        if node_state.max_version() == 0 {
-            self.failure_detector.report_heartbeat(chitchat_id);
-        }
+
+        // We make sure that the node is listed in the failure detector,
+        // so that we won't forget to GC the state.
+        //
+        // We don't report the heartbeat however, to make sure that we
+        // avoid identifying resetted node as alive.
+        self.failure_detector
+            .get_or_create_sampling_window(chitchat_id);
+
         // We don't want to call listeners for keys that are already up to date so we must do this
         // dance instead of clearing the node state and then setting the new values.
         let mut previous_keys: HashSet<String> = node_state
@@ -555,6 +561,21 @@ mod tests {
         }
         run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
+    }
+
+    #[test]
+    fn test_chitchat_dead_node_liveness() {
+        let node_config1 = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut node1 =
+            Chitchat::with_chitchat_id_and_seeds(node_config1, empty_seeds.clone(), Vec::new());
+        let chitchat_id = ChitchatId::for_local_test(10u16);
+        node1.reset_node_state(&chitchat_id, std::iter::empty(), 10_000, 10u64);
+        node1.report_heartbeat(&chitchat_id, Heartbeat(10_000u64));
+        node1.report_heartbeat(&chitchat_id, Heartbeat(10_000u64));
+        node1.update_nodes_liveness();
+        let live_nodes: HashSet<&ChitchatId> = node1.live_nodes().collect();
+        assert_eq!(live_nodes.len(), 1);
     }
 
     #[tokio::test]

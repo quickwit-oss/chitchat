@@ -31,8 +31,10 @@ impl FailureDetector {
     }
 
     /// Reports node heartbeat.
-    pub fn report_heartbeat(&mut self, chitchat_id: &ChitchatId) {
-        debug!(node_id=%chitchat_id.node_id, "reporting node heartbeat.");
+    pub(crate) fn get_or_create_sampling_window(
+        &mut self,
+        chitchat_id: &ChitchatId,
+    ) -> &mut SamplingWindow {
         self.node_samples
             .entry(chitchat_id.clone())
             .or_insert_with(|| {
@@ -42,6 +44,12 @@ impl FailureDetector {
                     self.config.initial_interval,
                 )
             })
+    }
+
+    /// Reports node heartbeat.
+    pub fn report_heartbeat(&mut self, chitchat_id: &ChitchatId) {
+        debug!(node_id=%chitchat_id.node_id, "reporting node heartbeat.");
+        self.get_or_create_sampling_window(chitchat_id)
             .report_heartbeat();
     }
 
@@ -179,7 +187,7 @@ impl AdditiveSmoothing {
 
 /// A fixed-sized window that keeps track of the most recent heartbeat arrival intervals.
 #[derive(Debug)]
-struct SamplingWindow {
+pub(crate) struct SamplingWindow {
     /// The set of collected intervals.
     intervals: BoundedArrayStats,
     /// Last heartbeat reported time.
