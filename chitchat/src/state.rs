@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use crate::delta::{Delta, DeltaSerializer, NodeDelta};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
+use crate::types::{DeletionStatus, DeletionStatusMutation};
 use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -124,7 +125,7 @@ impl NodeState {
     /// Returns an iterator over all of the (non-deleted) key-values.
     pub fn key_values(&self) -> impl Iterator<Item = (&str, &str)> {
         self.key_values_including_deleted()
-            .filter(|(_, versioned_value)| !versioned_value.is_tombstone())
+            .filter(|(_, versioned_value)| !versioned_value.is_deleted())
             .map(|(key, versioned_value)| (key, versioned_value.value.as_str()))
     }
 
@@ -235,22 +236,18 @@ impl NodeState {
                 // We already know about this KV.
                 continue;
             }
-            if key_value_mutation.tombstone {
-                // We don't want to keep any tombstone before `last_gc_version`.
+            if key_value_mutation.status.scheduled_for_deletion() {
+                // This KV has already been GCed.
                 if key_value_mutation.version <= self.last_gc_version {
                     continue;
                 }
             }
-            let versioned_value = VersionedValue {
+            let new_versioned_value = VersionedValue {
                 value: key_value_mutation.value,
                 version: key_value_mutation.version,
-                tombstone: if key_value_mutation.tombstone {
-                    Some(now)
-                } else {
-                    None
-                },
+                status: key_value_mutation.status.into_status(now),
             };
-            self.set_versioned_value(key_value_mutation.key, versioned_value);
+            self.set_versioned_value(key_value_mutation.key, new_versioned_value);
         }
     }
 
@@ -263,7 +260,7 @@ impl NodeState {
         self.key_values
             .range::<str, _>(range)
             .take_while(move |(key, _)| key.starts_with(prefix))
-            .filter(|&(_, versioned_value)| !versioned_value.is_tombstone())
+            .filter(|&(_, versioned_value)| !versioned_value.is_deleted())
             .map(|(key, versioned_value)| (key.as_str(), versioned_value))
     }
 
@@ -279,7 +276,7 @@ impl NodeState {
 
     pub fn get(&self, key: &str) -> Option<&str> {
         let versioned_value = self.get_versioned(key)?;
-        if versioned_value.is_tombstone() {
+        if versioned_value.is_deleted() {
             return None;
         }
         Some(versioned_value.value.as_str())
@@ -304,19 +301,44 @@ impl NodeState {
         }
     }
 
-    /// Marks key for deletion and sets the value to an empty string.
-    pub fn mark_for_deletion(&mut self, key: &str) {
+    /// Deletes the entry associated to the given key.
+    ///
+    /// From the reader's perspective, the entry is deleted right away.
+    ///
+    /// In reality, the entry is not removed from memory right away, but rather
+    /// marked with a tombstone.
+    /// That tombstone is annotated with the time of removal, so that after a configurable
+    /// grace period, it will be remove by the garbage collection.
+    pub fn delete(&mut self, key: &str) {
         let Some(versioned_value) = self.key_values.get_mut(key) else {
-            warn!(
-                "Key `{key}` does not exist in the node's state and could not be marked for \
-                 deletion.",
-            );
+            warn!("Key `{key}` does not exist in the node's state and could not be deleted.",);
             return;
         };
         self.max_version += 1;
         versioned_value.version = self.max_version;
         versioned_value.value = "".to_string();
-        versioned_value.tombstone = Some(Instant::now());
+        versioned_value.status = DeletionStatusMutation::Delete.into_status(Instant::now());
+    }
+
+    /// Contrary to `delete`, this does not delete an entry right away,
+    /// but rather schedules its deletion for after the grace period.
+    ///
+    /// At the grace period, the entry will be really deleted just like a regular
+    /// tombstoned entry.
+    ///
+    /// Implementation wise, the only difference with `delete` is that it is
+    /// treated as if it was present during the grace period.``
+    pub fn delete_after_ttl(&mut self, key: &str) {
+        let Some(versioned_value) = self.key_values.get_mut(key) else {
+            warn!(
+                "Key `{key}` does not exist in the node's state and could not scheduled for an \
+                 eventual deletion.",
+            );
+            return;
+        };
+        self.max_version += 1;
+        versioned_value.version = self.max_version;
+        versioned_value.status = DeletionStatusMutation::DeleteAfterTtl.into_status(Instant::now());
     }
 
     pub(crate) fn inc_heartbeat(&mut self) {
@@ -357,11 +379,14 @@ impl NodeState {
         let mut max_deleted_version = self.last_gc_version;
         self.key_values
             .retain(|_, versioned_value: &mut VersionedValue| {
-                let Some(deleted_instant) = versioned_value.tombstone else {
+                let Some(deleted_start_instant) = versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                else {
                     // The KV is not deleted. We keep it!
                     return true;
                 };
-                if now < deleted_instant + grace_period {
+                if now < deleted_start_instant + grace_period {
                     // We haved not passed the grace period yet. We keep it!
                     return true;
                 }
@@ -423,7 +448,7 @@ impl NodeState {
                 vacant.insert(versioned_value_update.clone());
             }
         };
-        if !versioned_value_update.is_tombstone() {
+        if !versioned_value_update.is_deleted() {
             self.listeners.trigger_event(key_change_event);
         }
     }
@@ -435,7 +460,7 @@ impl NodeState {
             VersionedValue {
                 value: value.to_string(),
                 version,
-                tombstone: None,
+                status: DeletionStatus::Set,
             },
         );
     }
@@ -782,7 +807,7 @@ fn random_generator() -> impl Rng {
 mod tests {
     use super::*;
     use crate::serialize::Serializable;
-    use crate::types::KeyValueMutation;
+    use crate::types::{DeletionStatusMutation, KeyValueMutation};
     use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 
     #[test]
@@ -975,7 +1000,7 @@ mod tests {
             &VersionedValue {
                 value: "".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
     }
@@ -990,7 +1015,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
         node_state.set("key_b", "2");
@@ -999,7 +1024,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
         assert_eq!(
@@ -1007,7 +1032,7 @@ mod tests {
             &VersionedValue {
                 value: "2".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
         node_state.set("key_a", "3");
@@ -1016,7 +1041,7 @@ mod tests {
             &VersionedValue {
                 value: "3".to_string(),
                 version: 3,
-                tombstone: None,
+                status: DeletionStatus::Set
             }
         );
     }
@@ -1031,7 +1056,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set
             }
         );
         node_state.set("key", "1");
@@ -1040,7 +1065,7 @@ mod tests {
             &VersionedValue {
                 value: "1".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
     }
@@ -1051,12 +1076,17 @@ mod tests {
         let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
-        node_state.mark_for_deletion("key");
+        node_state.delete("key");
+        assert!(node_state.get("key").is_none());
         {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "");
             assert_eq!(versioned_value.version, 2u64);
-            assert!(&versioned_value.is_tombstone());
+            assert!(&versioned_value.is_deleted());
+            assert!(versioned_value
+                .status
+                .time_of_start_scheduled_for_deletion()
+                .is_some());
         }
 
         // Overriding the same key
@@ -1065,7 +1095,50 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
-            assert!(!versioned_value.is_tombstone());
+            assert!(!versioned_value.is_deleted());
+            assert!(versioned_value
+                .status
+                .time_of_start_scheduled_for_deletion()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn test_cluster_state_delete_after_ttl() {
+        let mut cluster_state = ClusterState::default();
+        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        node_state.heartbeat = Heartbeat(10);
+        node_state.set("key", "1");
+        node_state.delete_after_ttl("key");
+        {
+            let value = node_state.get("key").unwrap();
+            assert_eq!(value, "1");
+            let versioned_value = node_state.get_versioned("key").unwrap();
+            assert_eq!(&versioned_value.value, "1");
+            assert_eq!(versioned_value.version, 2u64);
+            assert!(versioned_value
+                .status
+                .time_of_start_scheduled_for_deletion()
+                .is_some());
+            assert!(!versioned_value.is_deleted());
+            assert!(matches!(
+                versioned_value.status,
+                DeletionStatus::DeleteAfterTtl(_)
+            ));
+        }
+
+        // Overriding the same key
+        node_state.set("key", "2");
+        {
+            let versioned_value = node_state.get_versioned("key").unwrap();
+            assert_eq!(&versioned_value.value, "2");
+            assert_eq!(versioned_value.version, 3u64);
+            assert!(!versioned_value.is_deleted());
+            assert!(versioned_value
+                .status
+                .time_of_start_scheduled_for_deletion()
+                .is_none());
+            assert!(matches!(versioned_value.status, DeletionStatus::Set));
         }
     }
 
@@ -1098,7 +1171,7 @@ mod tests {
         let node1 = ChitchatId::for_local_test(10_001);
         let node1_state = cluster_state.node_state_mut(&node1);
         node1_state.set("key_a", "1");
-        node1_state.mark_for_deletion("key_a"); // Version 2. Tombstone set to heartbeat 100.
+        node1_state.delete("key_a"); // Version 2. Tombstone set to heartbeat 100.
         tokio::time::advance(Duration::from_secs(5)).await;
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 13); // 3
         node1_state.heartbeat = Heartbeat(110);
@@ -1164,7 +1237,7 @@ mod tests {
             &VersionedValue {
                 value: "4".to_string(),
                 version: 4,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
         // We ignore stale values.
@@ -1173,7 +1246,7 @@ mod tests {
             &VersionedValue {
                 value: "3".to_string(),
                 version: 3,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         );
         // Check node 2 is reset and is only populated with the new `key_d`.
@@ -1184,7 +1257,7 @@ mod tests {
             &VersionedValue {
                 value: "4".to_string(),
                 version: 4,
-                tombstone: None,
+                status: DeletionStatus::Set
             }
         );
     }
@@ -1245,7 +1318,7 @@ mod tests {
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
         node2_state.set_with_version("key_d".to_string(), "4".to_string(), 4); // 4
-        node2_state.mark_for_deletion("key_d"); // 5
+        node2_state.delete("key_d"); // 5
 
         cluster_state
     }
@@ -1370,9 +1443,7 @@ mod tests {
             assert_eq!(delta, expected_delta);
         }
 
-        cluster_state
-            .node_state_mut(&node1)
-            .mark_for_deletion("key_a");
+        cluster_state.node_state_mut(&node1).delete("key_a");
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
 
@@ -1431,7 +1502,7 @@ mod tests {
         node_state.set("Europe:Italy", "");
         node_state.set("Africa:Uganda", "");
         node_state.set("Oceania", "");
-        node_state.mark_for_deletion("Europe:UK");
+        node_state.delete("Europe:UK");
         let node_states: Vec<&str> = node_state
             .iter_prefix("Europe:")
             .map(|(key, _v)| key)
@@ -1454,13 +1525,13 @@ mod tests {
                     key: "key_c".to_string(),
                     value: "val_c".to_string(),
                     version: 4,
-                    tombstone: false,
+                    status: DeletionStatusMutation::Set,
                 },
                 KeyValueMutation {
                     key: "key_b".to_string(),
                     value: "val_b2".to_string(),
                     version: 3,
-                    tombstone: false,
+                    status: DeletionStatusMutation::Set,
                 },
             ],
         };
@@ -1490,13 +1561,13 @@ mod tests {
                 key: "key_a".to_string(),
                 value: "val_a".to_string(),
                 version: 3,
-                tombstone: false,
+                status: DeletionStatusMutation::Set,
             }],
         };
         node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 3);
-        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(versioned_a.status, DeletionStatus::Set);
         assert_eq!(&versioned_a.value, "val_a");
     }
 
@@ -1514,13 +1585,13 @@ mod tests {
                 key: "key_a".to_string(),
                 value: "new_val".to_string(),
                 version: 7,
-                tombstone: false,
+                status: DeletionStatusMutation::Set,
             }],
         };
         node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 5);
-        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(versioned_a.status, DeletionStatus::Set);
         assert_eq!(&versioned_a.value, "val_a");
     }
 
@@ -1530,7 +1601,7 @@ mod tests {
         const GC_PERIOD: Duration = Duration::from_secs(10);
         let mut node_state = NodeState::for_test();
         node_state.set_with_version("key_a", "val_a", 17);
-        node_state.mark_for_deletion("key_a");
+        node_state.delete("key_a");
         tokio::time::advance(GC_PERIOD).await;
         node_state.gc_keys_marked_for_deletion(GC_PERIOD);
         assert_eq!(node_state.last_gc_version, 18);
@@ -1545,14 +1616,14 @@ mod tests {
                 key: "key_a".to_string(),
                 value: "new_val".to_string(),
                 version: 32,
-                tombstone: false,
+                status: DeletionStatusMutation::Set,
             }],
         };
         node_state.apply_delta(node_delta, Instant::now());
         let versioned_a = node_state.get_versioned("key_a").unwrap();
         assert_eq!(versioned_a.version, 32);
         assert_eq!(node_state.max_version(), 32);
-        assert!(versioned_a.tombstone.is_none());
+        assert_eq!(versioned_a.status, DeletionStatus::Set);
         assert_eq!(&versioned_a.value, "new_val");
     }
 
@@ -1571,7 +1642,7 @@ mod tests {
                 key: "key_b".to_string(),
                 value: "val_b".to_string(),
                 version: 32,
-                tombstone: false,
+                status: DeletionStatusMutation::Set,
             }],
         };
         node_state.apply_delta(node_delta, Instant::now());
@@ -1598,7 +1669,7 @@ mod tests {
                 key: "key_b".to_string(),
                 value: "val_b".to_string(),
                 version: 30,
-                tombstone: false,
+                status: DeletionStatusMutation::Set,
             }],
         };
         node_state.apply_delta(node_delta, Instant::now());
