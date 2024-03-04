@@ -657,7 +657,7 @@ mod tests {
             .lock()
             .await
             .self_node_state()
-            .mark_for_deletion("READY");
+            .delete("READY");
 
         let live_members = loop {
             let live_nodes = live_nodes_stream.next().await.unwrap();
@@ -1024,8 +1024,8 @@ mod tests {
         node1.self_node_state().set("self1:suffix1", "updated");
         assert_eq!(counter_self_key.load(Ordering::SeqCst), 2);
 
-        node1.self_node_state().mark_for_deletion("self1:suffix1");
-        node2.self_node_state().mark_for_deletion("other:suffix");
+        node1.self_node_state().delete("self1:suffix1");
+        node2.self_node_state().delete("other:suffix");
 
         run_chitchat_handshake(&mut node1, &mut node2);
 
