@@ -207,7 +207,6 @@ impl NodeState {
     }
 
     fn apply_delta(&mut self, node_delta: NodeDelta, now: Instant) {
-        info!(delta=?node_delta);
         if !self.prepare_apply_delta(&node_delta) {
             return;
         }
