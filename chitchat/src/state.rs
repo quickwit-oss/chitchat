@@ -56,6 +56,10 @@ impl NodeState {
         }
     }
 
+    pub fn chitchat_id(&self) -> &ChitchatId {
+        &self.chitchat_id
+    }
+
     pub fn last_gc_version(&self) -> Version {
         self.last_gc_version
     }
