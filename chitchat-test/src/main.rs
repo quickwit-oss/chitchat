@@ -9,7 +9,7 @@ use cool_id_generator::Size;
 use poem::listener::TcpListener;
 use poem::{Route, Server};
 use poem_openapi::param::Query;
-use poem_openapi::payload::Json;
+use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{OpenApi, OpenApiService};
 use structopt::StructOpt;
 use tokio::sync::Mutex;
@@ -22,7 +22,7 @@ struct Api {
 impl Api {
     /// Chitchat state
     #[oai(path = "/", method = "get")]
-    async fn index(&self) -> Json<serde_json::Value> {
+    async fn index(&self) -> PlainText<String> {
         let chitchat_guard = self.chitchat.lock().await;
         let response = ApiResponse {
             cluster_id: chitchat_guard.cluster_id().to_string(),
@@ -30,7 +30,7 @@ impl Api {
             live_nodes: chitchat_guard.live_nodes().cloned().collect::<Vec<_>>(),
             dead_nodes: chitchat_guard.dead_nodes().cloned().collect::<Vec<_>>(),
         };
-        Json(serde_json::to_value(&response).unwrap())
+        PlainText(serde_json::to_string_pretty(&response).unwrap())
     }
 
     /// Sets a key-value pair on this node (without validation).
@@ -40,6 +40,17 @@ impl Api {
 
         let cc_state = chitchat_guard.self_node_state();
         cc_state.set(key.as_str(), value.as_str());
+
+        Json(serde_json::to_value(&SetKeyValueResponse { status: true }).unwrap())
+    }
+
+    /// Marks a key for deletion on this node (without validation).
+    #[oai(path = "/mark_for_deletion/", method = "get")]
+    async fn mark_for_deletion(&self, key: Query<String>) -> Json<serde_json::Value> {
+        let mut chitchat_guard = self.chitchat.lock().await;
+
+        let cc_state = chitchat_guard.self_node_state();
+        cc_state.mark_for_deletion(key.as_str());
 
         Json(serde_json::to_value(&SetKeyValueResponse { status: true }).unwrap())
     }

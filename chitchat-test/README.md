@@ -8,9 +8,9 @@ to test the chitchat crate.
 
 ```bash
 # First server
-cargo run -- --listen_addr localhost:10000
+cargo run -- --listen_addr 127.0.0.1:10000
 # Second server
-cargo run -- --listen_addr localhost:10001 --seed localhost:10000
+cargo run -- --listen_addr 127.0.0.1:10001 --seed 127.0.0.1:10000
 ```
 
 ## Startup Flags that are optional 
