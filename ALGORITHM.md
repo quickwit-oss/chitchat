@@ -2,10 +2,11 @@ Chitchat relies on an extension of the Scuttlebutt reconciliation algorithm, to 
 - Key-Value deletion
 - Member leaving the cluster.
 
-For simplification, we will just discuss the replication of a single map on a cluster of n node, one which only one node can write to.
+For simplification, we will just discuss the replication of a single map on a cluster of n node, on which only one node can write to.
+
 (In scuttlebutt, each node has ownership over such a map.)
 
-There are two kinds of update events on this map:
+There are two kinds of update event on this map:
 - Set(K, V)
 - Deletion(K)
 
@@ -34,6 +35,7 @@ node will send two parameters describing how much of the state is replicated:
 - `max_version`: One big difference with reliable broadcast, is that this `max version` does NOT mean that the node's state reflects all of the events earlier than
 `max_version`. Rather, it says that if the node were to receive all of the events within between `max_version` and $V$ then it will end up to date.
 The difference is subtle, but comes from an important optimization of scuttlebutt.
+
 If a node asks for an update above $max_version = m$, and that for a given key $k$ there are two updates after $m$, there is no need to send the first one: it will eventually be overridden by the second one.
 
 - `last_gc_version`: Rather than being deleted right away, the algorithm is using a tombstone mechanism. Key entries are kept by marked as deleted. From the client point of view, everything looks like the key really has been deleted. Eventually, in order

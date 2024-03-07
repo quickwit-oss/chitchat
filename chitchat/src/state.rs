@@ -205,8 +205,16 @@ impl NodeState {
             current_last_gc_version=self.last_gc_version,
             "resetting node");
         *self = NodeState::new(node_delta.chitchat_id.clone(), self.listeners.clone());
+        // The node_delta max_version  whe
         if let Some(max_version) = node_delta.max_version {
-            self.max_version = max_version;
+            if node_delta.key_values.is_empty() {
+                self.max_version = max_version;
+            } else {
+                warn!(
+                    "Received a delta with a max_version, and key_values as well. This is \
+                     unexpected, please report."
+                );
+            }
         }
         // We need to reset our `last_gc_version`.
         self.last_gc_version = node_delta.last_gc_version;
