@@ -84,6 +84,7 @@ impl TryFrom<u8> for DeltaOpTag {
         match tag_byte {
             0u8 => Ok(DeltaOpTag::Node),
             1u8 => Ok(DeltaOpTag::KeyValue),
+            2u8 => Ok(DeltaOpTag::SetMaxVersion),
             _ => {
                 anyhow::bail!("Unknown tag: {tag_byte}")
             }
@@ -297,10 +298,10 @@ impl Delta {
 #[derive(Debug, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct NodeDelta {
     pub chitchat_id: ChitchatId,
-    // `from_version` and `last_gc_version` are here to express on which states
+    // `from_version_excluded` and `last_gc_version` are here to express on which states
     // this delta can be applied to.
     //
-    // `last_gc_version` expresses that this delta has be computed from a state where no
+    // `last_gc_version` expresses that this delta was computed from a state where no
     // keys > `last_gc_version` have been removed.
     //
     // `from_version` expresses that from this state, ALL of the records in
@@ -732,6 +733,6 @@ mod tests {
                 num_valid_tags += 1;
             }
         }
-        assert_eq!(num_valid_tags, 2);
+        assert_eq!(num_valid_tags, 3);
     }
 }
