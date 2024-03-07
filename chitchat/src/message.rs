@@ -132,13 +132,13 @@ mod tests {
         {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat(0), 0, 0);
 
             let syn = ChitchatMessage::Syn {
                 cluster_id: "cluster-a".to_string(),
                 digest,
             };
-            test_serdeser_aux(&syn, 57);
+            test_serdeser_aux(&syn, 65);
         }
     }
 
@@ -157,20 +157,24 @@ mod tests {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
             // +43 bytes = 27 bytes (ChitchatId) + 8 (hearbeat) + 8 (max_version).
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat(0), 0, 0);
 
             // 4 bytes
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
-            // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), 0u64);
+            // +27 bytes (ChitchatId)
+            // + 2 bytes (node delta len)
+            // + 8 bytes (last_gc_version)
+            // + 8 bytes (from_version).
+            delta.add_node(node.clone(), 0u64, 0u64);
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, true);
-            delta.set_serialized_len(62);
+            // That's compression kicking in.
+            delta.set_serialized_len(60);
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
             // 1 bytes (syn ack message) + 45 bytes (digest) + 69 bytes (delta).
-            test_serdeser_aux(&syn_ack, 108);
+            test_serdeser_aux(&syn_ack, 1 + 53 + 60);
         }
     }
 
@@ -186,12 +190,12 @@ mod tests {
             let mut delta = Delta::default();
             let node = ChitchatId::for_local_test(10_001);
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
-            delta.add_node(node.clone(), 0u64);
+            delta.add_node(node.clone(), 0u64, 0u64);
             // +29 bytes.
             delta.add_kv(&node, "key", "value", 0, true);
-            delta.set_serialized_len(62);
+            delta.set_serialized_len(60);
             let ack = ChitchatMessage::Ack { delta };
-            test_serdeser_aux(&ack, 63);
+            test_serdeser_aux(&ack, 1 + 60);
         }
     }
 
