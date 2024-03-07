@@ -47,6 +47,11 @@ pub struct NodeState {
     //
     // It does not contain any trace of the tombstones of the entries that were marked for deletion before
     // `<= last_gc_version`.
+    //
+    // Disclaimer: We do not necessarily have max_version >= last_gc_version.
+    // After a reset, a node will have its `last_gc_version` set to the version of the node
+    // it is getting its KV from, and it will receive a possible partial set of KVs from that node.
+    // As a result it is possible for node to have `last_gc_version` > `max_version`.
 }
 
 impl Debug for NodeState {
@@ -149,8 +154,8 @@ impl NodeState {
             return true;
         }
 
-        // This delta might be missing tombstones with version within
-        // (`node_state.max_version`..`last_gc_version`].
+        // This delta might be missing tombstones with a version within
+        // (`node_state.max_version`..`node_delta.last_gc_version`].
         //
         // It is ok if we don't have the associated values to begin
         // with.
