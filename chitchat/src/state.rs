@@ -42,10 +42,10 @@ pub struct NodeState {
     // A proper interpretation of `max_version` and `last_gc_version` is the following:
     // The state contains exactly:
     // - all of the (non-deleted) key values present at snapshot `max_version`.
-    // - all of the tombstones of the entry that were deleted between (`last_gc_version`,
+    // - all of the tombstones of the entry that were marked for deletion between (`last_gc_version`,
     //   `max_version]`.
     //
-    // It does not contain any trace of the tombstones of the entries that were deleted before
+    // It does not contain any trace of the tombstones of the entries that were marked for deletion before
     // `<= last_gc_version`.
 }
 
@@ -180,7 +180,7 @@ impl NodeState {
         };
 
         if delta_max_version <= self.max_version() {
-            // There is not point apply in this delta as it is not bringing us to a newer state.
+            // There is not point applying this delta as it is not bringing us to a newer state.
             warn!(
                 node=?node_delta.chitchat_id,
                 from_version=node_delta.from_version_excluded,
