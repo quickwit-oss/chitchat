@@ -6,13 +6,19 @@ use crate::{ChitchatId, Heartbeat, Version};
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) struct NodeDigest {
     pub(crate) heartbeat: Heartbeat,
+    pub(crate) last_gc_version: Version,
     pub(crate) max_version: Version,
 }
 
 impl NodeDigest {
-    pub(crate) fn new(heartbeat: Heartbeat, max_version: Version) -> Self {
+    pub(crate) fn new(
+        heartbeat: Heartbeat,
+        last_gc_version: Version,
+        max_version: Version,
+    ) -> Self {
         Self {
             heartbeat,
+            last_gc_version,
             max_version,
         }
     }
@@ -30,8 +36,14 @@ pub struct Digest {
 
 #[cfg(test)]
 impl Digest {
-    pub fn add_node(&mut self, node: ChitchatId, heartbeat: Heartbeat, max_version: Version) {
-        let node_digest = NodeDigest::new(heartbeat, max_version);
+    pub fn add_node(
+        &mut self,
+        node: ChitchatId,
+        heartbeat: Heartbeat,
+        last_gc_version: Version,
+        max_version: Version,
+    ) {
+        let node_digest = NodeDigest::new(heartbeat, last_gc_version, max_version);
         self.node_digests.insert(node, node_digest);
     }
 }
@@ -42,6 +54,7 @@ impl Serializable for Digest {
         for (chitchat_id, node_digest) in &self.node_digests {
             chitchat_id.serialize(buf);
             node_digest.heartbeat.serialize(buf);
+            node_digest.last_gc_version.serialize(buf);
             node_digest.max_version.serialize(buf);
         }
     }
@@ -50,6 +63,7 @@ impl Serializable for Digest {
         for (chitchat_id, node_digest) in &self.node_digests {
             len += chitchat_id.serialized_len();
             len += node_digest.heartbeat.serialized_len();
+            len += node_digest.last_gc_version.serialized_len();
             len += node_digest.max_version.serialized_len();
         }
         len
@@ -65,7 +79,8 @@ impl Deserializable for Digest {
             let chitchat_id = ChitchatId::deserialize(buf)?;
             let heartbeat = Heartbeat::deserialize(buf)?;
             let max_version = u64::deserialize(buf)?;
-            let node_digest = NodeDigest::new(heartbeat, max_version);
+            let last_gc_version = u64::deserialize(buf)?;
+            let node_digest = NodeDigest::new(heartbeat, last_gc_version, max_version);
             node_digests.insert(chitchat_id, node_digest);
         }
         Ok(Digest { node_digests })

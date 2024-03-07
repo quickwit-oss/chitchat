@@ -415,6 +415,7 @@ impl DeltaSerializer {
         }
     }
 
+    #[must_use]
     pub fn try_set_max_version(&mut self, max_version: Version) -> bool {
         let key_value_op = DeltaOp::SetMaxVersion { max_version };
         self.try_add_op(key_value_op)
@@ -475,6 +476,23 @@ mod tests {
     #[test]
     fn test_delta_serialization_default() {
         test_serdeser_aux(&Delta::default(), 1);
+    }
+
+    #[test]
+    fn test_delta_serialization_with_set_max_version() {
+        // 4 bytes
+        let mut delta_writer = DeltaSerializer::with_mtu(198);
+
+        // ChitchatId takes 27 bytes = 15 bytes + 2 bytes for node length + "node-10001".len().
+        let node1 = ChitchatId::for_local_test(10_001);
+
+        // +37 bytes = 8 bytes (heartbeat) + 2 bytes (empty node delta) + 27 bytes (node).
+        assert!(delta_writer.try_add_node(node1, 80u64, 50u64));
+
+        // +9 bytes: +1 bytes + 8 bytes (version)
+        assert!(delta_writer.try_set_max_version(100));
+
+        test_aux_delta_writer(delta_writer, 1 + 56);
     }
 
     #[test]

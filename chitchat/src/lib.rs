@@ -424,6 +424,7 @@ mod tests {
     /// lhs and rhs.
     ///
     /// This does NOT check for deleted KVs.
+    #[track_caller]
     fn assert_cluster_state_eq(lhs: &NodeState, rhs: &NodeState) {
         assert_eq!(lhs.num_key_values(), rhs.num_key_values());
         for (key, value) in lhs.key_values() {
@@ -431,6 +432,7 @@ mod tests {
         }
     }
 
+    #[track_caller]
     fn assert_nodes_sync(nodes: &[&Chitchat]) {
         let first_node_states = &nodes[0].cluster_state.node_states;
         for other_node in nodes.iter().skip(1) {
@@ -557,6 +559,44 @@ mod tests {
             state1.set("key1c", "4");
         }
         run_chitchat_handshake(&mut node1, &mut node2);
+        assert_nodes_sync(&[&node1, &node2]);
+    }
+
+    #[tokio::test]
+    async fn test_chitchat_no_need_to_reset_if_last_gc_version_is_higher() {
+        // This test checks what happens if a node is trailing behind too much,
+        // needs a reset, and a single delta would:
+        // - not increase its max version after reset.
+        // - not even bring the state to a max_version >= last_gc_version
+        let _ = tracing_subscriber::fmt::try_init();
+        tokio::time::pause();
+        let node_config1 = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut node1 =
+            Chitchat::with_chitchat_id_and_seeds(node_config1, empty_seeds.clone(), vec![]);
+        let node_config2 = ChitchatConfig::for_test(10_002);
+        let mut node2 = Chitchat::with_chitchat_id_and_seeds(node_config2, empty_seeds, vec![]);
+        // Because of compression, we need a lot of keys to reach the MTU.
+        for i in 0..20_000 {
+            let key = format!("k{}", i);
+            node1.self_node_state().set(&key, "first_value");
+        }
+        for _ in 0..2 {
+            run_chitchat_handshake(&mut node1, &mut node2);
+        }
+
+        assert_nodes_sync(&[&node1, &node2]);
+
+        node1.self_node_state().mark_for_deletion("k1");
+
+        // Advance time before triggering the GC of that deleted key
+        tokio::time::advance(Duration::from_secs(3_600 * 3)).await;
+        node1.gc_keys_marked_for_deletion();
+
+        for _ in 0..2 {
+            run_chitchat_handshake(&mut node1, &mut node2);
+        }
+
         assert_nodes_sync(&[&node1, &node2]);
     }
 

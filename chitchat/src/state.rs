@@ -42,11 +42,11 @@ pub struct NodeState {
     // A proper interpretation of `max_version` and `last_gc_version` is the following:
     // The state contains exactly:
     // - all of the (non-deleted) key values present at snapshot `max_version`.
-    // - all of the tombstones of the entry that were marked for deletion between (`last_gc_version`,
-    //   `max_version]`.
+    // - all of the tombstones of the entry that were marked for deletion between
+    //   (`last_gc_version`, `max_version]`.
     //
-    // It does not contain any trace of the tombstones of the entries that were marked for deletion before
-    // `<= last_gc_version`.
+    // It does not contain any trace of the tombstones of the entries that were marked for deletion
+    // before `<= last_gc_version`.
     //
     // Disclaimer: We do not necessarily have max_version >= last_gc_version.
     // After a reset, a node will have its `last_gc_version` set to the version of the node
@@ -184,7 +184,9 @@ impl NodeState {
             return false;
         };
 
-        if delta_max_version <= self.max_version() {
+        if (node_delta.last_gc_version, delta_max_version)
+            <= (self.last_gc_version, self.max_version())
+        {
             // There is not point applying this delta as it is not bringing us to a newer state.
             warn!(
                 node=?node_delta.chitchat_id,
@@ -324,6 +326,7 @@ impl NodeState {
     fn digest(&self) -> NodeDigest {
         NodeDigest {
             heartbeat: self.heartbeat,
+            last_gc_version: self.last_gc_version,
             max_version: self.max_version,
         }
     }
@@ -521,11 +524,11 @@ impl ClusterState {
                 continue;
             }
 
-            let digest_max_version: Version = digest
+            let (digest_last_gc_version, digest_max_version) = digest
                 .node_digests
                 .get(chitchat_id)
-                .map(|node_digest| node_digest.max_version)
-                .unwrap_or(0u64);
+                .map(|node_digest| (node_digest.last_gc_version, node_digest.max_version))
+                .unwrap_or((0u64, 0u64));
 
             if node_state.max_version <= digest_max_version {
                 // Our version is actually older than the version of the digest.
@@ -535,7 +538,9 @@ impl ClusterState {
 
             // We have garbage collected some tombstones that the other node does not know about
             // yet. A reset is needed.
-            let should_reset = digest_max_version < node_state.last_gc_version;
+            let should_reset = digest_last_gc_version < node_state.last_gc_version
+                && digest_max_version < node_state.last_gc_version;
+
             let from_version_excluded = if should_reset {
                 warn!(
                     "Node to reset {chitchat_id:?} last gc version: {} max version: {}",
@@ -569,7 +574,10 @@ impl ClusterState {
             // There aren't any key-values in the state_node apparently.
             // Let's add a specific instruction to the delta to set the max version.
             if !added_something {
-                delta_serializer.try_set_max_version(stale_node.node_state.max_version);
+                // This call returns false if the mtu has been reached.
+                //
+                // In that case, this empty node update is useless but does not hurt correctness.
+                let _ = delta_serializer.try_set_max_version(stale_node.node_state.max_version);
             }
         }
 
@@ -1050,14 +1058,15 @@ mod tests {
 
         let node2 = ChitchatId::for_local_test(10_002);
         let node2_state = cluster_state.node_state_mut(&node2);
+        node2_state.set_last_gc_version(10u64);
         node2_state.set("key_a", "");
         node2_state.set("key_b", "");
 
         let digest = cluster_state.compute_digest(&HashSet::new());
 
         let mut expected_node_digests = Digest::default();
-        expected_node_digests.add_node(node1.clone(), Heartbeat(0), 1);
-        expected_node_digests.add_node(node2.clone(), Heartbeat(0), 2);
+        expected_node_digests.add_node(node1.clone(), Heartbeat(0), 0, 1);
+        expected_node_digests.add_node(node2.clone(), Heartbeat(0), 10u64, 2);
 
         assert_eq!(&digest, &expected_node_digests);
     }
@@ -1228,8 +1237,8 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node1.clone(), Heartbeat(0), 1);
-        digest.add_node(node2.clone(), Heartbeat(0), 2);
+        digest.add_node(node1.clone(), Heartbeat(0), 0, 1);
+        digest.add_node(node2.clone(), Heartbeat(0), 0, 2);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1250,8 +1259,8 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node1.clone(), Heartbeat(0), 1);
-        digest.add_node(node2.clone(), Heartbeat(0), 2);
+        digest.add_node(node1.clone(), Heartbeat(0), 0, 1);
+        digest.add_node(node2.clone(), Heartbeat(0), 0, 2);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1272,7 +1281,7 @@ mod tests {
         let mut digest = Digest::default();
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
-        digest.add_node(node2.clone(), Heartbeat(0), 3);
+        digest.add_node(node2.clone(), Heartbeat(0), 0, 3);
 
         test_with_varying_max_transmitted_kv_helper(
             &cluster_state,
@@ -1326,7 +1335,7 @@ mod tests {
 
         {
             let mut digest = Digest::default();
-            digest.add_node(node1.clone(), Heartbeat(0), 1);
+            digest.add_node(node1.clone(), Heartbeat(0), 0, 1);
             let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
@@ -1350,7 +1359,7 @@ mod tests {
         {
             let mut digest = Digest::default();
             let node1 = ChitchatId::for_local_test(10_001);
-            digest.add_node(node1.clone(), Heartbeat(0), 1);
+            digest.add_node(node1.clone(), Heartbeat(0), 0, 1);
             let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
@@ -1375,7 +1384,7 @@ mod tests {
 
         {
             let mut digest = Digest::default();
-            digest.add_node(node1.clone(), Heartbeat(0), 1);
+            digest.add_node(node1.clone(), Heartbeat(0), 0, 1);
             let delta = cluster_state.compute_partial_delta_respecting_mtu(
                 &digest,
                 MAX_UDP_DATAGRAM_PAYLOAD_SIZE,

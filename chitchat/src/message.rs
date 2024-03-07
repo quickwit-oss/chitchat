@@ -132,13 +132,13 @@ mod tests {
         {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat(0), 0, 0);
 
             let syn = ChitchatMessage::Syn {
                 cluster_id: "cluster-a".to_string(),
                 digest,
             };
-            test_serdeser_aux(&syn, 57);
+            test_serdeser_aux(&syn, 65);
         }
     }
 
@@ -157,7 +157,7 @@ mod tests {
             let mut digest = Digest::default();
             let node = ChitchatId::for_local_test(10_001);
             // +43 bytes = 27 bytes (ChitchatId) + 8 (hearbeat) + 8 (max_version).
-            digest.add_node(node, Heartbeat(0), 0);
+            digest.add_node(node, Heartbeat(0), 0, 0);
 
             // 4 bytes
             let mut delta = Delta::default();
@@ -174,7 +174,7 @@ mod tests {
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
             // 1 bytes (syn ack message) + 45 bytes (digest) + 69 bytes (delta).
-            test_serdeser_aux(&syn_ack, 1 + 60 + 45);
+            test_serdeser_aux(&syn_ack, 1 + 53 + 60);
         }
     }
 
