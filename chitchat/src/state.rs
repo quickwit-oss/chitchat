@@ -1082,7 +1082,7 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "");
             assert_eq!(versioned_value.version, 2u64);
-            assert!(&versioned_value.is_deleted());
+            assert!(versioned_value.is_deleted());
             assert!(versioned_value
                 .status
                 .time_of_start_scheduled_for_deletion()
