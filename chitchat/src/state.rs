@@ -295,10 +295,42 @@ impl NodeState {
     pub fn set(&mut self, key: impl ToString, value: impl ToString) {
         let key = key.to_string();
         let value = value.to_string();
-        if self.get(&key).map_or(true, |prev_val| prev_val != value) {
-            let new_version = self.max_version + 1;
-            self.set_with_version(key, value, new_version);
+        if let Some(previous_versioned_value) = self.get_versioned(&key) {
+            if previous_versioned_value.value == value
+                && matches!(previous_versioned_value.status, DeletionStatus::Set)
+            {
+                // No need to change anything, the value is already set!
+                return;
+            }
         }
+        let new_version = self.max_version + 1;
+        self.set_with_version(key, value, new_version);
+    }
+
+    /// Sets a new value with a TTL.
+    pub fn set_with_ttl(&mut self, key: impl ToString, value: impl ToString) {
+        let key = key.to_string();
+        let value = value.to_string();
+        if let Some(previous_versioned_value) = self.get_versioned(&key) {
+            if previous_versioned_value.value == value
+                && matches!(
+                    previous_versioned_value.status,
+                    DeletionStatus::DeleteAfterTtl(_)
+                )
+            {
+                // No need to change anything, the value is already set!
+                return;
+            }
+        }
+        let new_version = self.max_version + 1;
+        self.set_versioned_value(
+            key.to_string(),
+            VersionedValue {
+                value: value.to_string(),
+                version: new_version,
+                status: DeletionStatus::DeleteAfterTtl(Instant::now()),
+            },
+        );
     }
 
     /// Deletes the entry associated to the given key.
@@ -1677,5 +1709,37 @@ mod tests {
         let versioned_b = node_state.get_versioned("key_b").unwrap();
         assert_eq!(versioned_b.version, 32);
         assert_eq!(versioned_b.value, "val_b2");
+    }
+
+    #[test]
+    fn test_node_set_delete() {
+        let mut node_state = NodeState::for_test();
+        node_state.set("key_a", "val_b");
+        node_state.delete("key_a");
+        assert!(node_state.get("key_a").is_none());
+    }
+
+    #[test]
+    fn test_node_set_delete_after_ttl_set() {
+        let mut node_state = NodeState::for_test();
+        node_state.set("key_a", "val_b");
+        node_state.delete_after_ttl("key_a");
+        node_state.set("key_a", "val_b2");
+        assert!(matches!(
+            node_state.get_versioned("key_a").unwrap().status,
+            DeletionStatus::Set
+        ));
+    }
+
+    #[test]
+    fn test_node_set_with_ttl() {
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_ttl("key_a", "val_b");
+        let versioned_value = node_state.get_versioned("key_a").unwrap();
+        assert!(matches!(
+            versioned_value.status,
+            DeletionStatus::DeleteAfterTtl(_)
+        ));
+        assert_eq!(versioned_value.value, "val_b");
     }
 }
