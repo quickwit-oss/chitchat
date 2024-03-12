@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::serialize::*;
-use crate::types::{KeyValueMutation, KeyValueMutationRef};
+use crate::types::{DeletionStatusMutation, KeyValueMutation, KeyValueMutationRef};
 use crate::{ChitchatId, Version, VersionedValue};
 
 /// A delta is the message we send to another node to update it.
@@ -117,12 +117,12 @@ impl Deserializable for DeltaOp {
                 let key = String::deserialize(buf)?;
                 let value = String::deserialize(buf)?;
                 let version = u64::deserialize(buf)?;
-                let deleted = bool::deserialize(buf)?;
+                let deleted = DeletionStatusMutation::deserialize(buf)?;
                 Ok(DeltaOp::KeyValue(KeyValueMutation {
                     key,
                     value,
                     version,
-                    tombstone: deleted,
+                    status: deleted,
                 }))
             }
             DeltaOpTag::SetMaxVersion => {
@@ -280,7 +280,11 @@ impl Delta {
             key: key.to_string(),
             value: value.to_string(),
             version,
-            tombstone: deleted,
+            status: if deleted {
+                DeletionStatusMutation::Delete
+            } else {
+                DeletionStatusMutation::Set
+            },
         });
     }
 
@@ -440,7 +444,7 @@ impl DeltaSerializer {
             key: key.to_string(),
             value: versioned_value.value,
             version: versioned_value.version,
-            tombstone: versioned_value.tombstone.is_some(),
+            status: versioned_value.status.into(),
         };
         let key_value_op = DeltaOp::KeyValue(key_value_mutation);
         self.try_add_op(key_value_op)
@@ -472,6 +476,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
+    use crate::types::DeletionStatus;
 
     #[test]
     fn test_delta_serialization_default() {
@@ -512,7 +517,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             },
         ));
         // +26 bytes: 2 bytes (key length) + 5 bytes (key) + 8 bytes (version) +
@@ -522,7 +527,7 @@ mod tests {
             VersionedValue {
                 value: "".to_string(),
                 version: 2,
-                tombstone: Some(Instant::now()),
+                status: DeletionStatus::Deleted(Instant::now()),
             },
         ));
 
@@ -536,7 +541,7 @@ mod tests {
             VersionedValue {
                 value: "val21".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             },
         ));
         // +23 bytes.
@@ -545,7 +550,7 @@ mod tests {
             VersionedValue {
                 value: "val22".to_string(),
                 version: 3,
-                tombstone: None,
+                status: DeletionStatus::Set,
             },
         ));
         test_aux_delta_writer(delta_writer, 98);
@@ -567,7 +572,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
 
@@ -577,7 +582,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
 
@@ -614,7 +619,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
         // +23 bytes (kv) + 1 (op tag)
@@ -624,7 +629,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
 
@@ -651,7 +656,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
         // +23 bytes.
@@ -660,7 +665,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
 
@@ -690,7 +695,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
 
@@ -701,7 +706,7 @@ mod tests {
             VersionedValue {
                 value: "val12aaaaaaaaaabcc".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
         test_aux_delta_writer(delta_writer, 72);
@@ -720,7 +725,7 @@ mod tests {
             VersionedValue {
                 value: "val11".to_string(),
                 version: 1,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
         assert!(!delta_writer.try_add_kv(
@@ -728,7 +733,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             }
         ));
         delta_writer.try_add_kv(
@@ -736,7 +741,7 @@ mod tests {
             VersionedValue {
                 value: "val12".to_string(),
                 version: 2,
-                tombstone: None,
+                status: DeletionStatus::Set,
             },
         );
     }

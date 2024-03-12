@@ -63,8 +63,36 @@ impl ChitchatId {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum DeletionStatus {
+    Set,
+    // In both `Deleted` and `DeleteAfterWithTtl`, the `Instant` is NOT the scheduled time of
+    // deletion, but the reference start time.
+    //
+    // To get the actual time of deletion, one needs to add the grace period.
+    Deleted(Instant),
+    DeleteAfterTtl(Instant),
+}
+
+#[cfg(test)]
+impl PartialEq for DeletionStatus {
+    fn eq(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+impl DeletionStatus {
+    pub fn time_of_start_scheduled_for_deletion(&self) -> Option<Instant> {
+        match self {
+            DeletionStatus::Set => None,
+            DeletionStatus::Deleted(time_of_deletion)
+            | DeletionStatus::DeleteAfterTtl(time_of_deletion) => Some(*time_of_deletion),
+        }
+    }
+}
+
 /// A versioned key-value pair.
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     into = "VersionedValueForSerialization",
     from = "VersionedValueForSerialization"
@@ -74,7 +102,7 @@ pub struct VersionedValue {
     pub version: Version,
     // The tombstone instant is transient:
     // Only the presence of a tombstone or not is serialized, and used in partial eq eq.
-    pub(crate) tombstone: Option<Instant>,
+    pub status: DeletionStatus,
 }
 
 impl VersionedValue {
@@ -82,16 +110,20 @@ impl VersionedValue {
         VersionedValue {
             value,
             version,
-            tombstone: if is_tombstone {
-                Some(Instant::now())
+            status: if is_tombstone {
+                DeletionStatus::Deleted(Instant::now())
             } else {
-                None
+                DeletionStatus::Set
             },
         }
     }
 
-    pub fn is_tombstone(&self) -> bool {
-        self.tombstone.is_some()
+    pub fn is_deleted(&self) -> bool {
+        match self.status {
+            DeletionStatus::Set => false,
+            DeletionStatus::Deleted(_) => true,
+            DeletionStatus::DeleteAfterTtl(_) => false,
+        }
     }
 
     #[cfg(test)]
@@ -99,16 +131,18 @@ impl VersionedValue {
         Self {
             value: value.to_string(),
             version,
-            tombstone: None,
+            status: DeletionStatus::Set,
         }
     }
 }
 
+/// This `PartialEq` implementation is for test only.
+/// It checks for the equality of value, version and delete_status.
+/// However, it does NOT check the timestamp associated with the delete_status.
+#[cfg(test)]
 impl PartialEq for VersionedValue {
     fn eq(&self, other: &Self) -> bool {
-        self.value.eq(&other.value)
-            && self.version.eq(&other.version)
-            && self.is_tombstone().eq(&other.is_tombstone())
+        self.value == other.value && self.version == other.version && self.status == other.status
     }
 }
 
@@ -117,7 +151,79 @@ pub(crate) struct KeyValueMutation {
     pub(crate) key: String,
     pub(crate) value: String,
     pub(crate) version: Version,
-    pub(crate) tombstone: bool,
+    pub(crate) status: DeletionStatusMutation,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DeletionStatusMutation {
+    Set = 0u8,
+    Delete = 1u8,
+    DeleteAfterTtl = 2u8,
+}
+
+impl DeletionStatusMutation {
+    pub fn into_status(self, now: Instant) -> DeletionStatus {
+        match self {
+            DeletionStatusMutation::Set => DeletionStatus::Set,
+            DeletionStatusMutation::DeleteAfterTtl => DeletionStatus::DeleteAfterTtl(now),
+            DeletionStatusMutation::Delete => DeletionStatus::Deleted(now),
+        }
+    }
+
+    pub fn scheduled_for_deletion(&self) -> bool {
+        match self {
+            DeletionStatusMutation::Set => false,
+            DeletionStatusMutation::Delete | DeletionStatusMutation::DeleteAfterTtl => true,
+        }
+    }
+}
+
+impl From<DeletionStatus> for DeletionStatusMutation {
+    fn from(deletion_status: DeletionStatus) -> Self {
+        match deletion_status {
+            DeletionStatus::Set => DeletionStatusMutation::Set,
+            DeletionStatus::DeleteAfterTtl(_) => DeletionStatusMutation::DeleteAfterTtl,
+            DeletionStatus::Deleted(_) => DeletionStatusMutation::Delete,
+        }
+    }
+}
+
+impl TryFrom<u8> for DeletionStatusMutation {
+    type Error = ();
+
+    fn try_from(state_code: u8) -> Result<Self, Self::Error> {
+        match state_code {
+            0u8 => Ok(DeletionStatusMutation::Set),
+            1u8 => Ok(DeletionStatusMutation::Delete),
+            2u8 => Ok(DeletionStatusMutation::DeleteAfterTtl),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<DeletionStatusMutation> for u8 {
+    fn from(state_mutation: DeletionStatusMutation) -> u8 {
+        state_mutation as u8
+    }
+}
+
+impl Serializable for DeletionStatusMutation {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        buf.push(u8::from(*self));
+    }
+
+    fn serialized_len(&self) -> usize {
+        1
+    }
+}
+
+impl Deserializable for DeletionStatusMutation {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        let deletion_status_code = <u8 as Deserializable>::deserialize(buf)?;
+        DeletionStatusMutation::try_from(deletion_status_code)
+            .map_err(|_| anyhow::anyhow!("Invalid deletion status code {deletion_status_code}"))
+    }
 }
 
 impl<'a> From<&'a KeyValueMutation> for KeyValueMutationRef<'a> {
@@ -126,7 +232,7 @@ impl<'a> From<&'a KeyValueMutation> for KeyValueMutationRef<'a> {
             key: mutation.key.as_str(),
             value: mutation.value.as_str(),
             version: mutation.version,
-            tombstone: mutation.tombstone,
+            state: mutation.status,
         }
     }
 }
@@ -136,7 +242,7 @@ pub(crate) struct KeyValueMutationRef<'a> {
     pub(crate) key: &'a str,
     pub(crate) value: &'a str,
     pub(crate) version: Version,
-    pub(crate) tombstone: bool,
+    pub(crate) state: DeletionStatusMutation,
 }
 
 impl<'a> Serializable for KeyValueMutationRef<'a> {
@@ -144,14 +250,14 @@ impl<'a> Serializable for KeyValueMutationRef<'a> {
         Serializable::serialize(self.key, buf);
         Serializable::serialize(self.value, buf);
         Serializable::serialize(&self.version, buf);
-        Serializable::serialize(&self.tombstone, buf);
+        Serializable::serialize(&self.state, buf);
     }
 
     fn serialized_len(&self) -> usize {
         Serializable::serialized_len(self.key)
             + Serializable::serialized_len(self.value)
             + Serializable::serialized_len(&self.version)
-            + Serializable::serialized_len(&self.tombstone)
+            + Serializable::serialized_len(&self.state)
     }
 }
 
@@ -160,12 +266,12 @@ impl Deserializable for KeyValueMutation {
         let key: String = Deserializable::deserialize(buf)?;
         let value: String = Deserializable::deserialize(buf)?;
         let version: u64 = Deserializable::deserialize(buf)?;
-        let tombstone: bool = Deserializable::deserialize(buf)?;
+        let state: DeletionStatusMutation = Deserializable::deserialize(buf)?;
         Ok(KeyValueMutation {
             key,
             value,
             version,
-            tombstone,
+            status: state,
         })
     }
 }
@@ -174,16 +280,17 @@ impl Deserializable for KeyValueMutation {
 struct VersionedValueForSerialization {
     pub value: String,
     pub version: Version,
-    pub is_tombstone: bool,
+    pub status: DeletionStatusMutation, /* TODO fixme. Deserialization could result in incorrect
+                                         * ttls. */
 }
 
 impl From<VersionedValueForSerialization> for VersionedValue {
     fn from(versioned_value: VersionedValueForSerialization) -> Self {
-        VersionedValue::new(
-            versioned_value.value,
-            versioned_value.version,
-            versioned_value.is_tombstone,
-        )
+        VersionedValue {
+            value: versioned_value.value,
+            version: versioned_value.version,
+            status: versioned_value.status.into_status(Instant::now()),
+        }
     }
 }
 
@@ -192,7 +299,7 @@ impl From<VersionedValue> for VersionedValueForSerialization {
         VersionedValueForSerialization {
             value: versioned_value.value,
             version: versioned_value.version,
-            is_tombstone: versioned_value.tombstone.is_some(),
+            status: DeletionStatusMutation::from(versioned_value.status),
         }
     }
 }
@@ -215,5 +322,24 @@ impl Heartbeat {
 impl From<Heartbeat> for u64 {
     fn from(heartbeat: Heartbeat) -> Self {
         heartbeat.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deletion_status_to_u8() {
+        let mut count_values = 0;
+        for deletion_status_code in 0..=u8::MAX {
+            let Ok(deletion_status) = DeletionStatusMutation::try_from(deletion_status_code) else {
+                continue;
+            };
+            let deletion_status_code_deser_ser: u8 = deletion_status.into();
+            assert_eq!(deletion_status_code, deletion_status_code_deser_ser);
+            count_values += 1;
+        }
+        assert_eq!(count_values, 3);
     }
 }
