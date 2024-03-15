@@ -181,9 +181,15 @@ impl Serializable for String {
 impl Deserializable for String {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
         let len: usize = u16::deserialize(buf)? as usize;
-        let s = std::str::from_utf8(&buf[..len])?.to_string();
+        let str_bytes = buf.get(..len).with_context(|| {
+            format!(
+                "failed to deserialize string, buffer too short (str_len={len}, buf_len={})",
+                buf.len()
+            )
+        })?;
+        let str = std::str::from_utf8(&str_bytes)?.to_string();
         buf.consume(len);
-        Ok(s)
+        Ok(str)
     }
 }
 
@@ -390,7 +396,9 @@ pub fn deserialize_stream<D: Deserializable>(buf: &mut &[u8]) -> anyhow::Result<
         match block_type {
             BlockType::Compressed => {
                 let len = u16::deserialize(buf)? as usize;
-                let compressed_block_bytes = &buf[..len];
+                let compressed_block_bytes = buf.get(..len).context(
+                    "failed to download compressed stream (compressed block): buffer too short",
+                )?;
                 let uncompressed_len = zstd::bulk::decompress_to_buffer(
                     compressed_block_bytes,
                     &mut decompressed_buffer[..u16::MAX as usize],
@@ -401,7 +409,10 @@ pub fn deserialize_stream<D: Deserializable>(buf: &mut &[u8]) -> anyhow::Result<
             }
             BlockType::Uncompressed => {
                 let len = u16::deserialize(buf)? as usize;
-                decompressed_data.extend_from_slice(&buf[..len]);
+                let block_bytes = buf.get(..len).context(
+                    "failed to download compressed stream (uncompressed block): buffer too short",
+                )?;
+                decompressed_data.extend_from_slice(block_bytes);
                 buf.advance(len);
             }
             BlockType::NoMoreBlocks => {
