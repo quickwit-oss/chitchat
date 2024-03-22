@@ -187,7 +187,7 @@ impl Deserializable for String {
                 buf.len()
             )
         })?;
-        let str = std::str::from_utf8(&str_bytes)?.to_string();
+        let str = std::str::from_utf8(str_bytes)?.to_string();
         buf.consume(len);
         Ok(str)
     }
