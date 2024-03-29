@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
 
-use crate::serialize::Serializable;
+use crate::serialize::{Deserializable, Serializable};
 use crate::transport::{Socket, Transport};
 use crate::ChitchatMessage;
 
@@ -56,6 +56,16 @@ impl Transport for ChannelTransport {
     }
 }
 
+fn serialize_deserialize_chitchat_message(message: ChitchatMessage) -> ChitchatMessage {
+    let buf = message.serialize_to_vec();
+    assert_eq!(buf.len(), message.serialized_len());
+    let mut read_cursor: &[u8] = &buf[..];
+    let message_ser_deser = ChitchatMessage::deserialize(&mut read_cursor).unwrap();
+    assert_eq!(message, message_ser_deser);
+    assert!(read_cursor.is_empty());
+    message
+}
+
 impl ChannelTransport {
     pub fn with_mtu(mtu: usize) -> Self {
         Self {
@@ -92,6 +102,8 @@ impl ChannelTransport {
         to_addr: SocketAddr,
         message: ChitchatMessage,
     ) -> anyhow::Result<()> {
+        // We serialize/deserialize message to get closer to the real world.
+        let message = serialize_deserialize_chitchat_message(message);
         let num_bytes = message.serialized_len();
         if let Some(mtu) = self.mtu_opt {
             if num_bytes > mtu {
