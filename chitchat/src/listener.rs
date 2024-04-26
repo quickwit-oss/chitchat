@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use crate::KeyChangeEvent;
+use tracing::error;
+
+use crate::{KeyChangeEvent, KeyChangeEventRef};
 
 pub struct ListenerHandle {
-    prefix: String,
+    // The prefix and listener_id are used for removal of the listener.
     listener_id: usize,
     listeners: Weak<RwLock<InnerListeners>>,
 }
@@ -25,31 +26,31 @@ impl Drop for ListenerHandle {
     fn drop(&mut self) {
         if let Some(listeners) = self.listeners.upgrade() {
             let mut listeners_guard = listeners.write().unwrap();
-            listeners_guard.remove_listener(&self.prefix, self.listener_id);
+            listeners_guard.remove_listener(self.listener_id);
         }
     }
 }
 
-type BoxedListener = Box<dyn Fn(KeyChangeEvent) + 'static + Send + Sync>;
+type BoxedListener = Box<dyn Fn(&[KeyChangeEventRef]) + 'static + Send + Sync>;
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub(crate) struct Listeners {
     inner: Arc<RwLock<InnerListeners>>,
 }
 
 impl Listeners {
     #[must_use]
-    pub(crate) fn subscribe_event(
+    pub(crate) fn subscribe(
         &self,
         key_prefix: impl ToString,
-        callback: impl Fn(KeyChangeEvent) + 'static + Send + Sync,
+        callback: impl Fn(&[KeyChangeEventRef]) + 'static + Send + Sync,
     ) -> ListenerHandle {
         let key_prefix = key_prefix.to_string();
         let boxed_listener = Box::new(callback);
-        self.subscribe_event_for_ligher_monomorphization(key_prefix, boxed_listener)
+        self.subscribe_events_for_ligher_monomorphization(key_prefix, boxed_listener)
     }
 
-    fn subscribe_event_for_ligher_monomorphization(
+    fn subscribe_events_for_ligher_monomorphization(
         &self,
         key_prefix: String,
         boxed_listener: BoxedListener,
@@ -57,49 +58,86 @@ impl Listeners {
         let key_prefix = key_prefix.to_string();
         let weak_listeners = Arc::downgrade(&self.inner);
         let mut inner_listener_guard = self.inner.write().unwrap();
-        let new_idx = inner_listener_guard
-            .listener_idx
-            .fetch_add(1, Ordering::Relaxed);
-        inner_listener_guard.subscribe_event(&key_prefix, new_idx, boxed_listener);
+        let new_idx = inner_listener_guard.listener_idx;
+        inner_listener_guard.listener_idx += 1;
+        let callback_entry = CallbackEntry {
+            prefix: key_prefix.clone(),
+            callback: boxed_listener,
+        };
+        inner_listener_guard
+            .callbacks
+            .insert(new_idx, callback_entry);
+        inner_listener_guard.subscribe_events(&key_prefix, new_idx);
         ListenerHandle {
-            prefix: key_prefix,
             listener_id: new_idx,
             listeners: weak_listeners,
         }
     }
 
-    pub(crate) fn trigger_event(&mut self, key_change_event: KeyChangeEvent) {
-        self.inner.read().unwrap().trigger_event(key_change_event);
+    #[cfg(test)]
+    pub(crate) fn trigger_single_event(&self, key_change_event: KeyChangeEvent) {
+        self.inner
+            .read()
+            .unwrap()
+            .trigger_events(&[key_change_event]);
+    }
+
+    pub(crate) fn trigger_events(&self, key_change_events: &[KeyChangeEvent]) {
+        self.inner.read().unwrap().trigger_events(key_change_events);
     }
 }
+
+struct CallbackEntry {
+    prefix: String,
+    callback: BoxedListener,
+}
+
+type CallbackId = usize;
 
 #[derive(Default)]
 struct InnerListeners {
     // A trie would have been more efficient, but in reality we don't have
     // that many listeners.
-    listeners: BTreeMap<String, HashMap<usize, BoxedListener>>,
-    listener_idx: AtomicUsize,
+    listeners: BTreeMap<String, Vec<CallbackId>>,
+    listener_idx: usize,
+    // Callbacks is a hashmap because as we delete listeners, we create "holes" in the
+    // callback_id -> callback mapping
+    callbacks: HashMap<usize, CallbackEntry>,
 }
 
 impl InnerListeners {
     // We don't inline this to make sure monomorphization generates as little code as possible.
-    fn subscribe_event(&mut self, key_prefix: &str, idx: usize, callback: BoxedListener) {
-        if let Some(callbacks) = self.listeners.get_mut(key_prefix) {
-            callbacks.insert(idx, callback);
-        } else {
-            let mut listener_map = HashMap::new();
-            listener_map.insert(idx, callback);
-            self.listeners.insert(key_prefix.to_string(), listener_map);
-        }
+    fn subscribe_events(&mut self, key_prefix: &str, idx: CallbackId) {
+        self.listeners
+            .entry(key_prefix.to_string())
+            .or_default()
+            .push(idx);
     }
 
-    fn trigger_event(&self, key_change_event: KeyChangeEvent) {
+    fn call(&self, callback_id: CallbackId, key_change_event: &[KeyChangeEventRef]) {
+        let Some(CallbackEntry { callback, .. }) = self.callbacks.get(&callback_id) else {
+            error!(
+                "callback {callback_id} not found upon call. this should not happen, please report"
+            );
+            return;
+        };
+        (*callback)(key_change_event);
+    }
+
+    fn collect_events_to_trigger<'a>(
+        &self,
+        key_change_event: KeyChangeEventRef<'a>,
+        callback_to_events: &mut HashMap<CallbackId, Vec<KeyChangeEventRef<'a>>>,
+    ) {
         // We treat the empty prefix a tiny bit separately to get able to at least
         // use the first character as a range bound, as if we were going to the first level of
         // a trie.
-        if let Some(listeners) = self.listeners.get("") {
-            for listener in listeners.values() {
-                (*listener)(key_change_event);
+        if let Some(callback_ids) = self.listeners.get("") {
+            for &callback_id in callback_ids {
+                callback_to_events
+                    .entry(callback_id)
+                    .or_default()
+                    .push(key_change_event);
             }
         }
         if key_change_event.key.is_empty() {
@@ -115,22 +153,55 @@ impl InnerListeners {
                 break;
             }
             if let Some(stripped_key_change_event) = key_change_event.strip_key_prefix(prefix_key) {
-                for listener in listeners.values() {
-                    (*listener)(stripped_key_change_event);
+                for &callback_id in listeners {
+                    callback_to_events
+                        .entry(callback_id)
+                        .or_default()
+                        .push(stripped_key_change_event);
                 }
             }
         }
     }
 
-    fn remove_listener(&mut self, key_prefix: &str, idx: usize) {
-        if let Some(callbacks) = self.listeners.get_mut(key_prefix) {
-            callbacks.remove(&idx);
+    fn trigger_events(&self, key_change_events: &[KeyChangeEvent]) {
+        let mut callback_to_events: HashMap<CallbackId, Vec<KeyChangeEventRef>> =
+            HashMap::default();
+        // We aggregate events to trigger per callback, so that we can call each callback
+        // with a batch of events.
+        for key_change_event in key_change_events {
+            self.collect_events_to_trigger(key_change_event.into(), &mut callback_to_events);
         }
+        for (callback_id, key_change_events) in callback_to_events {
+            self.call(callback_id, &key_change_events[..]);
+        }
+    }
+
+    fn remove_listener(&mut self, callback_id: CallbackId) {
+        let Some(CallbackEntry { prefix, .. }) = self.callbacks.remove(&callback_id) else {
+            error!(
+                "callback {callback_id} not found upon remove. this should not happen, please \
+                 report"
+            );
+            return;
+        };
+        let Some(callbacks) = self.listeners.get_mut(&prefix) else {
+            error!(
+                "callback prefix not foudn upon remove. this should never happen, please report"
+            );
+            return;
+        };
+        let position = callbacks
+            .iter()
+            .position(|x| *x == callback_id)
+            .expect("callback not found");
+        callbacks.swap_remove(position);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::ChitchatId;
 
@@ -140,39 +211,43 @@ mod tests {
 
     #[test]
     fn test_listeners_simple() {
-        let mut listeners = Listeners::default();
+        let listeners = Listeners::default();
         let counter: Arc<AtomicUsize> = Default::default();
         let counter_clone = counter.clone();
-        let handle = listeners.subscribe_event("prefix:", move |key_change_event| {
+        let handle = listeners.subscribe("prefix:", move |events| {
+            assert_eq!(events.len(), 1);
+            let key_change_event = events[0];
             assert_eq!(key_change_event.key, "strippedprefix");
             assert_eq!(key_change_event.value, "value");
             counter_clone.fetch_add(1, Ordering::Relaxed);
         });
         let node_id = chitchat_id(7280u16);
         assert_eq!(counter.load(Ordering::Relaxed), 0);
-        listeners.trigger_event(KeyChangeEvent {
-            key: "prefix:strippedprefix",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "prefix:strippedprefix".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter.load(Ordering::Relaxed), 1);
         std::mem::drop(handle);
         let node_id = chitchat_id(7280u16);
-        listeners.trigger_event(KeyChangeEvent {
-            key: "prefix:strippedprefix",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "prefix:strippedprefix".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_listeners_empty_prefix() {
-        let mut listeners = Listeners::default();
+        let listeners = Listeners::default();
         let counter: Arc<AtomicUsize> = Default::default();
         let counter_clone = counter.clone();
         listeners
-            .subscribe_event("", move |key_change_event| {
+            .subscribe("", move |events| {
+                assert_eq!(events.len(), 1);
+                let key_change_event = &events[0];
                 assert_eq!(key_change_event.key, "prefix:strippedprefix");
                 assert_eq!(key_change_event.value, "value");
                 counter_clone.fetch_add(1, Ordering::Relaxed);
@@ -181,50 +256,54 @@ mod tests {
         assert_eq!(counter.load(Ordering::Relaxed), 0);
         let node_id = chitchat_id(7280u16);
         let key_change_event = KeyChangeEvent {
-            key: "prefix:strippedprefix",
-            value: "value",
-            node: &node_id,
+            key: "prefix:strippedprefix".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         };
-        listeners.trigger_event(key_change_event);
+        listeners.trigger_single_event(key_change_event);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
+
     #[test]
     fn test_listeners_forever() {
-        let mut listeners = Listeners::default();
+        let listeners = Listeners::default();
         let counter: Arc<AtomicUsize> = Default::default();
         let counter_clone = counter.clone();
-        let handle = listeners.subscribe_event("prefix:", move |evt| {
+        let handle = listeners.subscribe("prefix:", move |evts| {
+            assert_eq!(evts.len(), 1);
+            let evt = evts[0];
             assert_eq!(evt.key, "strippedprefix");
             assert_eq!(evt.value, "value");
             counter_clone.fetch_add(1, Ordering::Relaxed);
         });
         assert_eq!(counter.load(Ordering::Relaxed), 0);
         let node_id = chitchat_id(7280u16);
-        listeners.trigger_event(KeyChangeEvent {
-            key: "prefix:strippedprefix",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "prefix:strippedprefix".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter.load(Ordering::Relaxed), 1);
         handle.forever();
-        listeners.trigger_event(KeyChangeEvent {
-            key: "prefix:strippedprefix",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "prefix:strippedprefix".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn test_listeners_prefixes() {
-        let mut listeners = Listeners::default();
+        let listeners = Listeners::default();
 
         let subscribe_event = |prefix: &str| {
             let counter: Arc<AtomicUsize> = Default::default();
             let counter_clone = counter.clone();
             listeners
-                .subscribe_event(prefix, move |_evt| {
-                    counter_clone.fetch_add(1, Ordering::Relaxed);
+                .subscribe(prefix, move |events| {
+                    assert_eq!(events.len(), 1);
+                    counter_clone.fetch_add(events.len(), Ordering::Relaxed);
                 })
                 .forever();
             counter
@@ -237,20 +316,20 @@ mod tests {
         let counter_bc = subscribe_event("bc");
 
         let node_id = chitchat_id(7280u16);
-        listeners.trigger_event(KeyChangeEvent {
-            key: "hello",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "hello".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 1);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
-        listeners.trigger_event(KeyChangeEvent {
-            key: "",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 2);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
@@ -258,10 +337,10 @@ mod tests {
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent {
-            key: "a",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "a".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 3);
         assert_eq!(counter_b.load(Ordering::Relaxed), 0);
@@ -269,10 +348,10 @@ mod tests {
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent {
-            key: "b",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "b".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
 
         assert_eq!(counter_empty.load(Ordering::Relaxed), 4);
@@ -281,10 +360,10 @@ mod tests {
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent {
-            key: "ba",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "ba".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 5);
         assert_eq!(counter_b.load(Ordering::Relaxed), 2);
@@ -292,10 +371,10 @@ mod tests {
         assert_eq!(counter_bb2.load(Ordering::Relaxed), 0);
         assert_eq!(counter_bc.load(Ordering::Relaxed), 0);
 
-        listeners.trigger_event(KeyChangeEvent {
-            key: "bb",
-            value: "value",
-            node: &node_id,
+        listeners.trigger_single_event(KeyChangeEvent {
+            key: "bb".to_string(),
+            value: "value".to_string(),
+            node: node_id.clone(),
         });
         assert_eq!(counter_empty.load(Ordering::Relaxed), 6);
         assert_eq!(counter_b.load(Ordering::Relaxed), 3);
