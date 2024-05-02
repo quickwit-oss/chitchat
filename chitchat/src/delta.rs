@@ -240,7 +240,7 @@ impl Delta {
     pub(crate) fn num_tuples(&self) -> usize {
         self.node_deltas
             .iter()
-            .map(|node_delta| node_delta.num_tuples())
+            .map(|node_delta| node_delta.key_values.len())
             .sum()
     }
 
@@ -323,10 +323,12 @@ pub(crate) struct NodeDelta {
     pub max_version: Option<Version>,
 }
 
-#[cfg(test)]
-impl NodeDelta {
-    pub fn num_tuples(&self) -> usize {
-        self.key_values.len()
+impl IntoIterator for NodeDelta {
+    type Item = KeyValueMutation;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.key_values.into_iter()
     }
 }
 

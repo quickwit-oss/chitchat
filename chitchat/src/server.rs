@@ -139,7 +139,12 @@ pub async fn spawn_chitchat(
     let socket = transport.open(config.listen_addr).await?;
     let chitchat_id = config.chitchat_id.clone();
 
-    let chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs, initial_key_values);
+    let mut chitchat = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs);
+    let mut self_node = chitchat.self_node_state();
+    for (key, value) in initial_key_values {
+        self_node.set(key, value);
+    }
+
     let chitchat_arc = Arc::new(Mutex::new(chitchat));
     let chitchat_arc_clone = chitchat_arc.clone();
 
@@ -412,13 +417,11 @@ where
 mod tests {
     use std::collections::BTreeMap;
     use std::future::Future;
-    use std::time::Duration;
 
     use tokio_stream::{Stream, StreamExt};
 
     use super::*;
-    use crate::message::ChitchatMessage;
-    use crate::transport::{ChannelTransport, Transport};
+    use crate::transport::ChannelTransport;
     use crate::{Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
     #[derive(Debug, Default)]
@@ -496,7 +499,7 @@ mod tests {
         let config1 = ChitchatConfig::for_test(1);
         let addr1 = config1.chitchat_id.gossip_advertise_addr;
 
-        let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds(), Vec::new());
+        let chitchat = Chitchat::with_chitchat_id_and_seeds(config2, empty_seeds());
         let _handler = spawn_chitchat(config1, Vec::new(), &transport)
             .await
             .unwrap();
@@ -521,8 +524,7 @@ mod tests {
             .open(outsider_config.chitchat_id.gossip_advertise_addr)
             .await
             .unwrap();
-        let outsider =
-            Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds(), Vec::new());
+        let outsider = Chitchat::with_chitchat_id_and_seeds(outsider_config, empty_seeds());
 
         let server_config = ChitchatConfig::for_test(2223);
         let server_addr = server_config.chitchat_id.gossip_advertise_addr;
@@ -568,8 +570,7 @@ mod tests {
         let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
         let test_config = ChitchatConfig::for_test(1);
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
-        let mut test_chitchat =
-            Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds(), Vec::new());
+        let mut test_chitchat = Chitchat::with_chitchat_id_and_seeds(test_config, empty_seeds());
         let mut test_transport = transport.open(test_addr).await.unwrap();
 
         let server_config = ChitchatConfig::for_test(2);
