@@ -362,7 +362,7 @@ impl Chitchat {
     /// The callback is required to be as light as possible.
     /// In particular,
     /// - it should not access the cluster state (as it is locked at the moment of the
-    /// execution of the callback.
+    ///   execution of the callback.
     /// - it should be fast: the callback is executed in an async context.
     ///
     /// The callback is called with a [`KeyChangeEvent`] that contains the key stripped of the

@@ -794,29 +794,16 @@ impl<'a> StaleNode<'a> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct NodeStateSnapshot {
-    pub chitchat_id: ChitchatId,
-    pub node_state: NodeState,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct ClusterStateSnapshot {
-    pub node_state_snapshots: Vec<NodeStateSnapshot>,
+    pub node_states: Vec<NodeState>,
     pub seed_addrs: HashSet<SocketAddr>,
 }
 
 impl From<&ClusterState> for ClusterStateSnapshot {
     fn from(cluster_state: &ClusterState) -> Self {
-        let node_state_snapshots = cluster_state
-            .node_states
-            .iter()
-            .map(|(chitchat_id, node_state)| NodeStateSnapshot {
-                chitchat_id: chitchat_id.clone(),
-                node_state: node_state.clone(),
-            })
-            .collect();
+        let node_states = cluster_state.node_states.values().cloned().collect();
         Self {
-            node_state_snapshots,
+            node_states,
             seed_addrs: cluster_state.seed_addrs(),
         }
     }
@@ -1230,8 +1217,7 @@ mod tests {
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get("key_a")
-            .is_none());
+            .contains_key("key_a"));
         cluster_state
             .node_state(&node1)
             .unwrap()

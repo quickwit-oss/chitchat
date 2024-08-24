@@ -75,11 +75,11 @@ fn test_multiple_nodes() {
     assert_eq!(info.live_nodes.len(), 5);
     assert_eq!(info.dead_nodes.len(), 0);
 
-    assert!(info.cluster_state.node_state_snapshots.get(3).is_some());
+    assert!(info.cluster_state.node_states.get(3).is_some());
     // Check that "some_key" we set on this local node (localhost:13001) is
     // indeed set to be "some_value"
-    let node = info.cluster_state.node_state_snapshots.get(1).unwrap();
-    let versioned_value = node.node_state.get_versioned("some_key").unwrap();
+    let node_state = info.cluster_state.node_states.get(1).unwrap();
+    let versioned_value = node_state.get_versioned("some_key").unwrap();
     assert_eq!(versioned_value.value, "some_value");
 }
 
@@ -88,7 +88,7 @@ fn test_multiple_nodes_with_dns_resolution_for_seed() {
     let _child_handles = setup_nodes(12_000, 5, 5, true);
     // Check node states through api.
     let info = get_node_info("http://127.0.0.1:12001").unwrap();
-    assert!(info.cluster_state.node_state_snapshots.get(3).is_some());
+    assert!(info.cluster_state.node_states.get(3).is_some());
     assert_eq!(info.cluster_id, "testing");
     assert_eq!(info.live_nodes.len(), 5);
     assert_eq!(info.dead_nodes.len(), 0);
