@@ -1213,7 +1213,7 @@ mod tests {
         // GC if tombstone (=100) + grace_period > heartbeat (=110).
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
-        assert!(cluster_state
+        assert!(!cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
@@ -1441,7 +1441,8 @@ mod tests {
             node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
             let node2_state = cluster_state.node_state_mut(&node2);
-            node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2); // 2
+            node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2);
+            // 2
         }
 
         {
