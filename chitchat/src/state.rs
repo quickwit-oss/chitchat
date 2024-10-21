@@ -794,29 +794,16 @@ impl<'a> StaleNode<'a> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct NodeStateSnapshot {
-    pub chitchat_id: ChitchatId,
-    pub node_state: NodeState,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct ClusterStateSnapshot {
-    pub node_state_snapshots: Vec<NodeStateSnapshot>,
+    pub node_states: Vec<NodeState>,
     pub seed_addrs: HashSet<SocketAddr>,
 }
 
 impl From<&ClusterState> for ClusterStateSnapshot {
     fn from(cluster_state: &ClusterState) -> Self {
-        let node_state_snapshots = cluster_state
-            .node_states
-            .iter()
-            .map(|(chitchat_id, node_state)| NodeStateSnapshot {
-                chitchat_id: chitchat_id.clone(),
-                node_state: node_state.clone(),
-            })
-            .collect();
+        let node_states = cluster_state.node_states.values().cloned().collect();
         Self {
-            node_state_snapshots,
+            node_states,
             seed_addrs: cluster_state.seed_addrs(),
         }
     }
@@ -1226,12 +1213,11 @@ mod tests {
         // GC if tombstone (=100) + grace_period > heartbeat (=110).
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
-        assert!(cluster_state
+        assert!(!cluster_state
             .node_state(&node1)
             .unwrap()
             .key_values
-            .get("key_a")
-            .is_none());
+            .contains_key("key_a"));
         cluster_state
             .node_state(&node1)
             .unwrap()
@@ -1455,7 +1441,8 @@ mod tests {
             node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
             let node2_state = cluster_state.node_state_mut(&node2);
-            node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2); // 2
+            node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2);
+            // 2
         }
 
         {
