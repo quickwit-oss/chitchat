@@ -245,7 +245,7 @@ pub(crate) struct KeyValueMutationRef<'a> {
     pub(crate) state: DeletionStatusMutation,
 }
 
-impl<'a> Serializable for KeyValueMutationRef<'a> {
+impl Serializable for KeyValueMutationRef<'_> {
     fn serialize(&self, buf: &mut Vec<u8>) {
         Serializable::serialize(self.key, buf);
         Serializable::serialize(self.value, buf);

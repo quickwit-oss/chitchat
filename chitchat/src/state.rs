@@ -784,7 +784,7 @@ struct StaleNode<'a> {
     from_version_excluded: u64,
 }
 
-impl<'a> StaleNode<'a> {
+impl StaleNode<'_> {
     /// Iterates over the stale key-value pairs in decreasing order of staleness.
     fn stale_key_values(&self) -> impl Iterator<Item = (&str, &VersionedValue)> {
         self.node_state

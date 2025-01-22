@@ -391,7 +391,7 @@ pub struct KeyChangeEvent<'a> {
     pub node: &'a ChitchatId,
 }
 
-impl<'a> KeyChangeEvent<'a> {
+impl KeyChangeEvent<'_> {
     fn strip_key_prefix(&self, prefix: &str) -> Option<KeyChangeEvent> {
         let key_without_prefix = self.key.strip_prefix(prefix)?;
         Some(KeyChangeEvent {

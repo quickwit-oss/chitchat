@@ -165,7 +165,7 @@ impl Serializable for DeltaOp {
     }
 }
 
-impl<'a> Serializable for DeltaOpRef<'a> {
+impl Serializable for DeltaOpRef<'_> {
     fn serialize(&self, buf: &mut Vec<u8>) {
         match self {
             Self::Node {
