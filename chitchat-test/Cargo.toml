@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 chitchat = { version = "0.9.0", path = "../chitchat" }
-poem = "1"
-poem-openapi = {version="1.3", features = ["swagger-ui"] }
+poem = "3"
+poem-openapi = {version="5.1", features = ["swagger-ui"] }
 structopt = "0.3"
 tokio = { version = "1.28.0", features = ["net", "sync", "rt-multi-thread", "macros", "time"] }
 serde = { version="1", features=["derive"] }
@@ -19,5 +19,5 @@ cool-id-generator = "1"
 
 [dev-dependencies]
 assert_cmd = "2"
-predicates = "2"
-reqwest = { version = "0.11", default-features=false, features = ["blocking", "json"] }
+predicates = "3"
+reqwest = { version = "0.12", default-features=false, features = ["blocking", "json"] }
