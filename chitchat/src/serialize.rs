@@ -475,7 +475,7 @@ pub fn test_serdeser_aux<T: Serializable + Deserializable + PartialEq + std::fmt
 #[cfg(test)]
 mod tests {
     use proptest::proptest;
-    use rand::distributions::Alphanumeric;
+    use rand::distr::Alphanumeric;
     use rand::Rng;
 
     use super::*;
@@ -567,7 +567,7 @@ mod tests {
             compressed_stream_writer.append(sentence);
         }
         for _ in 0..30 {
-            let rng = rand::thread_rng();
+            let rng = rand::rng();
             let random_sentence: String = rng
                 .sample_iter(&Alphanumeric)
                 .take(30)

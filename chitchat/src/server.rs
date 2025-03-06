@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rand::prelude::*;
+use rand::rng;
 use tokio::net::lookup_host;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
@@ -201,7 +202,7 @@ impl Server {
         chitchat: Arc<Mutex<Chitchat>>,
         transport: Box<dyn Socket>,
     ) -> Self {
-        let rng = SmallRng::from_rng(thread_rng()).expect("failed to seed random generator");
+        let rng = SmallRng::from_rng(&mut rng());
         Self {
             chitchat,
             command_rx,
@@ -384,7 +385,7 @@ where
     R: Rng + ?Sized,
 {
     let selection_probability = dead_nodes_count as f64 / (live_nodes_count + 1) as f64;
-    if selection_probability > rng.gen::<f64>() {
+    if selection_probability > rng.random::<f64>() {
         return dead_nodes.iter().choose(rng).cloned();
     }
     None
@@ -402,7 +403,7 @@ where
 {
     let selection_probability =
         seed_nodes.len() as f64 / (live_nodes_count + dead_nodes_count) as f64;
-    if live_nodes_count == 0 || rng.gen::<f64>() <= selection_probability {
+    if live_nodes_count == 0 || rng.random::<f64>() <= selection_probability {
         return seed_nodes.iter().choose(rng).cloned();
     }
     None
@@ -438,10 +439,6 @@ mod tests {
         }
 
         fn fill_bytes(&mut self, _dest: &mut [u8]) {
-            unimplemented!();
-        }
-
-        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), rand::Error> {
             unimplemented!();
         }
     }

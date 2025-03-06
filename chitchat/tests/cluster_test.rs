@@ -7,8 +7,8 @@ use chitchat::transport::ChannelTransport;
 use chitchat::{
     spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
 };
-use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng};
+use rand::prelude::IndexedRandom;
+use rand::{rng, Rng};
 use tracing::{debug, error, info};
 
 #[derive(Debug)]
@@ -609,7 +609,7 @@ async fn test_marked_for_deletion_gc_with_network_partition_4_nodes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_simple_simulation_heavy_insert_delete() {
     // let _ = tracing_subscriber::fmt::try_init();
-    let mut rng = thread_rng();
+    let mut rng = rng();
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(5));
     let mut chitchat_ids = Vec::new();
     for i in 0..20 {
@@ -636,7 +636,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
     for chitchat_id in chitchat_ids.iter() {
         let mut keys_values = Vec::new();
         for key in key_names.iter() {
-            let value: u64 = rng.gen();
+            let value: u64 = rng.random();
             keys_values.push((key.to_string(), value.to_string()));
             let keys_entry = keys_values_inserted_per_chitchat_id
                 .entry(chitchat_id.clone())
