@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, TcpListener};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -356,15 +357,30 @@ pub fn test_chitchat_id(port: u16) -> ChitchatId {
     }
 }
 
-/// Copy-pasted from Quickwit repo.
 /// Finds a random available TCP port.
 ///
-/// This function induces a race condition, use it only in unit tests.
-pub fn find_available_tcp_port() -> anyhow::Result<u16> {
+/// We keep a process-wide memory of used ports, otherwise multiple calls to
+/// this function might return the same port, introducing an annoying race
+/// condition. This works as long as this function is kept private and all tests
+/// in this file are executed in the same process (this is the case with `cargo
+/// test` but not `nextest`).
+fn find_available_tcp_port() -> anyhow::Result<u16> {
+    static USED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
     let socket: SocketAddr = ([127, 0, 0, 1], 0u16).into();
     let listener = TcpListener::bind(socket)?;
     let port = listener.local_addr()?.port();
-    Ok(port)
+    {
+        let mut used_ports_guard = USED_PORTS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap();
+        if !used_ports_guard.contains(&port) {
+            used_ports_guard.insert(port);
+            return Ok(port);
+        }
+    }
+    info!(port=%port, "port already in use, look for another one");
+    find_available_tcp_port()
 }
 
 #[tokio::test]
