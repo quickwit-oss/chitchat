@@ -811,7 +811,7 @@ impl From<&ClusterState> for ClusterStateSnapshot {
 
 #[cfg(not(test))]
 fn random_generator() -> impl Rng {
-    rand::thread_rng()
+    rand::rng()
 }
 
 // We use a deterministic random generator in tests.

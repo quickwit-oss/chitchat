@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rand::distributions::Bernoulli;
+use rand::distr::Bernoulli;
 use rand::prelude::{Distribution, SmallRng};
-use rand::{thread_rng, SeedableRng};
+use rand::{rng, SeedableRng};
 use tokio::sync::RwLock;
 
 use crate::transport::{Socket, Transport};
@@ -21,7 +21,7 @@ pub trait DelayMillisDist: Distribution<f32> + Send + Sync + Clone + 'static {}
 #[async_trait]
 impl<D: DelayMillisDist> Transport for TransportWithDelay<D> {
     async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
-        let rng = SmallRng::from_rng(thread_rng()).unwrap();
+        let rng = SmallRng::from_rng(&mut rng());
         let socket = self.transport.open(listen_addr).await?;
         Ok(Box::new(SocketWithDelay {
             delay_secs: self.delay_secs.clone(),
@@ -84,7 +84,7 @@ struct TransportWithMessageDrop {
 #[async_trait]
 impl Transport for TransportWithMessageDrop {
     async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
-        let rng = SmallRng::from_rng(thread_rng()).unwrap();
+        let rng = SmallRng::from_rng(&mut rng());
         let socket = self.transport.open(listen_addr).await?;
         Ok(Box::new(SocketWithMessageDrop {
             drop_probability: self.drop_probability,

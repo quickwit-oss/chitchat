@@ -339,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn test_failure_detector() {
         tokio::time::pause();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
 
         let intervals_choices = [1u64, 2];
@@ -411,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn test_failure_detector_node_state_from_live_to_down_to_live() {
         tokio::time::pause();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut failure_detector = FailureDetector::new(FailureDetectorConfig::default());
         let intervals_choices = [1u64, 2];
         let node_1 = ChitchatId::for_local_test(10_001);
