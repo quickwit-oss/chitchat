@@ -800,7 +800,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
 }
 
 #[tokio::test]
-async fn test_marked_for_deletion_bug() {
+async fn test_bouncing_deletion_status() {
     let _ = tracing_subscriber::fmt::try_init();
     const PROPAGATION_TIMEOUT: Duration = Duration::from_millis(500);
     const NODE_DELETION_GRACE_PERIOD: Duration = Duration::from_secs(4);
@@ -854,6 +854,10 @@ async fn test_marked_for_deletion_bug() {
         expected_status: NodeStatusPredicate::Dead,
         timeout_opt: Some(Duration::from_secs(5)),
     });
+    // Nodes are joining at different times, which means they will record
+    // different times of death for node 2. This means that after node 1
+    // definitively removes node 2 (garbage collect), it will it will receive it
+    // back from the late joiners.
     for late_joiner_chitchat_id in &late_joiner_chitchat_ids {
         operations.push(Operation::Wait(Duration::from_secs(1)));
         operations.push(Operation::AddNode {
@@ -861,11 +865,23 @@ async fn test_marked_for_deletion_bug() {
             peer_seeds: Some(peer_seeds.clone()),
         });
     }
-    operations.push(Operation::NodeStatusAssert {
-        server_chitchat_id: chitchat_id_1.clone(),
-        chitchat_id: chitchat_id_2.clone(),
-        expected_status: NodeStatusPredicate::Absent,
-        timeout_opt: None,
-    });
+    operations.append(&mut vec![
+        // Even if we received back the state of node 2 from late joiners, don't record it
+        Operation::NodeStatusAssert {
+            server_chitchat_id: chitchat_id_1.clone(),
+            chitchat_id: chitchat_id_2.clone(),
+            expected_status: NodeStatusPredicate::Absent,
+            timeout_opt: None,
+        },
+        // Now if node 2 really comes back, we want node 1 to eventually record it
+        Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::NodeStatusAssert {
+            server_chitchat_id: chitchat_id_1.clone(),
+            chitchat_id: chitchat_id_2.clone(),
+            expected_status: NodeStatusPredicate::Live,
+            timeout_opt: Some(PROPAGATION_TIMEOUT),
+        },
+    ]);
+
     simulator.execute(operations).await;
 }

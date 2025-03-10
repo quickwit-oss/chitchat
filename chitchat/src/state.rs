@@ -7,6 +7,7 @@ use std::ops::Bound;
 use std::time::Duration;
 
 use itertools::Itertools;
+use lru::LruCache;
 use rand::prelude::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,10 @@ use crate::delta::{Delta, DeltaSerializer, NodeDelta};
 use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
 use crate::types::{DeletionStatus, DeletionStatusMutation};
-use crate::{ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue};
+use crate::{
+    ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue,
+    GARBAGE_COLLECTED_NODE_HISTORY_SIZE,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeState {
@@ -307,7 +311,8 @@ impl NodeState {
         self.set_with_version(key, value, new_version);
     }
 
-    /// Sets a new value with a TTL.
+    /// Sets a new value that will be deleted after the grace period but visible
+    /// until then
     pub fn set_with_ttl(&mut self, key: impl ToString, value: impl ToString) {
         let key = key.to_string();
         let value = value.to_string();
@@ -352,14 +357,11 @@ impl NodeState {
         versioned_value.status = DeletionStatusMutation::Delete.into_status(Instant::now());
     }
 
-    /// Contrary to `delete`, this does not delete an entry right away,
-    /// but rather schedules its deletion for after the grace period.
+    /// Similar to [`Self::delete`] but does not delete the entry right away,
+    /// instead it remains visible until the grace period is reached.
     ///
-    /// At the grace period, the entry will be really deleted just like a regular
-    /// tombstoned entry.
-    ///
-    /// Implementation wise, the only difference with `delete` is that it is
-    /// treated as if it was present during the grace period.``
+    /// At the end of the grace period, the entry will be deleted just like a
+    /// regular tombstoned entry.
     pub fn delete_after_ttl(&mut self, key: &str) {
         let Some(versioned_value) = self.key_values.get_mut(key) else {
             warn!(
@@ -499,9 +501,12 @@ impl NodeState {
 }
 
 pub(crate) struct ClusterState {
-    pub(crate) node_states: BTreeMap<ChitchatId, NodeState>,
+    node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
     pub(crate) listeners: Listeners,
+    // Memory of the recently garbage collected nodes to avoid recreating them
+    // if some other node is still sharing them.
+    garbage_collected_nodes: LruCache<ChitchatId, Heartbeat>,
 }
 
 impl Debug for ClusterState {
@@ -521,6 +526,7 @@ impl Default for ClusterState {
             node_states: Default::default(),
             seed_addrs: seed_addrs_rx,
             listeners: Default::default(),
+            garbage_collected_nodes: LruCache::new(GARBAGE_COLLECTED_NODE_HISTORY_SIZE),
         }
     }
 }
@@ -531,20 +537,38 @@ impl ClusterState {
             seed_addrs,
             node_states: BTreeMap::new(),
             listeners: Default::default(),
+            garbage_collected_nodes: LruCache::new(GARBAGE_COLLECTED_NODE_HISTORY_SIZE),
         }
     }
 
-    pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
+    pub(crate) fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
+        &self.node_states
+    }
+
+    /// Get a mutable reference to the requested node state, or create and add a
+    /// new state if none was found.
+    pub(crate) fn node_state_mut_or_init(&mut self, chitchat_id: &ChitchatId) -> &mut NodeState {
         // TODO use the `hash_raw_entry` feature once it gets stabilized.
         // Most of the time the entry is already present. We avoid cloning chitchat_id with
         // this if statement.
-        self.node_states
-            .entry(chitchat_id.clone())
-            .or_insert_with(|| NodeState::new(chitchat_id.clone(), self.listeners.clone()))
+        let entry = self.node_states.entry(chitchat_id.clone());
+        match entry {
+            Entry::Occupied(value) => value.into_mut(),
+            Entry::Vacant(vacant) => {
+                self.garbage_collected_nodes.pop(chitchat_id);
+                let new_node_state = NodeState::new(chitchat_id.clone(), self.listeners.clone());
+                vacant.insert(new_node_state)
+            }
+        }
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
         self.node_states.get(chitchat_id)
+    }
+
+    /// Get a mutable node state if it exists.
+    pub(crate) fn node_state_mut(&mut self, chitchat_id: &ChitchatId) -> Option<&mut NodeState> {
+        self.node_states.get_mut(chitchat_id)
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &ChitchatId> {
@@ -556,15 +580,20 @@ impl ClusterState {
     }
 
     pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
-        self.node_states.remove(chitchat_id);
+        let node_state = self.node_states.remove(chitchat_id);
+        if let Some(node_state) = node_state {
+            self.garbage_collected_nodes
+                .push(chitchat_id.clone(), node_state.heartbeat);
+        }
     }
 
     pub(crate) fn apply_delta(&mut self, delta: Delta) {
         let now = Instant::now();
         // Apply delta.
         for node_delta in delta.node_deltas {
-            let node_state = self.node_state_mut(&node_delta.chitchat_id);
-            node_state.apply_delta(node_delta, now);
+            if let Some(node_state) = self.node_state_mut(&node_delta.chitchat_id) {
+                node_state.apply_delta(node_delta, now);
+            }
         }
     }
 
@@ -659,6 +688,11 @@ impl ClusterState {
         }
 
         delta_serializer.finish()
+    }
+
+    /// Returns the last heartbeat if the node was deleted and already garbage collected.
+    pub fn last_heartbeat_if_deleted(&self, chitchat_id: &ChitchatId) -> Option<Heartbeat> {
+        self.garbage_collected_nodes.peek(chitchat_id).copied()
     }
 }
 
@@ -1012,7 +1046,7 @@ mod tests {
     #[test]
     fn test_cluster_state_first_version_is_one() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -1027,7 +1061,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key_a", "1");
         assert_eq!(
             node_state.get_versioned("key_a").unwrap(),
@@ -1068,7 +1102,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_with_same_value_updates_version() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.set("key", "1");
         assert_eq!(
             node_state.get_versioned("key").unwrap(),
@@ -1092,7 +1126,7 @@ mod tests {
     #[test]
     fn test_cluster_state_set_and_mark_for_deletion() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
         node_state.delete("key");
@@ -1125,7 +1159,7 @@ mod tests {
     #[test]
     fn test_cluster_state_delete_after_ttl() {
         let mut cluster_state = ClusterState::default();
-        let node_state = cluster_state.node_state_mut(&ChitchatId::for_local_test(10_001));
+        let node_state = cluster_state.node_state_mut_or_init(&ChitchatId::for_local_test(10_001));
         node_state.heartbeat = Heartbeat(10);
         node_state.set("key", "1");
         node_state.delete_after_ttl("key");
@@ -1165,11 +1199,11 @@ mod tests {
     fn test_cluster_state_compute_digest() {
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set("key_a", "");
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_last_gc_version(10u64);
         node2_state.set("key_a", "");
         node2_state.set("key_b", "");
@@ -1188,7 +1222,7 @@ mod tests {
         tokio::time::pause();
         let mut cluster_state = ClusterState::default();
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set("key_a", "1");
         node1_state.delete("key_a"); // Version 2. Tombstone set to heartbeat 100.
         tokio::time::advance(Duration::from_secs(5)).await;
@@ -1231,12 +1265,12 @@ mod tests {
         let mut cluster_state = ClusterState::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "3".to_string(), 3); // 2
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 1); // 1
 
         let mut delta = Delta::default();
@@ -1326,12 +1360,12 @@ mod tests {
         let mut cluster_state = ClusterState::default();
 
         let node1 = ChitchatId::for_local_test(10_001);
-        let node1_state = cluster_state.node_state_mut(&node1);
+        let node1_state = cluster_state.node_state_mut_or_init(&node1);
         node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
         let node2 = ChitchatId::for_local_test(10_002);
-        let node2_state = cluster_state.node_state_mut(&node2);
+        let node2_state = cluster_state.node_state_mut_or_init(&node2);
         node2_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
         node2_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
         node2_state.set_with_version("key_c".to_string(), "3".to_string(), 3); // 3
@@ -1435,12 +1469,12 @@ mod tests {
         let node1 = ChitchatId::for_local_test(10_001);
         let node2 = ChitchatId::for_local_test(10_002);
         {
-            let node1_state = cluster_state.node_state_mut(&node1);
+            let node1_state = cluster_state.node_state_mut_or_init(&node1);
             node1_state.heartbeat = Heartbeat(10000);
             node1_state.set_with_version("key_a".to_string(), "1".to_string(), 1); // 1
             node1_state.set_with_version("key_b".to_string(), "2".to_string(), 2); // 2
 
-            let node2_state = cluster_state.node_state_mut(&node2);
+            let node2_state = cluster_state.node_state_mut_or_init(&node2);
             node2_state.set_with_version("key_c".to_string(), "3".to_string(), 2);
             // 2
         }
@@ -1462,7 +1496,10 @@ mod tests {
             assert_eq!(delta, expected_delta);
         }
 
-        cluster_state.node_state_mut(&node1).delete("key_a");
+        cluster_state
+            .node_state_mut(&node1)
+            .unwrap()
+            .delete("key_a");
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
 
@@ -1490,6 +1527,7 @@ mod tests {
         tokio::time::advance(DELETE_GRACE_PERIOD).await;
         cluster_state
             .node_state_mut(&node1)
+            .unwrap()
             .gc_keys_marked_for_deletion(DELETE_GRACE_PERIOD);
 
         {

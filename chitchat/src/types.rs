@@ -16,8 +16,7 @@ use crate::Serializable;
 /// The `generation_id` is used to detect when a node has restarted. It must be monotonically
 /// increasing to differentiate the most recent state and must be incremented every time a node
 /// leaves and rejoins the cluster. Backends such as Cassandra or Quickwit typically use the node's
-/// startup time as the `generation_id`. Applications with stable state across restarts can use a
-/// constant `generation_id`, for instance, `0`.
+/// startup time as the `generation_id`.
 #[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ChitchatId {
     /// An identifier unique across the cluster.
@@ -63,14 +62,16 @@ impl ChitchatId {
     }
 }
 
+/// The current status of a key-value pair with regard to deletion.
+///
+/// In both the `Deleted` and `DeleteAfterTtl` status, the `Instant` is NOT the scheduled
+/// time of deletion but the time at which the DeletionStatus was created.
 #[derive(Clone, Copy, Debug)]
 pub enum DeletionStatus {
     Set,
-    // In both `Deleted` and `DeleteAfterWithTtl`, the `Instant` is NOT the scheduled time of
-    // deletion, but the reference start time.
-    //
-    // To get the actual time of deletion, one needs to add the grace period.
+    /// The key-value pair is not visible but will be GCed only at Instant + grace period
     Deleted(Instant),
+    /// The key-value pair is still visible and will be GCed at Instant + grace period
     DeleteAfterTtl(Instant),
 }
 
@@ -106,6 +107,7 @@ pub struct VersionedValue {
 }
 
 impl VersionedValue {
+    #[cfg(test)]
     pub fn new(value: String, version: Version, is_tombstone: bool) -> VersionedValue {
         VersionedValue {
             value,
@@ -315,7 +317,10 @@ pub struct Heartbeat(pub(crate) u64);
 
 impl Heartbeat {
     pub(crate) fn inc(&mut self) {
-        self.0 = self.0.wrapping_add(1);
+        // Heartbeat is increased everytime we gossip or receive a message. In
+        // real-world scenarios, this should not happen more than a few hundred
+        // times per second so we should never overflow.
+        self.0 = self.0.checked_add(1).expect("Heartbeat overflow");
     }
 }
 

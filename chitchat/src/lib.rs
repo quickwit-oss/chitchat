@@ -16,6 +16,7 @@ mod types;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::once;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
 use delta::Delta;
 use failure_detector::FailureDetector;
@@ -44,6 +45,11 @@ pub use crate::types::{ChitchatId, DeletionStatus, Heartbeat, Version, Versioned
 /// An Ethernet frame size of 1400B would limit us to 20 nodes
 /// or so.
 pub(crate) const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
+
+/// To prevent dead nodes from being recorded again after deletion,
+/// we keep a local memory of the last nodes that were garbage collected.
+pub(crate) const GARBAGE_COLLECTED_NODE_HISTORY_SIZE: NonZeroUsize =
+    NonZeroUsize::new(500).unwrap();
 
 pub struct Chitchat {
     config: ChitchatConfig,
@@ -182,7 +188,21 @@ impl Chitchat {
         if chitchat_id == self.self_chitchat_id() {
             return;
         }
-        let node_state = self.cluster_state.node_state_mut(chitchat_id);
+
+        let should_init_if_absent = self
+            .cluster_state
+            .last_heartbeat_if_deleted(chitchat_id)
+            .map(|last_heartbeat| last_heartbeat < heartbeat)
+            .unwrap_or(true);
+
+        let node_state = if should_init_if_absent {
+            self.cluster_state.node_state_mut_or_init(chitchat_id)
+        } else if let Some(node_state) = self.cluster_state.node_state_mut(chitchat_id) {
+            node_state
+        } else {
+            return;
+        };
+
         if node_state.try_set_heartbeat(heartbeat) {
             self.failure_detector.report_heartbeat(chitchat_id);
         }
@@ -192,7 +212,7 @@ impl Chitchat {
     /// watcher accordingly.
     pub(crate) fn update_nodes_liveness(&mut self) {
         for chitchat_id in self.cluster_state.nodes() {
-            if chitchat_id != &self.config.chitchat_id {
+            if chitchat_id != self.self_chitchat_id() {
                 self.failure_detector.update_node_liveness(chitchat_id);
             }
         }
@@ -230,12 +250,17 @@ impl Chitchat {
         // Perform garbage collection.
         let garbage_collected_nodes = self.failure_detector.garbage_collect();
         for chitchat_id in &garbage_collected_nodes {
-            self.cluster_state.remove_node(chitchat_id);
+            if chitchat_id != self.self_chitchat_id() {
+                info!(node=?chitchat_id, "node permanently removed from the cluster");
+                self.cluster_state.remove_node(chitchat_id);
+            } else {
+                error!("self node was marked dead, please report");
+            }
         }
     }
 
     pub fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
-        &self.cluster_state.node_states
+        self.cluster_state.node_states()
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
@@ -243,7 +268,8 @@ impl Chitchat {
     }
 
     pub fn self_node_state(&mut self) -> &mut NodeState {
-        self.cluster_state.node_state_mut(&self.config.chitchat_id)
+        self.cluster_state
+            .node_state_mut_or_init(&self.config.chitchat_id)
     }
 
     /// Returns the set of nodes considered alive by the failure detector. It includes the
@@ -297,13 +323,15 @@ impl Chitchat {
         ClusterStateSnapshot::from(&self.cluster_state)
     }
 
-    /// Resets the entire node state.
+    /// Fast forward the entire node state.
     ///
     /// Updated key-values will see their listeners called.
     /// The order of calls is arbitrary.
     ///
     /// Existing key-values that are not present in `key_values` will be deleted
     /// (not marked with a tombstone).
+    ///
+    /// A node that doesn't exist will be created.
     pub fn reset_node_state(
         &mut self,
         chitchat_id: &ChitchatId,
@@ -311,7 +339,7 @@ impl Chitchat {
         max_version: Version,
         last_gc_version: Version,
     ) {
-        let node_state = self.cluster_state.node_state_mut(chitchat_id);
+        let node_state = self.cluster_state.node_state_mut_or_init(chitchat_id);
 
         if node_state.max_version() >= max_version {
             return;
@@ -440,9 +468,9 @@ mod tests {
 
     #[track_caller]
     fn assert_nodes_sync(nodes: &[&Chitchat]) {
-        let first_node_states = &nodes[0].cluster_state.node_states;
+        let first_node_states = nodes[0].cluster_state.node_states();
         for other_node in nodes.iter().skip(1) {
-            let node_states = &other_node.cluster_state.node_states;
+            let node_states = other_node.cluster_state.node_states();
             assert_eq!(first_node_states.len(), node_states.len());
             for (key, value) in first_node_states {
                 assert_cluster_state_eq(value, node_states.get(key).unwrap());
@@ -1143,7 +1171,7 @@ mod tests {
         assert_eq!(node_state.last_gc_version(), 1337);
 
         let chitchat_id = ChitchatId::for_local_test(10_003);
-        let node_state = node.cluster_state.node_state_mut(&chitchat_id);
+        let node_state = node.cluster_state.node_state_mut_or_init(&chitchat_id);
         node_state.set("foo", "bar");
         node_state.set("qux", "baz");
         node_state.set("toto", "titi");
@@ -1172,7 +1200,7 @@ mod tests {
         assert_eq!(node_state.last_gc_version(), 1337);
 
         let chitchat_id = ChitchatId::for_local_test(10_004);
-        let node_state = node.cluster_state.node_state_mut(&chitchat_id);
+        let node_state = node.cluster_state.node_state_mut_or_init(&chitchat_id);
         node_state.set("foo", "bar");
         node_state.set("qux", "baz");
         node_state.set("toto", "titi");
