@@ -213,9 +213,6 @@ impl Simulator {
                         }).unwrap();
                     } else {
                         let chitchat_guard = chitchat.lock().await;
-                        info!(node_states=?chitchat_guard.node_states(), "Node presence assert");
-                        info!(live_node_state=?chitchat_guard.live_nodes().collect_vec(), "Node presence assert");
-                        info!(dead_node_state=?chitchat_guard.dead_nodes().collect_vec(), "Node presence assert");
                         assert!(
                             expected_status.check(&chitchat_guard, &chitchat_id),
                             "Node {:?} assertion failed",
@@ -856,7 +853,7 @@ async fn test_bouncing_deletion_status() {
     });
     // Nodes are joining at different times, which means they will record
     // different times of death for node 2. This means that after node 1
-    // definitively removes node 2 (garbage collect), it will it will receive it
+    // definitively removes node 2 (garbage collect), it will receive it
     // back from the late joiners.
     for late_joiner_chitchat_id in &late_joiner_chitchat_ids {
         operations.push(Operation::Wait(Duration::from_secs(1)));
@@ -866,7 +863,8 @@ async fn test_bouncing_deletion_status() {
         });
     }
     operations.append(&mut vec![
-        // Even if we received back the state of node 2 from late joiners, don't record it
+        // We receive the state of node 2 from late joiners,
+        // but we don't record it.
         Operation::NodeStatusAssert {
             server_chitchat_id: chitchat_id_1.clone(),
             chitchat_id: chitchat_id_2.clone(),

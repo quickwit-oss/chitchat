@@ -251,7 +251,6 @@ impl Chitchat {
         let garbage_collected_nodes = self.failure_detector.garbage_collect();
         for chitchat_id in &garbage_collected_nodes {
             if chitchat_id != self.self_chitchat_id() {
-                info!(node=?chitchat_id, "node permanently removed from the cluster");
                 self.cluster_state.remove_node(chitchat_id);
             } else {
                 error!("self node was marked dead, please report");
@@ -331,7 +330,7 @@ impl Chitchat {
     /// Existing key-values that are not present in `key_values` will be deleted
     /// (not marked with a tombstone).
     ///
-    /// A node that doesn't exist will be created.
+    /// A node state that doesn't exist will be created.
     pub fn reset_node_state(
         &mut self,
         chitchat_id: &ChitchatId,
