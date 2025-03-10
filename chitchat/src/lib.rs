@@ -324,13 +324,14 @@ impl Chitchat {
 
     /// Fast forward the entire node state.
     ///
-    /// Updated key-values will see their listeners called.
-    /// The order of calls is arbitrary.
+    /// Updated key-values will see their listeners called. The order of calls
+    /// is arbitrary.
     ///
     /// Existing key-values that are not present in `key_values` will be deleted
     /// (not marked with a tombstone).
     ///
-    /// A node state that doesn't exist will be created.
+    /// A node state that doesn't exist will be created, even if the node is
+    /// still in the list of recently garbage collected nodes.
     pub fn reset_node_state(
         &mut self,
         chitchat_id: &ChitchatId,
