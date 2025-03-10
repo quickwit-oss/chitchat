@@ -36,7 +36,7 @@ node will send two parameters describing how much of the state is replicated:
 `max_version`. Rather, it says that if the node were to receive all of the events within between `max_version` and $V$ then it will end up to date.
 The difference is subtle, but comes from an important optimization of scuttlebutt.
 
-If a node asks for an update above $max_version = m$, and that for a given key $k$ there are two updates after $m$, there is no need to send the first one: it will eventually be overridden by the second one.
+If a node asks for an update above $max\_version = m$, and that for a given key $k$ there are two updates after $m$, there is no need to send the first one: it will eventually be overridden by the second one.
 
 - `last_gc_version`: Rather than being deleted right away, the algorithm is using a tombstone mechanism. Key entries are kept by marked as deleted. From the client point of view, everything looks like the key really has been deleted. Eventually, in order
 to free memory, we garbage collect all of the key values marked for deletion that are older than a few hours. We then keep track of the maximum `last_gc_version`.

@@ -324,14 +324,20 @@ impl Chitchat {
 
     /// Fast forward the entire node state.
     ///
+    /// This method is meant to be called as a follow up to a
+    /// [`ChitchatConfig::catchup_callback`], to communicate back the caught up
+    /// state to Chitchat.
+    ///
     /// Updated key-values will see their listeners called. The order of calls
     /// is arbitrary.
     ///
     /// Existing key-values that are not present in `key_values` will be deleted
     /// (not marked with a tombstone).
     ///
-    /// A node state that doesn't exist will be created, even if the node is
-    /// still in the list of recently garbage collected nodes.
+    /// A node state that doesn't exist will be created, except if it was
+    /// recently deleted and garbage collected. We leave the responsibility of
+    /// forcing the garbage collected node's recreation to the regular chitchat
+    /// heartbeat protocol.
     pub fn reset_node_state(
         &mut self,
         chitchat_id: &ChitchatId,
@@ -339,7 +345,19 @@ impl Chitchat {
         max_version: Version,
         last_gc_version: Version,
     ) {
-        let node_state = self.cluster_state.node_state_mut_or_init(chitchat_id);
+        let should_init_if_absent = self
+            .cluster_state
+            .last_heartbeat_if_deleted(chitchat_id)
+            .is_none();
+
+        let node_state = if should_init_if_absent {
+            self.cluster_state.node_state_mut_or_init(chitchat_id)
+        } else if let Some(node_state) = self.cluster_state.node_state_mut(chitchat_id) {
+            node_state
+        } else {
+            info!("skip reset_node_state because the node was recently garbage collected");
+            return;
+        };
 
         if node_state.max_version() >= max_version {
             return;
@@ -1227,5 +1245,57 @@ mod tests {
         assert_eq!(node_state.get("qux"), Some("baz"));
         assert_eq!(node_state.get("toto"), Some("titi"));
         assert_eq!(node_state.max_version(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_reset_garbage_collected_node_state() {
+        tokio::time::pause();
+        let mut config = ChitchatConfig::for_test(10_006);
+        config.failure_detector_config.dead_node_grace_period = Duration::from_secs(4);
+        let (_seed_addrs_rx, seed_addrs_tx) = watch::channel(Default::default());
+        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        let chitchat_id = ChitchatId::for_local_test(10_007);
+        let node_state = node.cluster_state.node_state_mut_or_init(&chitchat_id);
+        node_state.set("foo", "bar");
+        node_state.set("qux", "baz");
+        node_state.set("toto", "titi");
+
+        node.report_heartbeat(&chitchat_id, Heartbeat(1));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        node.report_heartbeat(&chitchat_id, Heartbeat(2));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        node.report_heartbeat(&chitchat_id, Heartbeat(3));
+        node.update_nodes_liveness();
+        assert!(node
+            .live_nodes()
+            .collect::<Vec<_>>()
+            .contains(&&chitchat_id));
+        assert!(node.cluster_state.node_state(&chitchat_id).is_some());
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        node.update_nodes_liveness();
+        assert!(node
+            .dead_nodes()
+            .collect::<Vec<_>>()
+            .contains(&&chitchat_id));
+        assert!(node.cluster_state.node_state(&chitchat_id).is_some());
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+        node.update_nodes_liveness();
+        assert!(node.cluster_state.node_state(&chitchat_id).is_none());
+
+        // resetting GCed node should not bring it back
+        node.reset_node_state(
+            &chitchat_id,
+            [(
+                "foo".to_string(),
+                VersionedValue::new("bar".to_string(), 1, false),
+            )]
+            .into_iter(),
+            2,
+            1337,
+        );
+        assert!(node.cluster_state.node_state(&chitchat_id).is_none());
     }
 }
