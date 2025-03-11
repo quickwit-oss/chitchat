@@ -1,11 +1,14 @@
 help:
 	@grep '^[^\.#[:space:]].*:' Makefile
 
-license-check:
-	docker run -it --rm -v $(shell pwd):/github/workspace ghcr.io/apache/skywalking-eyes/license-eye header check
+check-license-tool:
+	@command -v dd-rust-license-tool > /dev/null 2>&1 || { echo "dd-rust-license-tool not found. Install using 'cargo install dd-rust-license-tool'"; exit 1; }
 
-license-fix:
-	docker run -it --rm -v $(shell pwd):/github/workspace ghcr.io/apache/skywalking-eyes/license-eye header fix
+license-check: check-license-tool
+	dd-rust-license-tool check
+
+license-fix: check-license-tool
+	dd-rust-license-tool write
 
 fix: fmt
 	@echo "Running cargo clippy --fix"

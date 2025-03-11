@@ -30,7 +30,12 @@ pub struct ChitchatConfig {
     // - Apply delta: for a node flagged "to be reset", Chitchat will remove the node state and
     //   populate a fresh new node state with the keys and values present in the delta.
     pub marked_for_deletion_grace_period: Duration,
-    /// An optional callback executed when the self node is lagging behind.
+    /// An optional callback executed when the self node is lagging behind. It
+    /// is meant to wire up an external mechanism capable of catching up the
+    /// Chitchat state faster than the Chitchat protocol. That external
+    /// mechanism will call [`crate::Chitchat::reset_node_state`] to communicate
+    /// the results back to Chitchat. For instance, in Quickwit, we use a GRPC
+    /// API to fetch the states from other nodes in the cluster.
     pub catchup_callback: Option<CatchupCallback>,
     // Extra lifeness predicate that can be used to define what a node being "live" means.
     // It can be used for instance, to only surface the nodes that are both alive according
