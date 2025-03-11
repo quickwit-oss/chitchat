@@ -117,6 +117,7 @@ struct Simulator {
     gossip_interval: Duration,
     marked_for_deletion_key_grace_period: Duration,
     dead_node_grace_period: Duration,
+    catchup_callback_tx: Option<tokio::sync::mpsc::UnboundedSender<ChitchatId>>,
 }
 
 impl Simulator {
@@ -127,20 +128,7 @@ impl Simulator {
             gossip_interval,
             marked_for_deletion_key_grace_period,
             dead_node_grace_period: Duration::from_secs(3600),
-        }
-    }
-
-    pub fn new_with_dead_node_grace_period(
-        gossip_interval: Duration,
-        marked_for_deletion_key_grace_period: Duration,
-        dead_node_grace_period: Duration,
-    ) -> Self {
-        Self {
-            transport: ChannelTransport::with_mtu(65_507),
-            node_handles: HashMap::new(),
-            gossip_interval,
-            marked_for_deletion_key_grace_period,
-            dead_node_grace_period,
+            catchup_callback_tx: None,
         }
     }
 
@@ -318,6 +306,12 @@ impl Simulator {
             .iter()
             .map(|chitchat_id| chitchat_id.gossip_advertise_addr.to_string())
             .collect();
+        let chitchat_id_clone = chitchat_id.clone();
+        let catchup_callback = self.catchup_callback_tx.clone().map(|sender| {
+            Box::new(move || {
+                sender.send(chitchat_id_clone.clone()).unwrap();
+            }) as Box<dyn Fn() + Send>
+        });
         let config = ChitchatConfig {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
@@ -330,7 +324,7 @@ impl Simulator {
                 ..Default::default()
             },
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
-            catchup_callback: None,
+            catchup_callback,
             extra_liveness_predicate: None,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)
@@ -386,7 +380,9 @@ fn find_available_tcp_port() -> anyhow::Result<u16> {
 #[tokio::test]
 async fn test_simple_simulation_insert() {
     // let _ = tracing_subscriber::fmt::try_init();
+    let (catchup_callback_tx, mut catchup_callback_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
+    simulator.catchup_callback_tx = Some(catchup_callback_tx);
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
     let operations = vec![
@@ -420,6 +416,9 @@ async fn test_simple_simulation_insert() {
         },
     ];
     simulator.execute(operations).await;
+    // Drop the simulator to close the callback channel
+    drop(simulator);
+    assert_eq!(catchup_callback_rx.recv().await, None);
 }
 
 #[tokio::test]
@@ -813,15 +812,12 @@ async fn test_simple_simulation_heavy_insert_delete() {
 }
 
 #[tokio::test]
-async fn test_bouncing_deletion_status() {
+async fn test_garbage_collected_node_only_recreated_if_new_heartbeat() {
     let _ = tracing_subscriber::fmt::try_init();
     const PROPAGATION_TIMEOUT: Duration = Duration::from_millis(500);
     const NODE_DELETION_GRACE_PERIOD: Duration = Duration::from_secs(4);
-    let mut simulator = Simulator::new_with_dead_node_grace_period(
-        Duration::from_millis(100),
-        Duration::from_secs(1),
-        NODE_DELETION_GRACE_PERIOD,
-    );
+    let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
+    simulator.dead_node_grace_period = NODE_DELETION_GRACE_PERIOD;
     let chitchat_id_1 = test_chitchat_id(1);
     let chitchat_id_2 = test_chitchat_id(2);
     let late_joiner_chitchat_ids = (3..10).map(test_chitchat_id).collect::<Vec<_>>();
@@ -898,4 +894,53 @@ async fn test_bouncing_deletion_status() {
     ]);
 
     simulator.execute(operations).await;
+}
+
+#[tokio::test]
+async fn test_catchup_callback_after_partition() {
+    let _ = tracing_subscriber::fmt::try_init();
+    const PROPAGATION_TIMEOUT: Duration = Duration::from_millis(500);
+    const KV_DELETION_GRACE_PERIOD: Duration = Duration::from_secs(1);
+    let (catchup_callback_tx, mut catchup_callback_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut simulator = Simulator::new(Duration::from_millis(100), KV_DELETION_GRACE_PERIOD);
+    simulator.catchup_callback_tx = Some(catchup_callback_tx);
+    let chitchat_id_1 = test_chitchat_id(1);
+    let chitchat_id_2 = test_chitchat_id(2);
+    let peer_seeds = vec![chitchat_id_1.clone()];
+    let operations = vec![
+        Operation::AddNode {
+            chitchat_id: chitchat_id_1.clone(),
+            peer_seeds: Some(peer_seeds.clone()),
+        },
+        Operation::AddNode {
+            chitchat_id: chitchat_id_2.clone(),
+            peer_seeds: Some(peer_seeds.clone()),
+        },
+        Operation::NodeStatusAssert {
+            server_chitchat_id: chitchat_id_1.clone(),
+            chitchat_id: chitchat_id_2.clone(),
+            expected_status: NodeStatusPredicate::Live,
+            timeout_opt: Some(PROPAGATION_TIMEOUT),
+        },
+        Operation::InsertKeysValues {
+            chitchat_id: chitchat_id_1.clone(),
+            keys_values: vec![("key_a".to_string(), "0".to_string())],
+        },
+        Operation::RemoveNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::DeleteKey {
+            chitchat_id: chitchat_id_1.clone(),
+            key: "key_a".to_string(),
+        },
+        // wait for value to be garbage collected
+        Operation::Wait(KV_DELETION_GRACE_PERIOD + Duration::from_secs(2)),
+        Operation::AddNetworkLink(chitchat_id_1.clone(), chitchat_id_2.clone()),
+        Operation::Wait(PROPAGATION_TIMEOUT),
+    ];
+    simulator.execute(operations).await;
+    // Drop the simulator to close the callback channel
+    drop(simulator);
+    let callback_chitchat_id = catchup_callback_rx.recv().await.unwrap();
+    assert_eq!(callback_chitchat_id, chitchat_id_2);
+    // currently we don't check that the callback is called only once, if we did
+    // it should be here
 }

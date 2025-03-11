@@ -27,7 +27,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{error, info, warn};
 
-pub use self::configuration::ChitchatConfig;
+pub use self::configuration::{CatchupCallback, ChitchatConfig};
 pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
