@@ -49,7 +49,7 @@ pub(crate) const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
 /// To prevent dead nodes from being recorded again after deletion,
 /// we keep a local memory of the last nodes that were garbage collected.
 pub(crate) const GARBAGE_COLLECTED_NODE_HISTORY_SIZE: NonZeroUsize =
-    NonZeroUsize::new(500).unwrap();
+    unsafe { NonZeroUsize::new_unchecked(500) };
 
 pub struct Chitchat {
     config: ChitchatConfig,
