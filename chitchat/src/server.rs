@@ -8,7 +8,7 @@ use rand::rng;
 use tokio::net::lookup_host;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time;
 use tracing::{debug, info, warn};
 
@@ -27,7 +27,7 @@ pub struct ChitchatHandle {
     chitchat_id: ChitchatId,
     command_tx: UnboundedSender<Command>,
     chitchat: Arc<Mutex<Chitchat>>,
-    join_handle: JoinHandle<Result<(), anyhow::Error>>,
+    join_handle: JoinHandle<()>,
 }
 
 impl ChitchatHandle {
@@ -176,9 +176,9 @@ impl ChitchatHandle {
     }
 
     /// Shuts the server down.
-    pub async fn shutdown(self) -> Result<(), anyhow::Error> {
+    pub async fn shutdown(self) -> Result<(), JoinError> {
         let _ = self.command_tx.send(Command::Shutdown);
-        self.join_handle.await?
+        self.join_handle.await
     }
 
     /// Performs a Chitchat "handshake" with another UDP server.
@@ -212,7 +212,7 @@ impl Server {
     }
 
     /// Listen for new Chitchat messages.
-    async fn run(&mut self) -> anyhow::Result<()> {
+    async fn run(&mut self) {
         let gossip_interval = self.chitchat.lock().await.config.gossip_interval;
         let mut gossip_interval = time::interval(gossip_interval);
         loop {
@@ -221,7 +221,7 @@ impl Server {
                     Ok((from_addr, message)) => {
                         let _ = self.handle_message(from_addr, message).await;
                     }
-                    Err(err) => return Err(err),
+                    Err(err) => warn!("communication error: {:#?}", err)
                 },
                 _ = gossip_interval.tick() => {
                     self.gossip_multiple().await
@@ -234,7 +234,6 @@ impl Server {
                 }
             }
         }
-        Ok(())
     }
 
     /// Processes a single UDP datagram.
