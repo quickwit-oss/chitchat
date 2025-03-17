@@ -10,6 +10,10 @@ license-check: check-license-tool
 license-fix: check-license-tool
 	dd-rust-license-tool write
 
+build-compat: fmt
+	@echo "Running `cargo build --package chitchat` with the min compatible Rust version"
+	@RUSTUP_TOOLCHAIN=1.70 cargo build --package chitchat
+
 fix: fmt
 	@echo "Running cargo clippy --fix"
 	@cargo clippy --fix --all-features --allow-dirty --allow-staged
@@ -20,5 +24,3 @@ fmt:
 
 test:
 	cargo test --release
-
-
