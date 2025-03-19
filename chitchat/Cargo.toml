@@ -6,6 +6,7 @@ license = "MIT"
 authors = ["Quickwit, Inc. <hello@quickwit.io>"]
 description = "Cluster membership library using gossip with Scuttlebutt reconciliation."
 repository = "https://github.com/quickwit-oss/chitchat"
+rust-version = "1.82"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
