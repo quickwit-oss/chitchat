@@ -25,7 +25,7 @@ pub use listener::ListenerHandle;
 pub use serialize::Serializable;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub use self::configuration::{CatchupCallback, ChitchatConfig};
 pub use self::state::{ClusterStateSnapshot, NodeState};
@@ -127,6 +127,7 @@ impl Chitchat {
     }
 
     pub(crate) fn process_message(&mut self, msg: ChitchatMessage) -> Option<ChitchatMessage> {
+        debug!(msg=?msg, "received message");
         self.update_self_heartbeat();
 
         match msg {
