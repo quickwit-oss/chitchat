@@ -213,6 +213,7 @@ impl Chitchat {
     pub(crate) fn update_nodes_liveness(&mut self) {
         for chitchat_id in self.cluster_state.nodes() {
             if chitchat_id != self.self_chitchat_id() {
+                error!(other=?chitchat_id, self=?self.self_chitchat_id(), "chitchatid apparently considered different");
                 self.failure_detector.update_node_liveness(chitchat_id);
             }
         }
