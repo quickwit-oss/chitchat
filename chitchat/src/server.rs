@@ -804,7 +804,7 @@ mod tests {
                                 (
                                     ChitchatId::for_local_test(i),
                                     NodeDigest {
-                                        heartbeat: Heartbeat(0 as u64),
+                                        heartbeat: Heartbeat(0_u64),
                                         last_gc_version: 0,
                                         max_version: 0,
                                     },
