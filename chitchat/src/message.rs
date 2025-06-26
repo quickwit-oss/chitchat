@@ -23,9 +23,11 @@ pub enum ChitchatMessage {
     SynAck { digest: Digest, delta: Delta },
     /// Scuttlebutt ACK: node A returns a partial update for B.
     Ack { delta: Delta },
-
     /// Node B rejects the SYN message because node A and B belong to different clusters.
     BadCluster,
+    /// A message used by tests to trigger a panic
+    #[cfg(test)]
+    PanicForTest,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -54,6 +56,8 @@ enum MessageType {
     SynAck = 1u8,
     Ack = 2u8,
     BadCluster = 3u8,
+    #[cfg(test)]
+    PanicForTest = 255u8,
 }
 
 impl MessageType {
@@ -63,6 +67,8 @@ impl MessageType {
             1 => Some(Self::SynAck),
             2 => Some(Self::Ack),
             3 => Some(Self::BadCluster),
+            #[cfg(test)]
+            255 => Some(Self::PanicForTest),
             _ => None,
         }
     }
@@ -95,6 +101,10 @@ impl Serializable for ChitchatMessage {
             ChitchatMessage::BadCluster => {
                 buf.push(MessageType::BadCluster.to_code());
             }
+            #[cfg(test)]
+            ChitchatMessage::PanicForTest => {
+                buf.push(MessageType::PanicForTest.to_code());
+            }
         }
     }
 
@@ -109,6 +119,8 @@ impl Serializable for ChitchatMessage {
                 }
                 ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
                 ChitchatMessage::BadCluster => 1,
+                #[cfg(test)]
+                ChitchatMessage::PanicForTest => 1,
             }
     }
 }
@@ -156,6 +168,8 @@ impl Deserializable for ChitchatMessage {
                 Ok(Self::Ack { delta })
             }
             MessageType::BadCluster => Ok(Self::BadCluster),
+            #[cfg(test)]
+            MessageType::PanicForTest => Ok(Self::PanicForTest),
         }
     }
 }

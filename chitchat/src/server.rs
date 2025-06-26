@@ -445,7 +445,6 @@ mod tests {
     use tokio_stream::{Stream, StreamExt};
 
     use super::*;
-    use crate::digest::{Digest, NodeDigest};
     use crate::message::ChitchatMessage;
     use crate::transport::{ChannelTransport, Transport};
     use crate::{Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
@@ -781,39 +780,17 @@ mod tests {
         let test_config = ChitchatConfig::for_test(1);
         let test_addr = test_config.chitchat_id.gossip_advertise_addr;
 
-        // Allow excessively large messages on the transport
-        let transport = ChannelTransport::with_mtu(10 * MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
 
         let mut test_transport = transport.open(test_addr).await.unwrap();
         let server_config = ChitchatConfig::for_test(2);
         let server_listen_addr = server_config.chitchat_id.gossip_advertise_addr;
-        let server_cluster_id = server_config.cluster_id.clone();
         let server_handle = spawn_chitchat(server_config, Vec::new(), &transport)
             .await
             .unwrap();
 
         test_transport
-            .send(
-                server_listen_addr,
-                ChitchatMessage::Syn {
-                    cluster_id: server_cluster_id,
-                    digest: Digest {
-                        // Send a syn request that is way to large
-                        node_digests: (1..10000)
-                            .map(|i| {
-                                (
-                                    ChitchatId::for_local_test(i),
-                                    NodeDigest {
-                                        heartbeat: Heartbeat(0_u64),
-                                        last_gc_version: 0,
-                                        max_version: 0,
-                                    },
-                                )
-                            })
-                            .collect(),
-                    },
-                },
-            )
+            .send(server_listen_addr, ChitchatMessage::PanicForTest)
             .await
             .unwrap();
         let err = server_handle.termination_watcher().await.unwrap_err();

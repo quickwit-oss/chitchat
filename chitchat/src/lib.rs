@@ -174,6 +174,10 @@ impl Chitchat {
                 warn!("message rejected by peer: wrong cluster");
                 None
             }
+            #[cfg(test)]
+            ChitchatMessage::PanicForTest => {
+                panic!("panic message received");
+            }
         }
     }
 
