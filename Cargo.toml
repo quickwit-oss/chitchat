@@ -1,7 +1,4 @@
 [workspace]
 
 resolver = "2"
-members = [
-  "chitchat",
-  "chitchat-test",
-]
+members = ["chitchat"]
