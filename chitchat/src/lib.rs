@@ -22,7 +22,7 @@ use delta::Delta;
 use failure_detector::FailureDetector;
 pub use failure_detector::FailureDetectorConfig;
 pub use listener::ListenerHandle;
-pub use serialize::Serializable;
+pub use serialize::{Deserializable, Serializable};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{error, info, warn};
