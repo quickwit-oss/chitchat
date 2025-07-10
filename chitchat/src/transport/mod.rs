@@ -36,11 +36,11 @@ mod tests {
     use tokio::time::timeout;
 
     use super::Transport;
+    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
     use crate::digest::Digest;
     use crate::message::ChitchatMessage;
     use crate::serialize::Serializable;
     use crate::transport::{ChannelTransport, UdpTransport};
-    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 
     fn sample_syn_msg() -> ChitchatMessage {
         ChitchatMessage::Syn {
@@ -83,9 +83,11 @@ mod tests {
         let addr2: SocketAddr = ([127, 0, 0, 1], 20_002u16).into();
         let mut socket1 = transport.open(addr1).await.unwrap();
         let mut socket2 = transport.open(addr2).await.unwrap();
-        assert!(timeout(Duration::from_millis(200), socket2.recv())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(200), socket2.recv())
+                .await
+                .is_err()
+        );
         let syn_message = sample_syn_msg();
         let socket_recv_fut = tokio::task::spawn(async move { socket2.recv().await.unwrap() });
         tokio::time::sleep(Duration::from_millis(100)).await;

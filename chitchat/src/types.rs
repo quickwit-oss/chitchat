@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
-use crate::serialize::Deserializable;
 use crate::Serializable;
+use crate::serialize::Deserializable;
 
 /// For the lifetime of a cluster, nodes can go down and come back up multiple times. They may also
 /// die permanently. A [`ChitchatId`] is composed of three components:

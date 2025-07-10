@@ -1,6 +1,6 @@
 use std::io::BufRead;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 use crate::delta::Delta;
 use crate::digest::Digest;

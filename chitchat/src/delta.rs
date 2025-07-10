@@ -250,10 +250,12 @@ impl Delta {
         last_gc_version: Version,
         from_version: Version,
     ) {
-        assert!(!self
-            .node_deltas
-            .iter()
-            .any(|node_delta| { node_delta.chitchat_id == chitchat_id }));
+        assert!(
+            !self
+                .node_deltas
+                .iter()
+                .any(|node_delta| { node_delta.chitchat_id == chitchat_id })
+        );
         self.node_deltas.push(NodeDelta {
             chitchat_id,
             last_gc_version,

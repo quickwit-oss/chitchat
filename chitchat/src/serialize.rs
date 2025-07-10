@@ -1,7 +1,7 @@
 use std::io::BufRead;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use bytes::Buf;
 
 use crate::{ChitchatId, Heartbeat};
@@ -475,8 +475,8 @@ pub fn test_serdeser_aux<T: Serializable + Deserializable + PartialEq + std::fmt
 #[cfg(test)]
 mod tests {
     use proptest::proptest;
-    use rand::distr::Alphanumeric;
     use rand::Rng;
+    use rand::distr::Alphanumeric;
 
     use super::*;
 

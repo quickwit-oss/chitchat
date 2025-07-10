@@ -5,11 +5,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rand::distr::Bernoulli;
 use rand::prelude::{Distribution, SmallRng};
-use rand::{rng, SeedableRng};
+use rand::{SeedableRng, rng};
 use tokio::sync::RwLock;
 
-use crate::transport::{Socket, Transport};
 use crate::ChitchatMessage;
+use crate::transport::{Socket, Transport};
 
 struct TransportWithDelay<D: Distribution<f32> + Send + Sync + 'static> {
     delay_secs: D,

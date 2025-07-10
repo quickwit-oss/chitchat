@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use lru::LruCache;
-use rand::prelude::SliceRandom;
 use rand::Rng;
+use rand::prelude::SliceRandom;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -20,8 +20,8 @@ use crate::digest::{Digest, NodeDigest};
 use crate::listener::Listeners;
 use crate::types::{DeletionStatus, DeletionStatusMutation};
 use crate::{
-    ChitchatId, Heartbeat, KeyChangeEvent, Version, VersionedValue,
-    GARBAGE_COLLECTED_NODE_HISTORY_SIZE,
+    ChitchatId, GARBAGE_COLLECTED_NODE_HISTORY_SIZE, Heartbeat, KeyChangeEvent, Version,
+    VersionedValue,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -851,17 +851,17 @@ fn random_generator() -> impl Rng {
 // We use a deterministic random generator in tests.
 #[cfg(test)]
 fn random_generator() -> impl Rng {
-    use rand::prelude::StdRng;
     use rand::SeedableRng;
+    use rand::prelude::StdRng;
     StdRng::seed_from_u64(9u64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
     use crate::serialize::Serializable;
     use crate::types::{DeletionStatusMutation, KeyValueMutation};
-    use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 
     #[test]
     fn test_stale_node_iter_stale_key_values() {
@@ -1136,10 +1136,12 @@ mod tests {
             assert_eq!(&versioned_value.value, "");
             assert_eq!(versioned_value.version, 2u64);
             assert!(versioned_value.is_deleted());
-            assert!(versioned_value
-                .status
-                .time_of_start_scheduled_for_deletion()
-                .is_some());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_some()
+            );
         }
 
         // Overriding the same key
@@ -1149,10 +1151,12 @@ mod tests {
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
             assert!(!versioned_value.is_deleted());
-            assert!(versioned_value
-                .status
-                .time_of_start_scheduled_for_deletion()
-                .is_none());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_none()
+            );
         }
     }
 
@@ -1169,10 +1173,12 @@ mod tests {
             let versioned_value = node_state.get_versioned("key").unwrap();
             assert_eq!(&versioned_value.value, "1");
             assert_eq!(versioned_value.version, 2u64);
-            assert!(versioned_value
-                .status
-                .time_of_start_scheduled_for_deletion()
-                .is_some());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_some()
+            );
             assert!(!versioned_value.is_deleted());
             assert!(matches!(
                 versioned_value.status,
@@ -1187,10 +1193,12 @@ mod tests {
             assert_eq!(&versioned_value.value, "2");
             assert_eq!(versioned_value.version, 3u64);
             assert!(!versioned_value.is_deleted());
-            assert!(versioned_value
-                .status
-                .time_of_start_scheduled_for_deletion()
-                .is_none());
+            assert!(
+                versioned_value
+                    .status
+                    .time_of_start_scheduled_for_deletion()
+                    .is_none()
+            );
             assert!(matches!(versioned_value.status, DeletionStatus::Set));
         }
     }
@@ -1247,11 +1255,13 @@ mod tests {
         // GC if tombstone (=100) + grace_period > heartbeat (=110).
         tokio::time::advance(Duration::from_secs(5)).await;
         cluster_state.gc_keys_marked_for_deletion(Duration::from_secs(10));
-        assert!(!cluster_state
-            .node_state(&node1)
-            .unwrap()
-            .key_values
-            .contains_key("key_a"));
+        assert!(
+            !cluster_state
+                .node_state(&node1)
+                .unwrap()
+                .key_values
+                .contains_key("key_a")
+        );
         cluster_state
             .node_state(&node1)
             .unwrap()

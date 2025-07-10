@@ -316,8 +316,8 @@ mod tests {
     use rand::prelude::*;
 
     use super::{BoundedArrayStats, SamplingWindow};
-    use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
     use crate::ChitchatId;
+    use crate::failure_detector::{FailureDetector, FailureDetectorConfig};
 
     impl FailureDetector {
         pub fn contains_node(&self, chitchat_id: &ChitchatId) -> bool {

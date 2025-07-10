@@ -31,7 +31,7 @@ pub use self::configuration::{CatchupCallback, ChitchatConfig};
 pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
-pub use crate::server::{spawn_chitchat, ChitchatHandle};
+pub use crate::server::{ChitchatHandle, spawn_chitchat};
 use crate::state::ClusterState;
 pub use crate::types::{ChitchatId, DeletionStatus, Heartbeat, Version, VersionedValue};
 
@@ -455,8 +455,8 @@ impl KeyChangeEvent<'_> {
 #[cfg(test)]
 mod tests {
     use std::ops::{Add, RangeInclusive};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use tokio::sync::Mutex;
@@ -464,7 +464,7 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
-    use crate::server::{spawn_chitchat, ChitchatHandle};
+    use crate::server::{ChitchatHandle, spawn_chitchat};
     use crate::transport::{ChannelTransport, Transport};
 
     const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(20);
@@ -719,18 +719,21 @@ mod tests {
         }
 
         let mut num_live_nodes = 0;
-        assert!(tokio::time::timeout(Duration::from_secs(1), async {
-            let mut live_nodes_stream = nodes[2].chitchat().lock().await.live_nodes_watch_stream();
-            loop {
-                let live_nodes = live_nodes_stream.next().await.unwrap();
-                num_live_nodes = live_nodes.len();
-                if live_nodes.len() == 3 {
-                    break live_nodes;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), async {
+                let mut live_nodes_stream =
+                    nodes[2].chitchat().lock().await.live_nodes_watch_stream();
+                loop {
+                    let live_nodes = live_nodes_stream.next().await.unwrap();
+                    num_live_nodes = live_nodes.len();
+                    if live_nodes.len() == 3 {
+                        break live_nodes;
+                    }
                 }
-            }
-        })
-        .await
-        .is_err());
+            })
+            .await
+            .is_err()
+        );
         assert_eq!(num_live_nodes, 0);
 
         nodes[0]
@@ -1036,12 +1039,13 @@ mod tests {
         // Dead node should still be known to the cluster.
         let dead_chitchat_id = ChitchatId::for_local_test(60003);
         for node in &nodes {
-            assert!(node
-                .chitchat()
-                .lock()
-                .await
-                .node_state(&dead_chitchat_id)
-                .is_some());
+            assert!(
+                node.chitchat()
+                    .lock()
+                    .await
+                    .node_state(&dead_chitchat_id)
+                    .is_some()
+            );
         }
 
         // Wait a bit more than `dead_node_grace_period` since all nodes will not
@@ -1051,12 +1055,13 @@ mod tests {
 
         // Dead node should no longer be known to the cluster.
         for node in &nodes {
-            assert!(node
-                .chitchat()
-                .lock()
-                .await
-                .node_state(&dead_chitchat_id)
-                .is_none());
+            assert!(
+                node.chitchat()
+                    .lock()
+                    .await
+                    .node_state(&dead_chitchat_id)
+                    .is_none()
+            );
         }
 
         shutdown_nodes(nodes).await?;
@@ -1271,18 +1276,20 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         node.report_heartbeat(&chitchat_id, Heartbeat(3));
         node.update_nodes_liveness();
-        assert!(node
-            .live_nodes()
-            .collect::<Vec<_>>()
-            .contains(&&chitchat_id));
+        assert!(
+            node.live_nodes()
+                .collect::<Vec<_>>()
+                .contains(&&chitchat_id)
+        );
         assert!(node.cluster_state.node_state(&chitchat_id).is_some());
 
         tokio::time::advance(Duration::from_secs(60)).await;
         node.update_nodes_liveness();
-        assert!(node
-            .dead_nodes()
-            .collect::<Vec<_>>()
-            .contains(&&chitchat_id));
+        assert!(
+            node.dead_nodes()
+                .collect::<Vec<_>>()
+                .contains(&&chitchat_id)
+        );
         assert!(node.cluster_state.node_state(&chitchat_id).is_some());
 
         tokio::time::advance(Duration::from_secs(5)).await;
