@@ -6,12 +6,12 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chitchat::transport::ChannelTransport;
 use chitchat::{
-    spawn_chitchat, Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig,
-    NodeState,
+    Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
+    spawn_chitchat,
 };
 use itertools::Itertools;
 use rand::prelude::IndexedRandom;
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use tracing::{debug, error, info};
 
 #[derive(Debug)]

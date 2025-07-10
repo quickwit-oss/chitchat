@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use async_trait::async_trait;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
 
+use crate::ChitchatMessage;
 use crate::serialize::{Deserializable, Serializable};
 use crate::transport::{Socket, Transport};
-use crate::ChitchatMessage;
 
 const MAX_MESSAGE_PER_CHANNEL: usize = 100;
 

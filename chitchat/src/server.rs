@@ -8,7 +8,7 @@ use rand::prelude::*;
 use rand::rng;
 use tokio::net::lookup_host;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{debug, info, warn};
@@ -447,7 +447,7 @@ mod tests {
     use super::*;
     use crate::message::ChitchatMessage;
     use crate::transport::{ChannelTransport, Transport};
-    use crate::{Heartbeat, NodeState, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
+    use crate::{Heartbeat, MAX_UDP_DATAGRAM_PAYLOAD_SIZE, NodeState};
 
     #[derive(Debug, Default)]
     struct RngForTest {

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
 use chitchat::{
-    spawn_chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
+    ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState, spawn_chitchat,
 };
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
