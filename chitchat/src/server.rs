@@ -200,7 +200,7 @@ impl ChitchatHandle {
         Ok(())
     }
 
-    pub fn termination_watcher(&self) -> impl Future<Output = anyhow::Result<()>> {
+    pub fn termination_watcher(&self) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let mut watcher = self.termination_watcher.clone();
         async move {
             let termination_res = watcher.wait_for(|res| res.is_some()).await;
