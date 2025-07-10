@@ -23,6 +23,11 @@ pub trait Serializable {
     fn serialized_len(&self) -> usize;
 }
 
+/// Trait to deserialize messages.
+///
+/// Chitchat uses a custom binary serialization format.
+/// The point of this format is to make it possible
+/// to truncate the delta payload to a given mtu.
 pub trait Deserializable: Sized {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self>;
 }
