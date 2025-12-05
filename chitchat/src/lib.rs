@@ -143,7 +143,7 @@ impl Chitchat {
                 let scheduled_for_deletion: HashSet<_> =
                     self.scheduled_for_deletion_nodes().collect();
                 let self_digest = self.compute_digest(&scheduled_for_deletion);
-                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 - digest.serialized_len();
+                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 - self_digest.serialized_len();
                 let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
                     delta_mtu,
@@ -459,6 +459,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use rand::Rng;
+    use rand::distr::Alphanumeric;
     use tokio::sync::Mutex;
     use tokio::time;
     use tokio_stream::StreamExt;
@@ -1308,5 +1310,67 @@ mod tests {
             1337,
         );
         assert!(node.cluster_state.node_state(&chitchat_id).is_none());
+    }
+
+    // There was a bug in process_message:
+    // When node_states is large and the node receives a SYN with an empty digest,
+    // the MTU delta was incorrectly computed based on the received empty digest,
+    // whereas it should have used self_digest instead.
+    //
+    #[tokio::test]
+    async fn test_process_syn() {
+        // Prepare node
+        let config = ChitchatConfig::for_test(10_006);
+
+        fn id(i: usize) -> ChitchatId {
+            ChitchatId {
+                node_id: "a".to_string().repeat(1000),
+                generation_id: i as u64,
+                gossip_advertise_addr: SocketAddr::from(([127, 0, 0, 1], 10000u16 + i as u16)),
+            }
+        }
+
+        fn random_string(len: usize) -> String {
+            rand::rng()
+                .sample_iter(&Alphanumeric)
+                .take(len)
+                .map(char::from)
+                .collect()
+        }
+
+        let (_seed_addrs_rx, seed_addrs_tx) = watch::channel(Default::default());
+
+        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        // Add node states that form the digest with a serialized size close to the maximum MTU.
+
+        let mut digest = Digest::default();
+        let mut delta = Delta::default();
+        for i in 0..55 {
+            digest.add_node(id(i), Heartbeat(1), 0, 0);
+            delta.add_node(id(i), 0, 0);
+            delta.add_kv(&id(i), "key", &random_string(1000), 1, false);
+        }
+        node.report_heartbeats_in_digest(&digest);
+        node.process_delta(delta);
+
+        // Process a SYN message with an empty foreign digest
+
+        let ack = node
+            .process_message(ChitchatMessage::Syn {
+                cluster_id: node.config.cluster_id.clone(),
+                digest: Digest::default(),
+            })
+            .unwrap();
+
+        // Verify that the serialized reply fits within the max MTU.
+
+        let mut buf = Vec::new();
+        ack.serialize(&mut buf);
+        assert!(buf.len() < MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+        let ChitchatMessage::SynAck { delta, .. } = ack else {
+            panic!("Expected SynAck, got {:?}", ack);
+        };
+        assert_eq!(delta.node_deltas.len(), 4);
     }
 }
