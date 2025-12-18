@@ -65,6 +65,7 @@ impl Debug for NodeState {
             .field("heartbeat", &self.heartbeat)
             .field("key_values", &self.key_values)
             .field("max_version", &self.max_version)
+            .field("last_gc_version", &self.last_gc_version)
             .finish()
     }
 }
@@ -137,12 +138,9 @@ impl NodeState {
         self.max_version = max_version;
     }
 
-    // Prepare the node state to receive a delta.
-    // Returns `true` if the delta can be applied. In that case, the node state may be mutated (if a
-    // reset is required) Returns `false` if the delta cannot be applied. In that case, the node
-    // state is not modified.
+    // Assess whether the delta can be applied or not.
     #[must_use]
-    fn prepare_apply_delta(&mut self, node_delta: &NodeDelta) -> bool {
+    fn check_delta_status(&self, node_delta: &NodeDelta) -> DeltaStatus {
         if node_delta.from_version_excluded > self.max_version {
             // This delta is coming from the future.
             // We probably experienced a reset and this delta is not usable for us anymore.
@@ -154,87 +152,71 @@ impl NodeState {
                 current_last_gc_version=self.last_gc_version,
                 "received delta from the future, ignoring it"
             );
-            return false;
+            return DeltaStatus::Reject;
         }
 
-        if self.max_version > node_delta.last_gc_version {
-            // The GCed tombstone have all been already received.
-            // We won't miss anything by applying the delta!
-            return true;
-        }
+        let compatible_without_reset =
+            // Our last GC epoch happened after the delta's peer's
+            node_delta.last_gc_version <= self.last_gc_version ||
+            // We know about all of the operations that happened before this GC.
+            node_delta.last_gc_version < self.max_version();
 
-        // This delta might be missing tombstones with a version within
-        // (`node_state.max_version`..`node_delta.last_gc_version`].
-        //
-        // It is ok if we don't have the associated values to begin
-        // with.
-        if self.last_gc_version >= node_delta.last_gc_version {
-            return true;
-        }
-
-        if node_delta.from_version_excluded > 0 {
-            warn!(
-                node=?node_delta.chitchat_id,
-                from_version=node_delta.from_version_excluded,
-                last_gc_version=node_delta.last_gc_version,
-                current_last_gc_version=self.last_gc_version,
-                "received an inapplicable delta, ignoring it");
-        }
-
-        let Some(delta_max_version) = node_delta
-            .key_values
-            .iter()
-            .map(|key_value_mutation| key_value_mutation.version)
-            .max()
-            .or(node_delta.max_version)
-        else {
-            // This can happen if we just hit the mtu at the moment
-            // of writing the SetMaxVersion operation.
-            return false;
-        };
-
-        if (node_delta.last_gc_version, delta_max_version)
-            <= (self.last_gc_version, self.max_version())
-        {
-            // There is not point applying this delta as it is not bringing us to a newer state.
-            warn!(
-                node=?node_delta.chitchat_id,
-                from_version=node_delta.from_version_excluded,
-                delta_max_version=delta_max_version,
-                last_gc_version=node_delta.last_gc_version,
-                current_last_gc_version=self.last_gc_version,
-                "received a delta that does not bring us to a fresher state, ignoring it");
-            return false;
-        }
-
-        // We are out of sync. This delta is an invitation to `reset` our state.
-        info!(
-            node=?node_delta.chitchat_id,
-            last_gc_version=node_delta.last_gc_version,
-            current_last_gc_version=self.last_gc_version,
-            "resetting node");
-        *self = NodeState::new(node_delta.chitchat_id.clone(), self.listeners.clone());
-        // The node_delta max_version  whe
-        if let Some(max_version) = node_delta.max_version {
-            if node_delta.key_values.is_empty() {
-                self.max_version = max_version;
-            } else {
+        if !compatible_without_reset {
+            if node_delta.from_version_excluded != 0 {
                 warn!(
-                    "Received a delta with a max_version, and key_values as well. This is \
-                     unexpected, please report."
-                );
+                    node=?node_delta.chitchat_id,
+                    from_version=node_delta.from_version_excluded,
+                    last_gc_version=node_delta.last_gc_version,
+                    current_last_gc_version=self.last_gc_version,
+                    "received an inapplicable delta, ignoring it");
+                return DeltaStatus::Reject;
+            } else {
+                return DeltaStatus::ApplyAfterReset;
             }
         }
-        // We need to reset our `last_gc_version`.
-        self.last_gc_version = node_delta.last_gc_version;
-        true
+
+        if self.max_version() < node_delta.max_version {
+            // This is not an update.
+            DeltaStatus::Apply
+        } else {
+            DeltaStatus::Reject
+        }
     }
 
-    fn apply_delta(&mut self, node_delta: NodeDelta, now: Instant) {
-        if !self.prepare_apply_delta(&node_delta) {
-            return;
+    /// Whenever we update the state, this key should always be increasing.
+    pub fn monotonic_property(&self) -> (Version, Version) {
+        (
+            self.max_version.max(self.last_gc_version()),
+            self.max_version(),
+        )
+    }
+
+    fn reset_node(&mut self, last_gc_version: Version) {
+        *self = NodeState::new(self.chitchat_id.clone(), self.listeners.clone());
+        self.max_version = 0;
+        self.last_gc_version = last_gc_version;
+    }
+
+    // Apply delta and returns true if a reset was necessary
+    fn apply_delta(&mut self, node_delta: NodeDelta, now: Instant) -> DeltaStatus {
+        let delta_status = self.check_delta_status(&node_delta);
+
+        match delta_status {
+            DeltaStatus::Reject => {
+                return delta_status;
+            }
+            DeltaStatus::Apply => {}
+            DeltaStatus::ApplyAfterReset => {
+                info!(
+                    "resetting for node id {:?} last_gc_version {}",
+                    &node_delta.chitchat_id, node_delta.last_gc_version
+                );
+                self.reset_node(node_delta.last_gc_version);
+            }
         }
+
         let current_max_version = self.max_version();
+
         for key_value_mutation in node_delta.key_values {
             if key_value_mutation.version <= current_max_version {
                 // We already know about this KV.
@@ -253,6 +235,10 @@ impl NodeState {
             };
             self.set_versioned_value(key_value_mutation.key, new_versioned_value);
         }
+
+        assert!(node_delta.max_version >= self.max_version);
+        self.max_version = node_delta.max_version;
+        delta_status
     }
 
     /// Returns key values matching a prefix
@@ -500,6 +486,25 @@ impl NodeState {
     }
 }
 
+/// Enum describing whether a given delta is applicable to a state.
+/// (the logic depends on the state max_version, gc_version, and the delta
+/// from_version_excluded, max_version, and gc_version)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum DeltaStatus {
+    /// The delta should be rejected:
+    /// it could be too far in the future or too far in the past.
+    Reject,
+    /// The delta should be applied.
+    /// It is valid and bring new information.
+    Apply,
+    /// The delta should be applied, but this requires a reset!
+    /// Our peer have detected that our max_version was lower than
+    /// their last_gc_version.
+    ///
+    /// Applying the delta without reset could mean we would be missing tombstones.
+    ApplyAfterReset,
+}
+
 pub(crate) struct ClusterState {
     node_states: BTreeMap<ChitchatId, NodeState>,
     seed_addrs: watch::Receiver<HashSet<SocketAddr>>,
@@ -587,14 +592,21 @@ impl ClusterState {
         }
     }
 
-    pub(crate) fn apply_delta(&mut self, delta: Delta) {
+    // Apply delta and returns true if there was a reset.
+    pub(crate) fn apply_delta(&mut self, delta: Delta) -> bool {
         let now = Instant::now();
         // Apply delta.
+        let mut contains_reset = false;
         for node_delta in delta.node_deltas {
             if let Some(node_state) = self.node_state_mut(&node_delta.chitchat_id) {
-                node_state.apply_delta(node_delta, now);
+                let monotonic_property_before = node_state.monotonic_property();
+                let delta_status = node_state.apply_delta(node_delta, now);
+                let monotonic_property_after = node_state.monotonic_property();
+                assert!(monotonic_property_after >= monotonic_property_before);
+                contains_reset |= delta_status == DeltaStatus::ApplyAfterReset;
             }
         }
+        contains_reset
     }
 
     pub fn compute_digest(&self, scheduled_for_deletion: &HashSet<&ChitchatId>) -> Digest {
@@ -1285,8 +1297,8 @@ mod tests {
 
         let mut delta = Delta::default();
         delta.add_node(node1.clone(), 0u64, 0u64);
-        delta.add_kv(&node1, "key_a", "4", 4, false);
         delta.add_kv(&node1, "key_b", "2", 2, false);
+        delta.add_kv(&node1, "key_a", "4", 4, false);
 
         // We reset node 2
         delta.add_node(node2.clone(), 3, 0);
@@ -1313,6 +1325,7 @@ mod tests {
         );
         // Check node 2 is reset and is only populated with the new `key_d`.
         let node2_state = cluster_state.node_state(&node2).unwrap();
+
         assert_eq!(node2_state.key_values.len(), 1);
         assert_eq!(
             node2_state.get_versioned("key_d").unwrap(),
@@ -1586,7 +1599,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 2,
             last_gc_version: 0u64,
-            max_version: None,
+            max_version: 4,
             key_values: vec![
                 KeyValueMutation {
                     key: "key_c".to_string(),
@@ -1623,7 +1636,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 1,
             last_gc_version: 0,
-            max_version: None,
+            max_version: 3,
             key_values: vec![KeyValueMutation {
                 key: "key_a".to_string(),
                 value: "val_a".to_string(),
@@ -1647,7 +1660,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 6, // we skipped version 6 here.
             last_gc_version: 0,
-            max_version: None,
+            max_version: 7,
             key_values: vec![KeyValueMutation {
                 key: "key_a".to_string(),
                 value: "new_val".to_string(),
@@ -1678,7 +1691,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 31, // we skipped version 6 here.
             last_gc_version: 30,
-            max_version: None,
+            max_version: 32,
             key_values: vec![KeyValueMutation {
                 key: "key_a".to_string(),
                 value: "new_val".to_string(),
@@ -1704,7 +1717,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 0, // we skipped version 6 here.
             last_gc_version: 30,
-            max_version: None,
+            max_version: 32,
             key_values: vec![KeyValueMutation {
                 key: "key_b".to_string(),
                 value: "val_b".to_string(),
@@ -1731,7 +1744,7 @@ mod tests {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 0, // we skipped version 6 here.
             last_gc_version: 17,
-            max_version: None,
+            max_version: 30,
             key_values: vec![KeyValueMutation {
                 key: "key_b".to_string(),
                 value: "val_b".to_string(),

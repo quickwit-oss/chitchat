@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::message::ChitchatMessage;
 use crate::transport::{Socket, Transport};
@@ -112,8 +112,6 @@ async fn spawn_dns_refresh_loop(seeds: &[String]) -> watch::Receiver<HashSet<Soc
         .union(&first_round_seed_resolution)
         .cloned()
         .collect();
-
-    info!(initial_seed_addrs=?initial_seed_addrs);
 
     let (seed_addrs_tx, seed_addrs_rx) = watch::channel(initial_seed_addrs);
     if !seed_requiring_dns.is_empty() {

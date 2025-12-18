@@ -227,15 +227,15 @@ mod tests {
             // + 8 bytes (last_gc_version)
             // + 8 bytes (from_version).
             delta.add_node(node.clone(), 0u64, 0u64);
-            // +29 bytes.
-            delta.add_kv(&node, "key", "value", 0, true);
+            // +22 bytes.
+            delta.add_kv(&node, "key", "value", 1, true);
             // That's compression kicking in.
-            delta.set_serialized_len(60);
+            delta.set_serialized_len(70);
 
             let syn_ack = ChitchatMessage::SynAck { digest, delta };
             // 1 byte (protocol version) + 1 byte (message tag) + 53 bytes (digest) + 60 bytes
             // (delta).
-            test_serdeser_aux(&syn_ack, 2 + 1 + 1 + 53 + 60);
+            test_serdeser_aux(&syn_ack, 2 + 1 + 1 + 53 + 70);
         }
     }
 
@@ -253,10 +253,10 @@ mod tests {
             // +37 bytes = 27 bytes (ChitchatId) + 2 bytes (node delta len) + 8 bytes (heartbeat).
             delta.add_node(node.clone(), 0u64, 0u64);
             // +29 bytes.
-            delta.add_kv(&node, "key", "value", 0, true);
-            delta.set_serialized_len(60);
+            delta.add_kv(&node, "key", "value", 1, true);
+            delta.set_serialized_len(70);
             let ack = ChitchatMessage::Ack { delta };
-            test_serdeser_aux(&ack, 2 + 1 + 1 + 60);
+            test_serdeser_aux(&ack, 2 + 1 + 1 + 70);
         }
     }
 

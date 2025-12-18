@@ -49,6 +49,114 @@ enum Operation {
     },
 }
 
+impl std::fmt::Display for NodeStatePredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            NodeStatePredicate::EqualKeyValue(key, expected_value) => {
+                write!(f, "Key '{}' == '{}'", key, expected_value)
+            }
+            NodeStatePredicate::KeyPresent(key, present) => {
+                write!(
+                    f,
+                    "Key '{}' is {}",
+                    key,
+                    if *present { "present" } else { "absent" }
+                )
+            }
+            NodeStatePredicate::KeyMarkedDeleted(key, marked) => {
+                write!(
+                    f,
+                    "Key '{}' is {}",
+                    key,
+                    if *marked {
+                        "marked deleted"
+                    } else {
+                        "not marked deleted"
+                    }
+                )
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Operation::InsertKeysValues {
+                chitchat_id,
+                keys_values,
+            } => {
+                write!(f, "INS KV in node {:?}: ", chitchat_id)?;
+                for (key, value) in keys_values {
+                    write!(f, "({}={})", key, value)?;
+                }
+                Ok(())
+            }
+            Operation::DeleteKey { chitchat_id, key } => {
+                write!(f, "DEL node {:?} key {}", chitchat_id, key)
+            }
+            Operation::DeleteKeyAfterTtl { chitchat_id, key } => {
+                write!(
+                    f,
+                    "DEL node {:?} key {} after TTL",
+                    &chitchat_id.node_id, key
+                )
+            }
+            Operation::AddNode {
+                chitchat_id,
+                peer_seeds,
+            } => {
+                write!(
+                    f,
+                    "NODE {:?} with seeds {:?}",
+                    &chitchat_id.node_id, peer_seeds
+                )
+            }
+            Operation::RemoveNetworkLink(node1, node2) => {
+                write!(
+                    f,
+                    "DISC node {:?} < xxx > {:?}",
+                    &node1.node_id, &node2.node_id
+                )
+            }
+            Operation::AddNetworkLink(node1, node2) => {
+                write!(
+                    f,
+                    "CONN node {:?} <===> {:?}",
+                    &node1.node_id, &node2.node_id
+                )
+            }
+            Operation::Wait(duration) => {
+                write!(f, "WAIT {:?}", duration)
+            }
+            Operation::NodeStatusAssert {
+                server_chitchat_id,
+                chitchat_id,
+                expected_status,
+                timeout_opt: _,
+            } => {
+                write!(
+                    f,
+                    "EXPECT NODE STATUS {} from {} to be {:?}",
+                    &server_chitchat_id.node_id, &chitchat_id.node_id, expected_status
+                )
+            }
+            Operation::NodeStateAssert {
+                server_chitchat_id,
+                chitchat_id,
+                predicate,
+                timeout_opt: _,
+            } => {
+                write!(
+                    f,
+                    "EXPECT NODE STATE {} from {} to be {}",
+                    &server_chitchat_id.node_id, &chitchat_id.node_id, predicate
+                )
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 enum NodeStatePredicate {
     EqualKeyValue(String, String),  // key, value
@@ -134,7 +242,7 @@ impl Simulator {
 
     pub async fn execute(&mut self, operations: Vec<Operation>) {
         for operation in operations {
-            info!("Execute operation {operation:?}");
+            info!("{operation}");
             match operation {
                 Operation::AddNode {
                     chitchat_id,
