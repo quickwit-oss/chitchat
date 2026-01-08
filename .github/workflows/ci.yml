@@ -64,4 +64,4 @@ jobs:
         run: dd-rust-license-tool --help || cargo install dd-rust-license-tool
 
       - name: Check Datadog third-party license file
-        run: dd-rust-license-tool check
+        run: dd-rust-license-tool --manifest-path chitchat/Cargo.toml check

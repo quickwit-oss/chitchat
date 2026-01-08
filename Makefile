@@ -5,10 +5,10 @@ check-license-tool:
 	@command -v dd-rust-license-tool > /dev/null 2>&1 || { echo "dd-rust-license-tool not found. Install using 'cargo install dd-rust-license-tool'"; exit 1; }
 
 license-check: check-license-tool
-	dd-rust-license-tool check
+	dd-rust-license-tool --manifest-path chitchat/Cargo.toml check
 
 license-fix: check-license-tool
-	dd-rust-license-tool write
+	dd-rust-license-tool --manifest-path chitchat/Cargo.toml write > LICENSE-3rdparty.csv
 
 fix: fmt
 	@echo "Running cargo clippy --fix"
