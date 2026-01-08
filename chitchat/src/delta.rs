@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use anyhow::Context as _;
+
 use crate::serialize::*;
 use crate::types::{DeletionStatusMutation, KeyValueMutation, KeyValueMutationRef};
 use crate::{ChitchatId, Version, VersionedValue};
@@ -38,9 +40,18 @@ impl Delta {
                     .map(|key_value_mutation| DeltaOpRef::KeyValue(key_value_mutation.into())),
             )
             .chain({
-                node_delta
-                    .max_version
-                    .map(|max_version| DeltaOpRef::SetMaxVersion { max_version })
+                if node_delta.key_values.is_empty() && node_delta.max_version > 0 {
+                    // The point of transmitting max_version is to update max_version in the
+                    // presence of an empty empty node state (due to GC).
+                    Some(DeltaOpRef::SetMaxVersion {
+                        max_version: node_delta.max_version,
+                    })
+                } else {
+                    // No need to add this operation.
+                    // It would be redundant with the last operation, max_version.
+                    None
+                }
+                .into_iter()
             })
         })
     }
@@ -261,10 +272,11 @@ impl Delta {
             last_gc_version,
             from_version_excluded: from_version,
             key_values: Vec::new(),
-            max_version: None,
+            max_version: 0,
         });
     }
 
+    /// add_kv needs to be called in order of increasing versions
     pub(crate) fn add_kv(
         &mut self,
         chitchat_id: &ChitchatId,
@@ -273,11 +285,19 @@ impl Delta {
         version: crate::Version,
         deleted: bool,
     ) {
+        assert_ne!(version, 0, "0 version for a kv is forbidden");
         let node_delta = self
             .node_deltas
             .iter_mut()
             .find(|node_delta| &node_delta.chitchat_id == chitchat_id)
             .unwrap();
+        assert!(
+            node_delta.max_version < version,
+            "attempted to set a value with a version ({}) < to our current version ({})",
+            node_delta.max_version,
+            version
+        );
+        node_delta.max_version = version;
         node_delta.key_values.push(KeyValueMutation {
             key: key.to_string(),
             value: value.to_string(),
@@ -301,7 +321,7 @@ impl Delta {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct NodeDelta {
     pub chitchat_id: ChitchatId,
     // `from_version_excluded` and `last_gc_version` are here to express on which states
@@ -322,7 +342,10 @@ pub(crate) struct NodeDelta {
     pub from_version_excluded: Version,
     pub last_gc_version: Version,
     pub key_values: Vec<KeyValueMutation>,
-    pub max_version: Option<Version>,
+    // If key_values is not empty, then max_version is the maximum version in key_values.
+    // If key_values is empty, then max_version can be set to something > 0.
+    // This is useful when we replicate a state without any key-values.
+    pub max_version: Version,
 }
 
 #[cfg(test)]
@@ -361,26 +384,26 @@ impl DeltaBuilder {
                     last_gc_version,
                     from_version_excluded,
                     key_values: Vec::new(),
-                    max_version: None,
+                    max_version: 0,
                 });
             }
             DeltaOp::KeyValue(key_value_mutation) => {
-                let Some(current_node_delta) = self.current_node_delta.as_mut() else {
-                    anyhow::bail!("received a key-value op without a node op before.");
-                };
-                if let Some(previous_key_value_mutation) = current_node_delta.key_values.last() {
-                    anyhow::ensure!(
-                        previous_key_value_mutation.version < key_value_mutation.version,
-                        "kv version should be increasing"
-                    );
-                }
+                let current_node_delta = self
+                    .current_node_delta
+                    .as_mut()
+                    .context("received a key-value op without a node op before.")?;
+                anyhow::ensure!(
+                    current_node_delta.max_version < key_value_mutation.version,
+                    "kv version should be striclty increasing"
+                );
+                current_node_delta.max_version = key_value_mutation.version;
                 current_node_delta.key_values.push(key_value_mutation);
             }
             DeltaOp::SetMaxVersion { max_version } => {
                 let Some(current_node_delta) = self.current_node_delta.as_mut() else {
                     anyhow::bail!("received a key-value op without a node op before.");
                 };
-                current_node_delta.max_version = Some(max_version);
+                current_node_delta.max_version = max_version;
             }
         }
         Ok(())

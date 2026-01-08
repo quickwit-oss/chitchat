@@ -109,16 +109,8 @@ impl Chitchat {
     }
 
     fn process_delta(&mut self, delta: Delta) {
-        self.maybe_trigger_catchup_callback(&delta);
-        self.cluster_state.apply_delta(delta);
-    }
-
-    /// Executes the catch-up callback if necessary.
-    fn maybe_trigger_catchup_callback(&self, delta: &Delta) {
-        let has_reset = delta.node_deltas.iter().any(|node_delta| {
-            node_delta.from_version_excluded == 0 && node_delta.last_gc_version > 0
-        });
-        if has_reset {
+        let was_reset_triggered = self.cluster_state.apply_delta(delta);
+        if was_reset_triggered {
             if let Some(catchup_callback) = &self.config.catchup_callback {
                 info!("executing catch-up callback");
                 catchup_callback();
@@ -342,7 +334,7 @@ impl Chitchat {
     /// recently deleted and garbage collected. We leave the responsibility of
     /// forcing the garbage collected node's recreation to the regular chitchat
     /// heartbeat protocol.
-    pub fn reset_node_state(
+    pub fn reset_node_state_if_update(
         &mut self,
         chitchat_id: &ChitchatId,
         key_values: impl Iterator<Item = (String, VersionedValue)>,
@@ -364,8 +356,27 @@ impl Chitchat {
         };
 
         if node_state.max_version() >= max_version {
+            info!("attempted to reset node, but node is already up to date");
             return;
         }
+
+        if max_version < node_state.last_gc_version() {
+            // It is possible to have gc_version > max_version when we are catching up.
+            // If we reach this point, we probably went through a reset via chitchat gossip.
+            //
+            // Now we are trying to reset our state via grpc gossip, but the new state is already
+            // be out of date.
+            warn!(
+                node_max_version = node_state.max_version(),
+                node_last_gc_version = node_state.last_gc_version(),
+                delta_max_version = max_version,
+                delta_last_gc_version = last_gc_version,
+                "attempted to reset node with an obsolete state"
+            );
+            return;
+        }
+
+        let monotonic_property_before = node_state.monotonic_property();
 
         // We make sure that the node is listed in the failure detector,
         // so that we won't forget to GC the state.
@@ -389,6 +400,10 @@ impl Chitchat {
             node_state.remove_key_value_internal(&key);
         }
         node_state.set_last_gc_version(last_gc_version);
+
+        let monotonic_property_after = node_state.monotonic_property();
+
+        assert!(monotonic_property_after > monotonic_property_before);
     }
 
     pub(crate) fn update_self_heartbeat(&mut self) {
@@ -625,7 +640,7 @@ mod tests {
         let mut node1 =
             Chitchat::with_chitchat_id_and_seeds(node_config1, empty_seeds.clone(), Vec::new());
         let chitchat_id = ChitchatId::for_local_test(10u16);
-        node1.reset_node_state(&chitchat_id, std::iter::empty(), 10_000, 10u64);
+        node1.reset_node_state_if_update(&chitchat_id, std::iter::empty(), 10_000, 10u64);
         node1.report_heartbeat(&chitchat_id, Heartbeat(10_000u64));
         node1.report_heartbeat(&chitchat_id, Heartbeat(10_000u64));
         node1.update_nodes_liveness();
@@ -1160,13 +1175,28 @@ mod tests {
         }));
         let (_seed_addrs_rx, seed_addrs_tx) = watch::channel(Default::default());
 
-        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+        let cluster_id = config.cluster_id.clone();
+        let mut node: Chitchat =
+            Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        // We dismiss delta about nodes we don't know about yet.
+        // Let's add our peer to be able to run this test.
+        let mut digest = Digest::default();
+        let peer_id = ChitchatId::for_local_test(10_002);
+        digest.add_node(peer_id, Heartbeat::default(), 10, 30);
+        let _ = node.process_message(ChitchatMessage::Syn { cluster_id, digest });
+
         let delta = Delta::default();
         node.process_delta(delta);
 
         let mut delta = Delta::default();
         let chitchat_id = ChitchatId::for_local_test(10_002);
-        delta.add_node(chitchat_id, 1000u64, 0u64);
+        delta.add_node(
+            chitchat_id.clone(),
+            1000u64, // last gc version
+            0u64,
+        );
+        delta.add_kv(&chitchat_id, "key", "value", 1, false);
         node.process_delta(delta);
 
         assert_eq!(catchup_callback_counter.load(Ordering::Acquire), 1);
@@ -1179,7 +1209,7 @@ mod tests {
         let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
 
         let chitchat_id = ChitchatId::for_local_test(10_002);
-        node.reset_node_state(
+        node.reset_node_state_if_update(
             &chitchat_id,
             [(
                 "foo".to_string(),
@@ -1203,7 +1233,7 @@ mod tests {
         node_state.set("qux", "baz");
         node_state.set("toto", "titi");
 
-        node.reset_node_state(
+        node.reset_node_state_if_update(
             &chitchat_id,
             [
                 (
@@ -1232,7 +1262,7 @@ mod tests {
         node_state.set("qux", "baz");
         node_state.set("toto", "titi");
 
-        node.reset_node_state(
+        node.reset_node_state_if_update(
             &chitchat_id,
             [
                 (
@@ -1297,7 +1327,7 @@ mod tests {
         assert!(node.cluster_state.node_state(&chitchat_id).is_none());
 
         // resetting GCed node should not bring it back
-        node.reset_node_state(
+        node.reset_node_state_if_update(
             &chitchat_id,
             [(
                 "foo".to_string(),
