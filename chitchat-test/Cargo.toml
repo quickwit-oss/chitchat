@@ -21,4 +21,4 @@ cool-id-generator = "1"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-reqwest = { version = "0.12", default-features=false, features = ["blocking", "json"] }
+reqwest = { version = "0.13", default-features=false, features = ["blocking", "json"] }
