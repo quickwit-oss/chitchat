@@ -159,7 +159,7 @@ impl NodeState {
             // Our last GC epoch happened after the delta's peer's
             node_delta.last_gc_version <= self.last_gc_version ||
             // We know about all of the operations that happened before this GC.
-            node_delta.last_gc_version < self.max_version();
+            node_delta.last_gc_version <= self.max_version();
 
         if !compatible_without_reset {
             if node_delta.from_version_excluded != 0 {
@@ -1757,6 +1757,29 @@ mod tests {
         let versioned_b = node_state.get_versioned("key_b").unwrap();
         assert_eq!(versioned_b.version, 32);
         assert_eq!(versioned_b.value, "val_b2");
+    }
+
+    #[test]
+    fn test_cluster_state_apply_delta_last_gc_equal_max_does_not_reset() {
+        let mut cluster_state = ClusterState::default();
+        let node = ChitchatId::for_local_test(10_001);
+
+        let node_state = cluster_state.node_state_mut_or_init(&node);
+        node_state.set_with_version("key_a", "val_a", 20);
+        node_state.set_last_gc_version(0);
+
+        // Boundary case: incoming gc frontier equals current max frontier.
+        // This should not trigger a reset, otherwise we can decrease max_version.
+        let mut delta = Delta::default();
+        delta.add_node(node.clone(), 20, 0);
+        delta.add_kv(&node, "key_b", "val_b", 18, false);
+
+        let contains_reset = cluster_state.apply_delta(delta);
+        assert!(!contains_reset);
+
+        let node_state_after = cluster_state.node_state(&node).unwrap();
+        assert_eq!(node_state_after.max_version(), 20);
+        assert_eq!(node_state_after.get("key_a"), Some("val_a"));
     }
 
     #[test]
