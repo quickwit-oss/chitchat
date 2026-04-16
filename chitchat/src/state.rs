@@ -185,10 +185,7 @@ impl NodeState {
 
     /// Whenever we update the state, this key should always be increasing.
     pub fn monotonic_property(&self) -> (Version, Version) {
-        (
-            self.last_gc_version(),
-            self.max_version(),
-        )
+        (self.last_gc_version(), self.max_version())
     }
 
     fn reset_node(&mut self, last_gc_version: Version) {
@@ -602,7 +599,10 @@ impl ClusterState {
                 let monotonic_property_before = node_state.monotonic_property();
                 let delta_status = node_state.apply_delta(node_delta, now);
                 let monotonic_property_after = node_state.monotonic_property();
-                assert!(monotonic_property_after >= monotonic_property_before, "after {monotonic_property_after:?}, before {monotonic_property_before:?}");
+                assert!(
+                    monotonic_property_after >= monotonic_property_before,
+                    "after {monotonic_property_after:?}, before {monotonic_property_before:?}"
+                );
                 contains_reset |= delta_status == DeltaStatus::ApplyAfterReset;
             }
         }
