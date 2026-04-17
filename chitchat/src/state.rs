@@ -158,7 +158,7 @@ impl NodeState {
         let compatible_without_reset =
             // Our last GC epoch happened after the delta's peer's
             node_delta.last_gc_version <= self.last_gc_version ||
-            // We know about all of the operations that happened before this GC.
+            // We know about all of the operations that happened up to this GC.
             node_delta.last_gc_version <= self.max_version();
 
         if !compatible_without_reset {
@@ -1761,32 +1761,30 @@ mod tests {
 
     // Regression test for https://github.com/quickwit-oss/chitchat/issues/178
     //
-    // With the old monotonic property (max(max_version, last_gc_version), max_version),
-    // a reset delta with last_gc_version=100 and max_version=80 applied to a node
-    // with max_version=100, last_gc_version=50 would cause:
-    //   before: (100, 100), after: (100, 80) => assertion failure
+    // A reset delta where last_gc_version > receiver's max_version and
+    // max_version < receiver's max_version (e.g. due to MTU truncation).
     //
-    // The fix: monotonic_property is now (last_gc_version, max_version). Since
-    // last_gc_version strictly increases on reset, max_version can safely regress
-    // (e.g. due to MTU truncation) without violating the invariant.
+    // Receiver: gc=50, max=70. Sender: gc=120, max=80 (truncated by MTU).
+    // The sender's gc > receiver's max, so this forces a reset. After reset,
+    // monotonic_property goes from (50, 70) to (120, 80) which is >= because
+    // the first element (last_gc_version) strictly increased.
     #[test]
     fn test_apply_delta_reset_does_not_violate_monotonic_property() {
         let mut node_state = NodeState::for_test();
         node_state.set_with_version("key_a", "val_a", 50);
-        node_state.set_with_version("key_b", "val_b", 100);
+        node_state.set_with_version("key_b", "val_b", 70);
         node_state.last_gc_version = 50;
 
-        assert_eq!(node_state.max_version(), 100);
+        assert_eq!(node_state.max_version(), 70);
         assert_eq!(node_state.last_gc_version, 50);
         let monotonic_before = node_state.monotonic_property();
 
-        // A reset delta where last_gc_version > our last_gc_version but
-        // max_version < our max_version (e.g. due to MTU truncation or
-        // the sender having a post-reset state with gc > max).
+        // A reset delta where last_gc_version > our max_version.
+        // The sender GC'd past our max, so we can't apply without reset.
         let node_delta = NodeDelta {
             chitchat_id: node_state.chitchat_id.clone(),
             from_version_excluded: 0,
-            last_gc_version: 100,
+            last_gc_version: 120,
             max_version: 80,
             key_values: vec![KeyValueMutation {
                 key: "key_c".to_string(),
@@ -1798,20 +1796,57 @@ mod tests {
 
         let delta_status = node_state.apply_delta(node_delta, Instant::now());
 
-        // The reset is accepted: last_gc_version advances from 50 to 100,
-        // so monotonic_property goes from (50, 100) to (100, 80) which is >=.
         assert_eq!(delta_status, DeltaStatus::ApplyAfterReset);
         let monotonic_after = node_state.monotonic_property();
-        assert_eq!(monotonic_after, (100, 80));
+        assert_eq!(monotonic_after, (120, 80));
         assert!(monotonic_after >= monotonic_before);
 
         assert_eq!(node_state.max_version(), 80);
-        assert_eq!(node_state.last_gc_version, 100);
+        assert_eq!(node_state.last_gc_version, 120);
         // Old keys were wiped by the reset.
         assert!(node_state.get("key_a").is_none());
         assert!(node_state.get("key_b").is_none());
         // New key from the delta was applied.
         assert_eq!(node_state.get("key_c").unwrap(), "val_c");
+    }
+
+    // Similar to test_cluster_state_apply_delta_last_gc_equal_max_does_not_reset,
+    // but exercises apply_delta at the NodeState level directly.
+    //
+    // When A has gc=50, max=70 and B has gc=70, max=100, B's gc equals A's max.
+    // B decides no reset is needed (digest_max_version < last_gc_version is 70 < 70 = false).
+    // A must accept this non-reset delta because it has seen every version up to
+    // the GC boundary. Without the fix (< instead of <=), A would reject the delta
+    // permanently — neither side would change state, causing a liveness bug.
+    #[test]
+    fn test_delta_accepted_when_sender_gc_equals_receiver_max() {
+        let node_id = ChitchatId::for_local_test(10_001);
+
+        // Node A (receiver): gc=50, max=70
+        let mut node_state_a = NodeState::for_test();
+        node_state_a.set_with_version("key_a", "val_a", 70);
+        node_state_a.last_gc_version = 50;
+        assert_eq!(node_state_a.max_version(), 70);
+
+        // Build the delta that B would send: gc=70, from_version=70, max=100.
+        // B decided no reset was needed, so from_version_excluded = A's max = 70.
+        let node_delta = NodeDelta {
+            chitchat_id: node_id,
+            from_version_excluded: 70,
+            last_gc_version: 70,
+            max_version: 100,
+            key_values: vec![KeyValueMutation {
+                key: "key_b".to_string(),
+                value: "val_b".to_string(),
+                version: 100,
+                status: DeletionStatusMutation::Set,
+            }],
+        };
+
+        let delta_status = node_state_a.apply_delta(node_delta, Instant::now());
+        assert_eq!(delta_status, DeltaStatus::Apply);
+        assert_eq!(node_state_a.max_version(), 100);
+        assert_eq!(node_state_a.get("key_b").unwrap(), "val_b");
     }
 
     #[test]
