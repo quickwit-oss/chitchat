@@ -11,7 +11,7 @@ use chitchat::{
 };
 use itertools::Itertools;
 use rand::prelude::IndexedRandom;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use tracing::{debug, error, info};
 
 #[derive(Debug)]

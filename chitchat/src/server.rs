@@ -372,7 +372,7 @@ where
     }
     .iter()
     .cloned()
-    .choose_multiple(rng, GOSSIP_COUNT);
+    .sample(rng, GOSSIP_COUNT);
 
     let mut has_gossiped_with_a_seed_node = false;
     for chitchat_id in &nodes {
@@ -452,18 +452,20 @@ mod tests {
         value: u32,
     }
 
-    impl RngCore for RngForTest {
-        fn next_u32(&mut self) -> u32 {
+    impl rand::TryRng for RngForTest {
+        type Error = std::convert::Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
             self.value += 1;
-            self.value - 1
+            Ok(self.value - 1)
         }
 
-        fn next_u64(&mut self) -> u64 {
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
             self.value += 1;
-            (self.value - 1) as u64
+            Ok((self.value - 1) as u64)
         }
 
-        fn fill_bytes(&mut self, _dest: &mut [u8]) {
+        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), Self::Error> {
             unimplemented!();
         }
     }
