@@ -246,7 +246,7 @@ impl Server {
                     Ok((from_addr, message)) => {
                         let _ = self.handle_message(from_addr, message).await;
                     }
-                    Err(err) => return Err(err),
+                    Err(err) => warn!("communication error: {err:#}"),
                 },
                 _ = gossip_interval.tick() => {
                     self.gossip_multiple().await
