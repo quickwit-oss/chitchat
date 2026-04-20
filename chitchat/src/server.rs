@@ -246,7 +246,12 @@ impl Server {
                     Ok((from_addr, message)) => {
                         let _ = self.handle_message(from_addr, message).await;
                     }
-                    Err(err) => warn!("communication error: {err:#}"),
+                    // Transient errors (e.g. ENOBUFS) are swallowed inside
+                    // Socket::recv. An error here means the socket is broken.
+                    Err(err) => {
+                        warn!(err=%err, "fatal UDP recv error, stopping gossip loop");
+                        return Err(err);
+                    }
                 },
                 _ = gossip_interval.tick() => {
                     self.gossip_multiple().await
