@@ -480,7 +480,7 @@ pub fn test_serdeser_aux<T: Serializable + Deserializable + PartialEq + std::fmt
 #[cfg(test)]
 mod tests {
     use proptest::proptest;
-    use rand::Rng;
+    use rand::RngExt;
     use rand::distr::Alphanumeric;
 
     use super::*;

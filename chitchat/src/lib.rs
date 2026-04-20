@@ -474,7 +474,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use rand::Rng;
+    use rand::RngExt;
     use rand::distr::Alphanumeric;
     use tokio::sync::Mutex;
     use tokio::time;
