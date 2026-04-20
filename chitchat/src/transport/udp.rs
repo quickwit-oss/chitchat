@@ -1,3 +1,4 @@
+use std::io;
 use std::net::SocketAddr;
 
 use anyhow::Context;
@@ -37,6 +38,17 @@ impl UdpSocket {
     }
 }
 
+fn is_transient_io_error(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::OutOfMemory
+            // On Windows, sending to a closed peer causes recv_from to fail
+            // with ConnectionReset (WSAECONNRESET / 10054).
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionRefused
+    )
+}
+
 #[async_trait]
 impl Socket for UdpSocket {
     async fn send(&mut self, to_addr: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
@@ -58,11 +70,16 @@ impl Socket for UdpSocket {
 
 impl UdpSocket {
     async fn receive_one(&mut self) -> anyhow::Result<Option<(SocketAddr, ChitchatMessage)>> {
-        let (len, from_addr) = self
-            .socket
-            .recv_from(&mut self.buf_recv[..])
-            .await
-            .context("Error while receiving UDP message")?;
+        let (len, from_addr) = match self.socket.recv_from(&mut self.buf_recv[..]).await {
+            Ok(result) => result,
+            Err(err) if is_transient_io_error(&err) => {
+                warn!(error=%err, "transient UDP recv error");
+                return Ok(None);
+            }
+            Err(err) => {
+                return Err(err).context("fatal UDP recv error");
+            }
+        };
         let mut buf = &self.buf_recv[..len];
         match ChitchatMessage::deserialize(&mut buf) {
             Ok(msg) => Ok(Some((from_addr, msg))),
