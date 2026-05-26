@@ -361,7 +361,7 @@ mod tests {
 
         let mut live_nodes = failure_detector
             .live_nodes()
-            .map(|chitchat_id| chitchat_id.node_id.as_str())
+            .map(|chitchat_id| &*chitchat_id.node_id)
             .collect::<Vec<_>>();
         live_nodes.sort_unstable();
         assert_eq!(live_nodes, vec!["node-10001", "node-10002", "node-10003"]);
@@ -374,7 +374,7 @@ mod tests {
         }
         let mut dead_nodes = failure_detector
             .dead_nodes()
-            .map(|chitchat_id| chitchat_id.node_id.as_str())
+            .map(|chitchat_id| &*chitchat_id.node_id)
             .collect::<Vec<_>>();
         dead_nodes.sort_unstable();
         assert_eq!(dead_nodes, vec!["node-10001", "node-10002", "node-10003"]);
@@ -386,20 +386,20 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|chitchat_id| chitchat_id.node_id.as_str())
+                .map(|chitchat_id| &*chitchat_id.node_id)
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
         assert_eq!(
             failure_detector
                 .dead_nodes()
-                .map(|chitchat_id| chitchat_id.node_id.as_str())
+                .map(|chitchat_id| &*chitchat_id.node_id)
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
         let mut removed_nodes = garbage_collected_nodes
             .iter()
-            .map(|chitchat_id| chitchat_id.node_id.as_str())
+            .map(|chitchat_id| &*chitchat_id.node_id)
             .collect::<Vec<_>>();
         removed_nodes.sort_unstable();
         assert_eq!(
@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|chitchat_id| chitchat_id.node_id.as_str())
+                .map(|chitchat_id| &*chitchat_id.node_id)
                 .collect::<Vec<_>>(),
             vec!["node-10001"]
         );
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|chitchat_id| chitchat_id.node_id.as_str())
+                .map(|chitchat_id| &*chitchat_id.node_id)
                 .collect::<Vec<_>>(),
             Vec::<&str>::new()
         );
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(
             failure_detector
                 .live_nodes()
-                .map(|chitchat_id| chitchat_id.node_id.as_str())
+                .map(|chitchat_id| &*chitchat_id.node_id)
                 .collect::<Vec<_>>(),
             vec!["node-10001"]
         );
@@ -479,7 +479,7 @@ mod tests {
 
         let live_nodes = failure_detector
             .live_nodes()
-            .map(|chitchat_id| chitchat_id.node_id.as_str())
+            .map(|chitchat_id| &*chitchat_id.node_id)
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, vec!["node-10001"]);
 
@@ -488,7 +488,7 @@ mod tests {
 
         let live_nodes = failure_detector
             .live_nodes()
-            .map(|chitchat_id| chitchat_id.node_id.as_str())
+            .map(|chitchat_id| &*chitchat_id.node_id)
             .collect::<Vec<_>>();
         assert_eq!(live_nodes, Vec::<&str>::new());
     }

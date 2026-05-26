@@ -1,5 +1,6 @@
 use std::io::BufRead;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use bytes::Buf;
@@ -183,18 +184,28 @@ impl Serializable for String {
     }
 }
 
+fn deserialize_str<'a>(buf: &mut &'a [u8]) -> anyhow::Result<&'a str> {
+    let len: usize = u16::deserialize(buf)? as usize;
+    let str_bytes = buf.get(..len).with_context(|| {
+        format!(
+            "failed to deserialize string, buffer too short (str_len={len}, buf_len={})",
+            buf.len()
+        )
+    })?;
+    let s = std::str::from_utf8(str_bytes)?;
+    buf.consume(len);
+    Ok(s)
+}
+
 impl Deserializable for String {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let len: usize = u16::deserialize(buf)? as usize;
-        let str_bytes = buf.get(..len).with_context(|| {
-            format!(
-                "failed to deserialize string, buffer too short (str_len={len}, buf_len={})",
-                buf.len()
-            )
-        })?;
-        let str = std::str::from_utf8(str_bytes)?.to_string();
-        buf.consume(len);
-        Ok(str)
+        Ok(deserialize_str(buf)?.to_owned())
+    }
+}
+
+impl Deserializable for Arc<str> {
+    fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
+        Ok(Arc::from(deserialize_str(buf)?))
     }
 }
 
@@ -264,7 +275,7 @@ impl Serializable for ChitchatId {
 
 impl Deserializable for ChitchatId {
     fn deserialize(buf: &mut &[u8]) -> anyhow::Result<Self> {
-        let node_id = String::deserialize(buf)?;
+        let node_id: Arc<str> = Arc::<str>::deserialize(buf)?;
         let generation_id = u64::deserialize(buf)?;
         let gossip_advertise_addr = SocketAddr::deserialize(buf)?;
         Ok(Self {

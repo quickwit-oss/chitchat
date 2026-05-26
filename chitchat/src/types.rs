@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -20,7 +21,7 @@ use crate::serialize::Deserializable;
 #[derive(Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ChitchatId {
     /// An identifier unique across the cluster.
-    pub node_id: String,
+    pub node_id: Arc<str>,
     /// A numeric identifier incremented every time the node leaves and rejoins the cluster.
     pub generation_id: u64,
     /// The socket address peers should use to gossip with the node.
@@ -32,17 +33,19 @@ impl Debug for ChitchatId {
         write!(
             f,
             "{}:{}:{}",
-            self.node_id.as_str(),
-            self.generation_id,
-            self.gossip_advertise_addr
+            &*self.node_id, self.generation_id, self.gossip_advertise_addr
         )
     }
 }
 
 impl ChitchatId {
-    pub fn new(node_id: String, generation_id: u64, gossip_advertise_addr: SocketAddr) -> Self {
+    pub fn new(
+        node_id: impl Into<Arc<str>>,
+        generation_id: u64,
+        gossip_advertise_addr: SocketAddr,
+    ) -> Self {
         Self {
-            node_id,
+            node_id: node_id.into(),
             generation_id,
             gossip_advertise_addr,
         }

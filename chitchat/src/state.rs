@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Bound;
+use std::sync::Arc;
 use std::time::Duration;
 
 use itertools::Itertools;
@@ -97,7 +98,7 @@ impl NodeState {
     pub fn for_test() -> NodeState {
         NodeState {
             chitchat_id: ChitchatId {
-                node_id: "test-node".to_string(),
+                node_id: Arc::from("test-node"),
                 generation_id: 0,
                 gossip_advertise_addr: SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 7280),
             },
