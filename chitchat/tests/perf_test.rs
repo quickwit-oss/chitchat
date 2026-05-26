@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
@@ -13,7 +14,7 @@ use tracing::info;
 async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandle {
     let listen_addr: SocketAddr = ([127, 0, 0, 1], 10_000u16 + chitchat_id).into();
     let chitchat_id = ChitchatId {
-        node_id: format!("node_{chitchat_id}"),
+        node_id: Arc::from(format!("node_{chitchat_id}").as_str()),
         generation_id: 0,
         gossip_advertise_addr: listen_addr,
     };

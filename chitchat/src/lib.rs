@@ -963,7 +963,7 @@ mod tests {
 
         // Restart node at localhost:40001 with new name
         let mut new_config = ChitchatConfig::for_test(40_001);
-        new_config.chitchat_id.node_id = "new_node".to_string();
+        new_config.chitchat_id.node_id = Arc::from("new_node");
         let new_chitchat_id = new_config.chitchat_id.clone();
         let seed_addr = ChitchatId::for_local_test(40_002).gossip_advertise_addr;
         new_config.seed_nodes = vec![seed_addr.to_string()];
@@ -1354,7 +1354,7 @@ mod tests {
 
         fn id(i: usize) -> ChitchatId {
             ChitchatId {
-                node_id: "a".to_string().repeat(1000),
+                node_id: Arc::from("a".repeat(1000).as_str()),
                 generation_id: i as u64,
                 gossip_advertise_addr: SocketAddr::from(([127, 0, 0, 1], 10000u16 + i as u16)),
             }

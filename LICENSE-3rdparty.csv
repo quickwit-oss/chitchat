@@ -7,13 +7,14 @@ bytes,https://github.com/tokio-rs/bytes,MIT,"Carl Lerche <me@carllerche.com>, Se
 cfg-if,https://github.com/rust-lang/cfg-if,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 chacha20,https://github.com/RustCrypto/stream-ciphers,MIT OR Apache-2.0,RustCrypto Developers
 cpufeatures,https://github.com/RustCrypto/utils,MIT OR Apache-2.0,RustCrypto Developers
-either,https://github.com/rayon-rs/either,MIT OR Apache-2.0,bluss
+either,https://github.com/rayon-rs/either,MIT OR Apache-2.0,The either Authors
 equivalent,https://github.com/indexmap-rs/equivalent,Apache-2.0 OR MIT,The equivalent Authors
 foldhash,https://github.com/orlp/foldhash,Zlib,Orson Peters <orsonpeters@gmail.com>
 futures-core,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-core Authors
 futures-sink,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-sink Authors
 getrandom,https://github.com/rust-random/getrandom,MIT OR Apache-2.0,The Rand Project Developers
 hashbrown,https://github.com/rust-lang/hashbrown,MIT OR Apache-2.0,Amanieu d'Antras <amanieu@gmail.com>
+hashbrown,https://github.com/rust-lang/hashbrown,MIT OR Apache-2.0,The hashbrown Authors
 heck,https://github.com/withoutboats/heck,MIT OR Apache-2.0,The heck Authors
 id-arena,https://github.com/fitzgen/id-arena,MIT OR Apache-2.0,"Nick Fitzgerald <fitzgen@gmail.com>, Aleksey Kladov <aleksey.kladov@gmail.com>"
 indexmap,https://github.com/indexmap-rs/indexmap,Apache-2.0 OR MIT,The indexmap Authors

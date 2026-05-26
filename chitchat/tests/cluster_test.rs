@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, TcpListener};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -445,7 +445,7 @@ impl Simulator {
 pub fn create_chitchat_id(id: &str) -> ChitchatId {
     let port = find_available_tcp_port().unwrap();
     ChitchatId {
-        node_id: id.to_string(),
+        node_id: Arc::from(id),
         generation_id: 0,
         gossip_advertise_addr: ([127, 0, 0, 1], port).into(),
     }
@@ -453,7 +453,7 @@ pub fn create_chitchat_id(id: &str) -> ChitchatId {
 
 pub fn test_chitchat_id(port: u16) -> ChitchatId {
     ChitchatId {
-        node_id: format!("node_{port}"),
+        node_id: Arc::from(format!("node_{port}").as_str()),
         generation_id: 0,
         gossip_advertise_addr: ([127, 0, 0, 1], port).into(),
     }
