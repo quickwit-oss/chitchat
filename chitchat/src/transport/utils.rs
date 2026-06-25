@@ -8,7 +8,7 @@ use rand::prelude::{Distribution, SmallRng};
 use rand::{SeedableRng, rng};
 use tokio::sync::RwLock;
 
-use crate::ChitchatMessage;
+use crate::message::ChitchatEnvelope;
 use crate::transport::{Socket, Transport};
 
 struct TransportWithDelay<D: Distribution<f32> + Send + Sync + 'static> {
@@ -39,18 +39,18 @@ struct SocketWithDelay<D: Distribution<f32> + Send + Sync + 'static> {
 
 #[async_trait]
 impl<D: DelayMillisDist> Socket for SocketWithDelay<D> {
-    async fn send(&mut self, to: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
+    async fn send(&mut self, to: SocketAddr, envelope: ChitchatEnvelope) -> anyhow::Result<()> {
         let socket_clone = self.socket.clone();
         let delay_secs = self.delay_secs.sample(&mut self.rng);
         let delay = Duration::from_secs_f32(delay_secs);
         tokio::task::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = socket_clone.write().await.send(to, message).await;
+            let _ = socket_clone.write().await.send(to, envelope).await;
         });
         Ok(())
     }
 
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)> {
+    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)> {
         self.socket.write().await.recv().await
     }
 }
@@ -102,15 +102,15 @@ struct SocketWithMessageDrop {
 
 #[async_trait]
 impl Socket for SocketWithMessageDrop {
-    async fn send(&mut self, to: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
+    async fn send(&mut self, to: SocketAddr, envelope: ChitchatEnvelope) -> anyhow::Result<()> {
         let should_drop = self.drop_probability.sample(&mut self.rng);
         if should_drop {
             return Ok(());
         }
-        self.socket.send(to, message).await
+        self.socket.send(to, envelope).await
     }
 
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)> {
+    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)> {
         self.socket.recv().await
     }
 }
