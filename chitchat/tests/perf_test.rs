@@ -125,7 +125,7 @@ async fn test_delay_before_dead_detection_100() {
 
 #[tokio::test]
 async fn test_delay_before_dead_detection_100_faulty() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     let transport = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);
     let delay = delay_before_detection_sample(100, &*transport).await;
     assert!(
@@ -136,7 +136,7 @@ async fn test_delay_before_dead_detection_100_faulty() {
 }
 
 async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     assert!(num_nodes > 2);
     let transport = ChannelTransport::with_mtu(65_507);
     let handles = spawn_nodes(num_nodes as u16, &transport).await;
@@ -163,13 +163,13 @@ async fn test_bandwidth_aux(num_nodes: usize) -> u64 {
 
 #[tokio::test]
 async fn test_bandwidth_10() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     assert!(test_bandwidth_aux(10).await < 15_000);
 }
 
 #[tokio::test]
 async fn test_bandwidth_20() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     test_bandwidth_aux(20).await;
     assert!(test_bandwidth_aux(20).await < 25_000);
 }
@@ -205,7 +205,7 @@ async fn test_faulty_network_stability_aux(num_nodes: usize, transport: &dyn Tra
 
 #[tokio::test]
 async fn test_faulty_network_stability_10() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     // 50% messages are dropped.
     use chitchat::transport::TransportExt;
     let transport: Box<dyn Transport> = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);
@@ -214,7 +214,7 @@ async fn test_faulty_network_stability_10() {
 
 #[tokio::test]
 async fn test_faulty_network_stability_100() {
-    let _ = tracing_subscriber::fmt::try_init();
+    // let _ = tracing_subscriber::fmt::try_init();
     // 50% messages are dropped.
     use chitchat::transport::TransportExt;
     let transport: Box<dyn Transport> = ChannelTransport::with_mtu(65_507).drop_message(0.5f64);

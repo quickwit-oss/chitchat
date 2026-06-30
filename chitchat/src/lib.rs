@@ -355,15 +355,13 @@ impl Chitchat {
             return;
         };
 
-        if node_state.max_version() >= max_version {
-            info!("attempted to reset node, but node is already up to date");
-            return;
-        }
+        let monotonic_property_before: (Version, Version) = node_state.monotonic_property();
+        let monotonic_property_if_we_applied_reset_state: (Version, Version) =
+            (last_gc_version, max_version);
 
-        if max_version < node_state.last_gc_version() {
-            // It is possible to have gc_version > max_version when we are catching up.
-            // If we reach this point, we probably went through a reset via chitchat gossip.
-            //
+        if monotonic_property_before >= monotonic_property_if_we_applied_reset_state {
+            // If we reach this point, we had a race condition and went through a reset via chitchat
+            // gossip.
             // Now we are trying to reset our state via grpc gossip, but the new state is already
             // be out of date.
             warn!(
@@ -371,12 +369,10 @@ impl Chitchat {
                 node_last_gc_version = node_state.last_gc_version(),
                 delta_max_version = max_version,
                 delta_last_gc_version = last_gc_version,
-                "attempted to reset node with an obsolete state"
+                "attempted to reset node with an obsolete state (rare race condition)"
             );
             return;
         }
-
-        let monotonic_property_before = node_state.monotonic_property();
 
         // We make sure that the node is listed in the failure detector,
         // so that we won't forget to GC the state.
@@ -385,6 +381,8 @@ impl Chitchat {
         // avoid identifying resetted node as alive.
         self.failure_detector
             .get_or_create_sampling_window(chitchat_id);
+
+        node_state.set_max_version(max_version);
 
         // We don't want to call listeners for keys that are already up to date so we must do this
         // dance instead of clearing the node state and then setting the new values.
@@ -656,7 +654,7 @@ mod tests {
         // needs a reset, and a single delta would:
         // - not increase its max version after reset.
         // - not even bring the state to a max_version >= last_gc_version
-        let _ = tracing_subscriber::fmt::try_init();
+        // let _ = tracing_subscriber::fmt::try_init();
         tokio::time::pause();
         let node_config1 = ChitchatConfig::for_test(10_001);
         let empty_seeds = watch::channel(Default::default()).1;
@@ -1263,7 +1261,6 @@ mod tests {
         node_state.set("foo", "bar");
         node_state.set("qux", "baz");
         node_state.set("toto", "titi");
-
         node.reset_node_state_if_update(
             &chitchat_id,
             [
@@ -1281,11 +1278,88 @@ mod tests {
             1337,
         );
         let node_state = node.cluster_state.node_state(&chitchat_id).unwrap();
-        assert_eq!(node_state.num_key_values(), 3);
+        assert_eq!(node_state.num_key_values(), 2);
         assert_eq!(node_state.get("foo"), Some("bar"));
         assert_eq!(node_state.get("qux"), Some("baz"));
-        assert_eq!(node_state.get("toto"), Some("titi"));
-        assert_eq!(node_state.max_version(), 3);
+        assert_eq!(node_state.max_version(), 2);
+        assert_eq!(node_state.last_gc_version(), 1337);
+    }
+
+    // grpc/catchup path: between the time the catchup grpc is issued and the time it returns,
+    // this node received a gossip-driven reset that advanced its `last_gc_version`
+    // ahead of the (now stale) catchup source. The source has newer data
+    // (`max_version` 120 > our 100) but an older GC horizon
+    // (`last_gc_version` 80 < our 100).
+    //
+    // The reset must be rejected.
+    #[tokio::test]
+    async fn test_reset_node_state_does_not_regress_last_gc_version_reproduces_194() {
+        let config = ChitchatConfig::for_test(10_010);
+        let (_seed_addrs_rx, seed_addrs_tx) = watch::channel(Default::default());
+        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        let chitchat_id = ChitchatId::for_local_test(10_011);
+        let node_state = node.cluster_state.node_state_mut_or_init(&chitchat_id);
+        node_state.set_max_version(100);
+        node_state.set_last_gc_version(100);
+        node.reset_node_state_if_update(
+            &chitchat_id,
+            [(
+                "a".to_string(),
+                VersionedValue::new("v".to_string(), 120, false),
+            )]
+            .into_iter(),
+            120,
+            80,
+        );
+
+        // The obsolete-gc snapshot is rejected and the node is left untouched.
+        let node_state = node.cluster_state.node_state(&chitchat_id).unwrap();
+        assert_eq!(node_state.max_version(), 100);
+        assert_eq!(node_state.last_gc_version(), 100);
+        assert_eq!(node_state.get("a"), None);
+    }
+
+    // Regression test: the catchup path must adopt the snapshot's `max_version`,
+    // even when no live key-value reaches it.
+    //
+    // A node's `max_version` reflects the highest version among its key-values
+    // *including tombstones*. Once tombstones past the grace period are GC'd,
+    // `max_version` can exceed the highest *present* key-value version. So a
+    // catchup snapshot can legitimately report `max_version` 100 while its
+    // highest live key-value is only at version 50 (versions 51..100 were
+    // deletions GC'd at the source).
+    #[tokio::test]
+    async fn test_reset_node_state_adopts_snapshot_max_version_reproduces_194() {
+        let config = ChitchatConfig::for_test(10_012);
+        let (_seed_addrs_rx, seed_addrs_tx) = watch::channel(Default::default());
+        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        let chitchat_id = ChitchatId::for_local_test(10_013);
+        let node_state = node.cluster_state.node_state_mut_or_init(&chitchat_id);
+        node_state.set_versioned_value(
+            "old".to_string(),
+            VersionedValue::new("x".to_string(), 50, false),
+        );
+        node_state.set_last_gc_version(10);
+        assert_eq!(node_state.max_version(), 50);
+
+        node.reset_node_state_if_update(
+            &chitchat_id,
+            [(
+                "a".to_string(),
+                VersionedValue::new("v".to_string(), 50, false),
+            )]
+            .into_iter(),
+            100,
+            10,
+        );
+
+        let node_state = node.cluster_state.node_state(&chitchat_id).unwrap();
+        assert_eq!(node_state.max_version(), 100);
+        assert_eq!(node_state.last_gc_version(), 10);
+        assert_eq!(node_state.get("a"), Some("v"));
+        assert_eq!(node_state.get("old"), None);
     }
 
     #[tokio::test]
