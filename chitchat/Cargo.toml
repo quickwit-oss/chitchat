@@ -27,11 +27,12 @@ tokio = { version = "1.28.0", features = [
 ] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true }
 zstd = "0.13"
 
 [dev-dependencies]
 assert-json-diff = "2"
-tracing-subscriber = "0.3"
+chitchat = { path = ".", features = ["testsuite"] }
 proptest = "1.4"
 tokio = { version = "1.28.0", features = [
     "net",
@@ -43,4 +44,4 @@ tokio = { version = "1.28.0", features = [
 ] }
 
 [features]
-testsuite = []
+testsuite = ["tracing-subscriber"]

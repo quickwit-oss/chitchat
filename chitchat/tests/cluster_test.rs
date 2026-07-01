@@ -487,7 +487,7 @@ fn find_available_tcp_port() -> anyhow::Result<u16> {
 
 #[tokio::test]
 async fn test_simple_simulation_insert() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     let (catchup_callback_tx, mut catchup_callback_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     simulator.catchup_callback_tx = Some(catchup_callback_tx);
@@ -595,7 +595,7 @@ async fn test_simple_simulation_delete_after_ttl() {
 
 #[tokio::test]
 async fn test_simple_simulation_with_network_partition() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = create_chitchat_id("node-1");
     let chitchat_id_2 = create_chitchat_id("node-2");
@@ -637,7 +637,7 @@ async fn test_simple_simulation_with_network_partition() {
 
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition_2_nodes() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     const TIMEOUT: Duration = Duration::from_millis(500);
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = test_chitchat_id(1);
@@ -707,7 +707,7 @@ async fn test_marked_for_deletion_gc_with_network_partition_2_nodes() {
 
 #[tokio::test]
 async fn test_marked_for_deletion_gc_with_network_partition_4_nodes() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     const TIMEOUT: Duration = Duration::from_millis(500);
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
     let chitchat_id_1 = test_chitchat_id(1);
@@ -831,7 +831,7 @@ async fn test_marked_for_deletion_gc_with_network_partition_4_nodes() {
 // of nodes to 3 and keys to 1 or 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_simple_simulation_heavy_insert_delete() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     let mut rng = rng();
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(5));
     let mut chitchat_ids = Vec::new();
@@ -921,7 +921,7 @@ async fn test_simple_simulation_heavy_insert_delete() {
 
 #[tokio::test]
 async fn test_garbage_collected_node_only_recreated_if_new_heartbeat() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     const PROPAGATION_TIMEOUT: Duration = Duration::from_millis(500);
     const NODE_DELETION_GRACE_PERIOD: Duration = Duration::from_secs(4);
     let mut simulator = Simulator::new(Duration::from_millis(100), Duration::from_secs(1));
@@ -1006,7 +1006,7 @@ async fn test_garbage_collected_node_only_recreated_if_new_heartbeat() {
 
 #[tokio::test]
 async fn test_catchup_callback_after_partition() {
-    // let _ = tracing_subscriber::fmt::try_init();
+    chitchat::setup_tracing_for_tests();
     const PROPAGATION_TIMEOUT: Duration = Duration::from_millis(500);
     const KV_DELETION_GRACE_PERIOD: Duration = Duration::from_secs(1);
     let (catchup_callback_tx, mut catchup_callback_rx) = tokio::sync::mpsc::unbounded_channel();

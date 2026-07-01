@@ -35,6 +35,22 @@ pub use crate::server::{ChitchatHandle, spawn_chitchat};
 use crate::state::ClusterState;
 pub use crate::types::{ChitchatId, DeletionStatus, Heartbeat, Version, VersionedValue};
 
+/// Sets up a tracing subscriber writing to the test harness's captured
+/// output, so `cargo test` can display logs on failure.
+///
+/// Guarded by a `OnceLock` because `tracing::subscriber::set_global_default`
+/// can only be called once per process, and all tests in a given test
+/// binary run in the same process.
+#[cfg(any(test, feature = "testsuite"))]
+pub fn setup_tracing_for_tests() {
+    use std::sync::OnceLock;
+
+    static TRACING_INIT: OnceLock<()> = OnceLock::new();
+    TRACING_INIT.get_or_init(|| {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    });
+}
+
 /// Maximum UDP datagram payload size (in bytes).
 ///
 /// Note that 65KB typically won't fit in a single IP packet,
@@ -654,7 +670,7 @@ mod tests {
         // needs a reset, and a single delta would:
         // - not increase its max version after reset.
         // - not even bring the state to a max_version >= last_gc_version
-        // let _ = tracing_subscriber::fmt::try_init();
+        setup_tracing_for_tests();
         tokio::time::pause();
         let node_config1 = ChitchatConfig::for_test(10_001);
         let empty_seeds = watch::channel(Default::default()).1;
