@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::once;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use delta::Delta;
 use failure_detector::FailureDetector;
@@ -287,6 +288,22 @@ impl Chitchat {
     /// current node (also called "self node"), which is always considered alive.
     pub fn live_nodes(&self) -> impl Iterator<Item = &ChitchatId> {
         once(self.self_chitchat_id()).chain(self.failure_detector.live_nodes())
+    }
+
+    /// Returns the current adaptive failure detection timeout for a remote node.
+    ///
+    /// The timeout is the elapsed time since the node's last heartbeat at which its phi value
+    /// reaches the configured [`FailureDetectorConfig::phi_threshold`]. It changes as new
+    /// heartbeat intervals are observed and does not include the delay until the next liveness
+    /// update, which normally occurs during a gossip round.
+    ///
+    /// Returns `None` for the current node, unknown nodes, nodes without a valid heartbeat interval
+    /// sample, and nodes whose samples were reset after they were declared dead.
+    pub fn failure_detection_timeout(&self, chitchat_id: &ChitchatId) -> Option<Duration> {
+        if chitchat_id == self.self_chitchat_id() {
+            return None;
+        }
+        self.failure_detector.failure_detection_timeout(chitchat_id)
     }
 
     /// Returns a watch stream for monitoring changes in the cluster.
@@ -662,6 +679,37 @@ mod tests {
         node1.update_nodes_liveness();
         let live_nodes: HashSet<&ChitchatId> = node1.live_nodes().collect();
         assert_eq!(live_nodes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_chitchat_exposes_failure_detection_timeout() {
+        tokio::time::pause();
+        let mut config = ChitchatConfig::for_test(10_001);
+        config.failure_detector_config.phi_threshold = 2.0;
+        config.failure_detector_config.initial_interval = Duration::from_secs(1);
+        let self_chitchat_id = config.chitchat_id.clone();
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut chitchat = Chitchat::with_chitchat_id_and_seeds(config, empty_seeds, Vec::new());
+        let remote_chitchat_id = ChitchatId::for_local_test(10_002);
+
+        assert_eq!(chitchat.failure_detection_timeout(&self_chitchat_id), None);
+        assert_eq!(
+            chitchat.failure_detection_timeout(&remote_chitchat_id),
+            None
+        );
+
+        chitchat
+            .failure_detector
+            .report_heartbeat(&remote_chitchat_id);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        chitchat
+            .failure_detector
+            .report_heartbeat(&remote_chitchat_id);
+
+        assert_eq!(
+            chitchat.failure_detection_timeout(&remote_chitchat_id),
+            Some(Duration::from_secs(2))
+        );
     }
 
     #[tokio::test]

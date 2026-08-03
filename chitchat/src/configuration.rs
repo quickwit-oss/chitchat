@@ -20,15 +20,11 @@ pub struct ChitchatConfig {
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
     pub failure_detector_config: FailureDetectorConfig,
-    // Marked for deletion grace period expressed as a number of hearbeats.
-    // Chitchat ensures a key marked for deletion is eventually deleted by three mechanisms:
-    // - Garbage collection: each heartbeat, marked for deletion keys with `deletion now > instant
-    //   + marked_for_deletion_grace_period` are deleted.
-    // - Compute delta: for a given node digest, if `node_digest.heartbeat +
-    //   marked_for_deletion_grace_period < node_state.heartbeat` the node is flagged "to be reset"
-    //   and the delta is populated with all keys and values.
-    // - Apply delta: for a node flagged "to be reset", Chitchat will remove the node state and
-    //   populate a fresh new node state with the keys and values present in the delta.
+    /// How long tombstoned key-value pairs are retained before garbage collection.
+    ///
+    /// Garbage collection runs during gossip rounds. Chitchat records the version of the latest
+    /// garbage-collected tombstone so that peers which may have missed a deletion are reset and
+    /// repopulated from the remaining state.
     pub marked_for_deletion_grace_period: Duration,
     /// An optional callback executed when the self node is lagging behind. It
     /// is meant to wire up an external mechanism capable of catching up the
@@ -74,7 +70,7 @@ impl Default for ChitchatConfig {
             listen_addr,
             seed_nodes: Vec::new(),
             failure_detector_config: Default::default(),
-            marked_for_deletion_grace_period: Duration::from_secs(3_600 * 2), // 2h
+            marked_for_deletion_grace_period: Duration::from_secs(60 * 15), // 15mn
             catchup_callback: None,
             extra_liveness_predicate: None,
         }
