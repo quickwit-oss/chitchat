@@ -27,6 +27,14 @@ Not receiving any update from node for a given amount of time can therefore be
 regarded as a sign of failure. Rather than using a hard threshold,
 we use phi-accrual detection to dynamically compute a threshold.
 
+The resulting failure detection timeout is specific to each remote node and
+adapts to its observed heartbeat intervals. Clients can inspect the current
+timeout with `Chitchat::failure_detection_timeout`. The returned duration is
+measured from the last received heartbeat; the actual liveness transition takes
+place during a subsequent gossip round. This adaptive timeout is distinct from
+`dead_node_grace_period`, which controls how long state is retained after a node
+has been declared dead.
+
 We also abuse `chitchat` in Quickwit and use it like a reliable broadcast,
 with different caveats.
 

@@ -56,8 +56,7 @@ impl FailureDetector {
     /// Marks the node as dead or alive based on the current phi value.
     pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         let phi_opt = self.phi(chitchat_id);
-        let is_alive = self
-            .phi(chitchat_id)
+        let is_alive = phi_opt
             .map(|phi| phi <= self.config.phi_threshold)
             .unwrap_or(false);
         debug!(node_id=%chitchat_id.node_id, phi=?phi_opt, is_alive=is_alive, "computing node liveness");
@@ -123,8 +122,16 @@ impl FailureDetector {
     /// Returns the current phi value of a node.
     ///
     /// If we have received less than 2 heartbeat, `phi()` returns `None`.
-    fn phi(&mut self, chitchat_id: &ChitchatId) -> Option<f64> {
+    fn phi(&self, chitchat_id: &ChitchatId) -> Option<f64> {
         self.node_samples.get(chitchat_id)?.phi()
+    }
+
+    /// Returns the time without a heartbeat after which the node's phi value exceeds the
+    /// configured threshold.
+    pub(crate) fn failure_detection_timeout(&self, chitchat_id: &ChitchatId) -> Option<Duration> {
+        self.node_samples
+            .get(chitchat_id)?
+            .failure_detection_timeout(self.config.phi_threshold)
     }
 }
 
@@ -237,17 +244,30 @@ impl SamplingWindow {
         self.intervals.clear();
     }
 
+    /// Returns the smoothed mean heartbeat interval.
+    fn mean_interval(&self) -> Option<f64> {
+        // We avoid computing the mean if we have only received one heartbeat.
+        // It could be data from an old dead node after all.
+        let len_non_zero = NonZeroUsize::new(self.intervals.len())?;
+        Some(
+            self.additive_smoothing
+                .compute_mean(len_non_zero, self.intervals.sum()),
+        )
+    }
+
     /// Computes the sampling window's phi value.
     /// Returns `None` if have not received two heartbeat yet.
     pub fn phi(&self) -> Option<f64> {
-        // We avoid computing phi if we have only received one heartbeat.
-        // It could be data from an old dead node after all.
-        let len_non_zero = NonZeroUsize::new(self.intervals.len())?;
-        let sum = self.intervals.sum();
         let last_heartbeat = self.last_heartbeat?;
-        let interval_mean = self.additive_smoothing.compute_mean(len_non_zero, sum);
+        let interval_mean = self.mean_interval()?;
         let elapsed_time = last_heartbeat.elapsed().as_secs_f64();
         Some(elapsed_time / interval_mean)
+    }
+
+    /// Returns the elapsed time after the last heartbeat at which phi reaches `phi_threshold`.
+    fn failure_detection_timeout(&self, phi_threshold: f64) -> Option<Duration> {
+        let timeout_secs = self.mean_interval()? * phi_threshold;
+        Duration::try_from_secs_f64(timeout_secs).ok()
     }
 }
 

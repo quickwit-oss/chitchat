@@ -15,7 +15,7 @@ getrandom,https://github.com/rust-random/getrandom,MIT OR Apache-2.0,The Rand Pr
 hashbrown,https://github.com/rust-lang/hashbrown,MIT OR Apache-2.0,The hashbrown Authors
 itertools,https://github.com/rust-itertools/itertools,MIT OR Apache-2.0,bluss
 lazy_static,https://github.com/rust-lang-nursery/lazy-static.rs,MIT OR Apache-2.0,Marvin Löbel <loebel.marvin@gmail.com>
-libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Developers
+libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The libc Authors
 log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Developers
 lru,https://github.com/jeromefroe/lru-rs,MIT,Jerome Froelich <jeromefroelic@hotmail.com>
 mio,https://github.com/tokio-rs/mio,MIT,"Carl Lerche <me@carllerche.com>, Thomas de Zeeuw <thomasdezeeuw@gmail.com>, Tokio Contributors <team@tokio.rs>"
