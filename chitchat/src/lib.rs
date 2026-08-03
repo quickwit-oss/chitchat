@@ -7,6 +7,7 @@ mod digest;
 mod failure_detector;
 mod listener;
 mod message;
+mod message_serialize;
 pub(crate) mod serialize;
 mod server;
 mod state;
@@ -31,7 +32,7 @@ use tracing::{error, info, warn};
 pub use self::configuration::{CatchupCallback, ChitchatConfig};
 pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
-pub use crate::message::ChitchatMessage;
+pub use crate::message::{ChitchatEnvelope, ChitchatMessage, ProtocolVersion};
 pub use crate::server::{ChitchatHandle, spawn_chitchat};
 use crate::state::ClusterState;
 pub use crate::types::{ChitchatId, DeletionStatus, Heartbeat, Version, VersionedValue};
@@ -62,6 +63,15 @@ pub fn setup_tracing_for_tests() {
 /// An Ethernet frame size of 1400B would limit us to 20 nodes
 /// or so.
 pub(crate) const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = 65_507;
+
+/// Number of bytes left for a delta payload in a single reply datagram, once
+/// the message header and `reserved_len` bytes (e.g. a digest carried in the
+/// same message) are accounted for.
+pub(crate) const fn delta_mtu(reserved_len: usize) -> usize {
+    MAX_UDP_DATAGRAM_PAYLOAD_SIZE
+        .saturating_sub(ChitchatEnvelope::HEADER_LEN)
+        .saturating_sub(reserved_len)
+}
 
 /// To prevent dead nodes from being recorded again after deletion,
 /// we keep a local memory of the last nodes that were garbage collected.
@@ -152,10 +162,10 @@ impl Chitchat {
                 let scheduled_for_deletion: HashSet<_> =
                     self.scheduled_for_deletion_nodes().collect();
                 let self_digest = self.compute_digest(&scheduled_for_deletion);
-                let delta_mtu = MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 - self_digest.serialized_len();
+                let protocol_version = self.config.protocol_version;
                 let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
-                    delta_mtu,
+                    delta_mtu(self_digest.serialized_len(protocol_version)),
                     &scheduled_for_deletion,
                 );
                 Some(ChitchatMessage::SynAck {
@@ -170,7 +180,7 @@ impl Chitchat {
                     self.scheduled_for_deletion_nodes().collect::<HashSet<_>>();
                 let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
                     &digest,
-                    MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1,
+                    delta_mtu(0),
                     &scheduled_for_deletion,
                 );
                 Some(ChitchatMessage::Ack { delta })
@@ -517,6 +527,44 @@ mod tests {
 
     const DEAD_NODE_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
+    /// Guards against the protocol drifting (a new header byte, a different
+    /// digest encoding, ...) without `delta_mtu`/`HEADER_LEN` being updated to
+    /// match: the number of bytes `delta_mtu` reserves for everything but the
+    /// delta must equal what a real reply message actually serializes to,
+    /// otherwise the delta could overflow the datagram.
+    #[test]
+    fn test_delta_mtu_matches_serialization() {
+        // The delta content is irrelevant here; we only measure the overhead
+        // around it.
+        let delta_len = Delta::default().serialize_to_vec().len();
+
+        // SYN-ACK carries a digest, whose serialized length must be reserved.
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            let digest = Digest::sample_for_test(5);
+            let reserved = digest.serialized_len(protocol_version);
+            let syn_ack_envelope = ChitchatEnvelope {
+                version: protocol_version,
+                message: ChitchatMessage::SynAck {
+                    digest,
+                    delta: Delta::default(),
+                },
+            };
+            let envelope_len = syn_ack_envelope.serialize_to_vec().len();
+            assert_eq!(
+                envelope_len - delta_len,
+                MAX_UDP_DATAGRAM_PAYLOAD_SIZE - delta_mtu(reserved),
+            );
+        }
+
+        // ACK reserves nothing beyond the header.
+        let ack_envelope = ChitchatEnvelope::new_ack_v0(Delta::default());
+        let envelope_len = ack_envelope.serialize_to_vec().len();
+        assert_eq!(
+            envelope_len - delta_len,
+            MAX_UDP_DATAGRAM_PAYLOAD_SIZE - delta_mtu(0),
+        );
+    }
+
     fn run_chitchat_handshake(initiating_node: &mut Chitchat, peer_node: &mut Chitchat) {
         let syn_message = initiating_node.create_syn_message();
         let syn_ack_message = peer_node.process_message(syn_message).unwrap();
@@ -578,6 +626,7 @@ mod tests {
             marked_for_deletion_grace_period: Duration::from_secs(3_600),
             catchup_callback: None,
             extra_liveness_predicate: None,
+            protocol_version: ProtocolVersion::V0,
         };
         start_node_with_config(transport, config).await
     }
@@ -789,6 +838,7 @@ mod tests {
             extra_liveness_predicate: Some(Box::new(|node_state| {
                 node_state.get("READY") == Some("true")
             })),
+            protocol_version: ProtocolVersion::V0,
         };
         let mut nodes = Vec::new();
         for chitchat_id in &chitchat_ids {
@@ -1534,10 +1584,14 @@ mod tests {
         // Verify that the serialized reply fits within the max MTU.
 
         let mut buf = Vec::new();
-        ack.serialize(&mut buf);
+        let ack_envelope = ChitchatEnvelope {
+            version: ProtocolVersion::V0,
+            message: ack,
+        };
+        ack_envelope.serialize(&mut buf);
         assert!(buf.len() < MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
-        let ChitchatMessage::SynAck { delta, .. } = ack else {
-            panic!("Expected SynAck, got {:?}", ack);
+        let ChitchatMessage::SynAck { delta, .. } = ack_envelope.message else {
+            panic!("Expected SynAck, got {:?}", ack_envelope.message);
         };
         assert_eq!(delta.node_deltas.len(), 4);
     }

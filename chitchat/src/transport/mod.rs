@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use async_trait::async_trait;
 
-use crate::message::ChitchatMessage;
+use crate::message::ChitchatEnvelope;
 
 mod channel;
 mod udp;
@@ -19,12 +19,18 @@ pub trait Transport: Send + Sync + 'static {
 
 #[async_trait]
 pub trait Socket: Send + Sync + 'static {
+    // The envelope carries the protocol version selecting the wire format it
+    // is encoded with (see `message_serialize`).
+    //
     // Only returns an error if the transport is broken and may not emit message
     // in the future.
-    async fn send(&mut self, to: SocketAddr, msg: ChitchatMessage) -> anyhow::Result<()>;
+    async fn send(&mut self, to: SocketAddr, envelope: ChitchatEnvelope) -> anyhow::Result<()>;
+    // Returns the envelope containing the message and its protocol version, so a
+    // responder can echo the version (see `message_serialize`).
+    //
     // Only returns an error if the transport is broken and may not receive message
     // in the future.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)>;
+    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)>;
 }
 
 #[cfg(test)]
@@ -38,14 +44,16 @@ mod tests {
     use super::Transport;
     use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
     use crate::digest::Digest;
-    use crate::message::ChitchatMessage;
-    use crate::serialize::Serializable;
+    use crate::message::{ChitchatEnvelope, ChitchatMessage, ProtocolVersion};
     use crate::transport::{ChannelTransport, UdpTransport};
 
-    fn sample_syn_msg() -> ChitchatMessage {
-        ChitchatMessage::Syn {
-            cluster_id: "cluster_id".to_string(),
-            digest: Digest::default(),
+    fn sample_syn_envelope() -> ChitchatEnvelope {
+        ChitchatEnvelope {
+            version: ProtocolVersion::V0,
+            message: ChitchatMessage::Syn {
+                cluster_id: "cluster_id".to_string(),
+                digest: Digest::default(),
+            },
         }
     }
 
@@ -60,16 +68,16 @@ mod tests {
             .send_to(&invalid_payload[..], recv_addr)
             .await
             .unwrap();
-        let valid_message = sample_syn_msg();
+        let valid_envelope = sample_syn_envelope();
         let mut valid_payload: Vec<u8> = Vec::new();
-        valid_message.serialize(&mut valid_payload);
+        valid_envelope.serialize(&mut valid_payload);
         send_udp_socket
             .send_to(&valid_payload[..], recv_addr)
             .await
             .unwrap();
-        let (send_addr2, received_message) = recv_socket.recv().await.unwrap();
+        let (send_addr2, received_envelope) = recv_socket.recv().await.unwrap();
         assert_eq!(send_addr, send_addr2);
-        assert_eq!(received_message, valid_message);
+        assert_eq!(received_envelope, valid_envelope);
     }
 
     async fn test_transport_cannot_open_twice_aux(transport: &dyn Transport) {
@@ -78,7 +86,7 @@ mod tests {
         assert!(transport.open(addr).await.is_err());
     }
 
-    async fn test_transport_recv_waits_for_message(transport: &dyn Transport) {
+    async fn test_transport_recv_waits_for_envelope(transport: &dyn Transport) {
         let addr1: SocketAddr = ([127, 0, 0, 1], 20_001u16).into();
         let addr2: SocketAddr = ([127, 0, 0, 1], 20_002u16).into();
         let mut socket1 = transport.open(addr1).await.unwrap();
@@ -88,11 +96,11 @@ mod tests {
                 .await
                 .is_err()
         );
-        let syn_message = sample_syn_msg();
+        let syn_envelope = sample_syn_envelope();
         let socket_recv_fut = tokio::task::spawn(async move { socket2.recv().await.unwrap() });
         tokio::time::sleep(Duration::from_millis(100)).await;
-        socket1.send(addr2, syn_message).await.unwrap();
-        let (exp1, _received_msg) = socket_recv_fut.await.unwrap();
+        socket1.send(addr2, syn_envelope).await.unwrap();
+        let (exp1, _received_envelope) = socket_recv_fut.await.unwrap();
         assert_eq!(addr1, exp1);
     }
 
@@ -107,13 +115,16 @@ mod tests {
         let addr: SocketAddr = ([127, 0, 0, 1], 40_000u16).into();
         let unbound_addr: SocketAddr = ([127, 0, 0, 1], 40_001u16).into();
         let mut socket = transport.open(addr).await.unwrap();
-        socket.send(unbound_addr, sample_syn_msg()).await.unwrap()
+        socket
+            .send(unbound_addr, sample_syn_envelope())
+            .await
+            .unwrap()
     }
 
     async fn test_transport_suite(transport: &dyn Transport) {
         test_transport_cannot_open_twice_aux(transport).await;
         test_transport_socket_released_on_drop(transport).await;
-        test_transport_recv_waits_for_message(transport).await;
+        test_transport_recv_waits_for_envelope(transport).await;
         test_transport_sending_to_unbound_addr_is_ok(transport).await;
     }
 

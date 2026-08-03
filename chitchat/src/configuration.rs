@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::{ChitchatId, FailureDetectorConfig, NodeState};
+use crate::{ChitchatId, FailureDetectorConfig, NodeState, ProtocolVersion};
 
 /// An optional user-defined callback executed when the self node is lagging behind.
 pub type CatchupCallback = Box<dyn Fn() + Send>;
@@ -37,6 +37,10 @@ pub struct ChitchatConfig {
     // It can be used for instance, to only surface the nodes that are both alive according
     // to the failure detector, but also have a given set of required keys.
     pub extra_liveness_predicate: Option<ExtraLivenessPredicate>,
+    /// Protocol version used to exchange messages between peers. The latest version is V1, which
+    /// compresses the digest. This MUST stay `V0` until every node in the cluster runs a version
+    /// able to decode the newer format.
+    pub protocol_version: ProtocolVersion,
 }
 
 impl ChitchatConfig {
@@ -54,6 +58,7 @@ impl ChitchatConfig {
             marked_for_deletion_grace_period: Duration::from_secs(10_000),
             catchup_callback: None,
             extra_liveness_predicate: None,
+            protocol_version: ProtocolVersion::V0,
         }
     }
 }
@@ -73,6 +78,7 @@ impl Default for ChitchatConfig {
             marked_for_deletion_grace_period: Duration::from_secs(60 * 15), // 15mn
             catchup_callback: None,
             extra_liveness_predicate: None,
+            protocol_version: ProtocolVersion::V0,
         }
     }
 }

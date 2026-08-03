@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use chitchat::transport::UdpTransport;
-use chitchat::{Chitchat, ChitchatConfig, ChitchatId, FailureDetectorConfig, spawn_chitchat};
+use chitchat::{
+    Chitchat, ChitchatConfig, ChitchatId, FailureDetectorConfig, ProtocolVersion, spawn_chitchat,
+};
 use chitchat_test::{ApiResponse, SetKeyValueResponse};
 use cool_id_generator::Size;
 use poem::listener::TcpListener;
@@ -112,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         marked_for_deletion_grace_period: Duration::from_secs(60),
         catchup_callback: None,
         extra_liveness_predicate: None,
+        protocol_version: ProtocolVersion::V1,
     };
     let chitchat_handler = spawn_chitchat(config, Vec::new(), &UdpTransport).await?;
     let chitchat = chitchat_handler.chitchat();

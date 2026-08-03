@@ -5,9 +5,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::serialize::{Deserializable, Serializable};
+use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+use crate::message::ChitchatEnvelope;
 use crate::transport::{Socket, Transport};
-use crate::{ChitchatMessage, MAX_UDP_DATAGRAM_PAYLOAD_SIZE};
 
 pub struct UdpTransport;
 
@@ -51,25 +51,29 @@ fn is_transient_io_error(err: &io::Error) -> bool {
 
 #[async_trait]
 impl Socket for UdpSocket {
-    async fn send(&mut self, to_addr: SocketAddr, message: ChitchatMessage) -> anyhow::Result<()> {
+    async fn send(
+        &mut self,
+        to_addr: SocketAddr,
+        envelope: ChitchatEnvelope,
+    ) -> anyhow::Result<()> {
         self.buf_send.clear();
-        message.serialize(&mut self.buf_send);
+        envelope.serialize(&mut self.buf_send);
         self.send_bytes(to_addr, &self.buf_send).await?;
         Ok(())
     }
 
     /// Recv needs to be cancellable.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatMessage)> {
+    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)> {
         loop {
-            if let Some(message) = self.receive_one().await? {
-                return Ok(message);
+            if let Some(envelope) = self.receive_one().await? {
+                return Ok(envelope);
             }
         }
     }
 }
 
 impl UdpSocket {
-    async fn receive_one(&mut self) -> anyhow::Result<Option<(SocketAddr, ChitchatMessage)>> {
+    async fn receive_one(&mut self) -> anyhow::Result<Option<(SocketAddr, ChitchatEnvelope)>> {
         let (len, from_addr) = match self.socket.recv_from(&mut self.buf_recv[..]).await {
             Ok(result) => result,
             Err(err) if is_transient_io_error(&err) => {
@@ -81,8 +85,8 @@ impl UdpSocket {
             }
         };
         let mut buf = &self.buf_recv[..len];
-        match ChitchatMessage::deserialize(&mut buf) {
-            Ok(msg) => Ok(Some((from_addr, msg))),
+        match ChitchatEnvelope::deserialize(&mut buf) {
+            Ok(envelope) => Ok(Some((from_addr, envelope))),
             Err(err) => {
                 warn!(payload_len=len, from=%from_addr, err=%err, "invalid-chitchat-payload");
                 Ok(None)

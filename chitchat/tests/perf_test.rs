@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use chitchat::transport::{ChannelTransport, Transport, TransportExt};
 use chitchat::{
-    ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState, spawn_chitchat,
+    ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState, ProtocolVersion,
+    spawn_chitchat,
 };
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
@@ -32,6 +33,7 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
         marked_for_deletion_grace_period: Duration::from_secs(10_000),
         catchup_callback: None,
         extra_liveness_predicate: None,
+        protocol_version: ProtocolVersion::V0,
     };
     spawn_chitchat(config, Vec::new(), transport).await.unwrap()
 }

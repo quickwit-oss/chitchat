@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use chitchat::transport::ChannelTransport;
 use chitchat::{
     Chitchat, ChitchatConfig, ChitchatHandle, ChitchatId, FailureDetectorConfig, NodeState,
-    spawn_chitchat,
+    ProtocolVersion, spawn_chitchat,
 };
 use itertools::Itertools;
 use rand::prelude::IndexedRandom;
@@ -434,6 +434,7 @@ impl Simulator {
             marked_for_deletion_grace_period: self.marked_for_deletion_key_grace_period,
             catchup_callback,
             extra_liveness_predicate: None,
+            protocol_version: ProtocolVersion::V0,
         };
         let handle = spawn_chitchat(config, Vec::new(), &self.transport)
             .await

@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{debug, warn};
 
-use crate::message::ChitchatMessage;
+use crate::message::ChitchatEnvelope;
 use crate::transport::{Socket, Transport};
 use crate::{Chitchat, ChitchatConfig, ChitchatId};
 
@@ -236,15 +236,15 @@ impl Server {
         }
     }
 
-    /// Listen for new Chitchat messages.
+    /// Listen for new Chitchat envelopes.
     async fn run(&mut self) -> anyhow::Result<()> {
         let gossip_interval = self.chitchat.lock().await.config.gossip_interval;
         let mut gossip_interval = time::interval(gossip_interval);
         loop {
             tokio::select! {
                 result = self.transport.recv() => match result {
-                    Ok((from_addr, message)) => {
-                        let _ = self.handle_message(from_addr, message).await;
+                    Ok((from_addr, envelope)) => {
+                        let _ = self.handle_envelope(from_addr, envelope).await;
                     }
                     // Transient errors (e.g. ENOBUFS) are swallowed inside
                     // Socket::recv. An error here means the socket is broken.
@@ -268,16 +268,21 @@ impl Server {
     }
 
     /// Processes a single UDP datagram.
-    async fn handle_message(
+    async fn handle_envelope(
         &mut self,
         from_addr: SocketAddr,
-        message: ChitchatMessage,
+        envelope: ChitchatEnvelope,
     ) -> anyhow::Result<()> {
+        let version = envelope.version;
         // Handle gossip message from other servers.
-        let response = self.chitchat.lock().await.process_message(message);
-        // Send reply if necessary.
+        let response = self.chitchat.lock().await.process_message(envelope.message);
+        // Send the reply, if any, echoing the version the peer used: having
+        // decoded its message we know it supports that format, so the reply is
+        // guaranteed to be decodable on its end.
         if let Some(message) = response {
-            self.transport.send(from_addr, message).await?;
+            self.transport
+                .send(from_addr, ChitchatEnvelope { version, message })
+                .await?;
         }
         Ok(())
     }
@@ -343,7 +348,13 @@ impl Server {
 
     /// Gossips with another peer.
     async fn gossip(&mut self, addr: SocketAddr) -> anyhow::Result<()> {
-        let syn = self.chitchat.lock().await.create_syn_message();
+        let syn = {
+            let chitchat = self.chitchat.lock().await;
+            ChitchatEnvelope {
+                version: chitchat.config.protocol_version,
+                message: chitchat.create_syn_message(),
+            }
+        };
         self.transport.send(addr, syn).await?;
         Ok(())
     }
@@ -448,7 +459,7 @@ mod tests {
     use tokio_stream::{Stream, StreamExt};
 
     use super::*;
-    use crate::message::ChitchatMessage;
+    use crate::message::{ChitchatEnvelope, ChitchatMessage, ProtocolVersion};
     use crate::transport::{ChannelTransport, Transport};
     use crate::{Heartbeat, MAX_UDP_DATAGRAM_PAYLOAD_SIZE, NodeState};
 
@@ -496,9 +507,9 @@ mod tests {
             .await
             .unwrap();
         server.gossip(peer_addr).unwrap();
-        let (from, message) = timeout(peer_transport.recv()).await.unwrap();
+        let (from, envelope) = timeout(peer_transport.recv()).await.unwrap();
         assert_eq!(from, test_addr);
-        match message {
+        match envelope.message {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 assert_eq!(cluster_id, "default-cluster");
                 assert_eq!(digest.node_digests.len(), 1);
@@ -531,14 +542,64 @@ mod tests {
             .unwrap();
 
         let syn = chitchat.create_syn_message();
-        transport2.send(addr1, syn).await.unwrap();
+        transport2
+            .send(
+                addr1,
+                ChitchatEnvelope {
+                    version: ProtocolVersion::V0,
+                    message: syn,
+                },
+            )
+            .await
+            .unwrap();
 
-        let (from1, msg) = transport2.recv().await.unwrap();
+        let (from1, envelope) = transport2.recv().await.unwrap();
         assert_eq!(from1, addr1);
-        match msg {
+        match envelope.message {
             ChitchatMessage::SynAck { .. } => (),
             message => panic!("unexpected message: {message:?}"),
         }
+    }
+
+    // A responder must reply using the protocol version of the SYN it received,
+    // not its own: a V1-capable node answering a V0 SYN replies in V0 so the
+    // (possibly older) initiator can decode it.
+    #[tokio::test]
+    async fn test_syn_ack_echoes_syn_protocol_version() {
+        let transport = ChannelTransport::with_mtu(MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+
+        let initiator_config = ChitchatConfig::for_test(2);
+        let mut initiator_transport = transport
+            .open(initiator_config.chitchat_id.gossip_advertise_addr)
+            .await
+            .unwrap();
+
+        // The responder speaks the newer protocol version...
+        let mut responder_config = ChitchatConfig::for_test(1);
+        responder_config.protocol_version = ProtocolVersion::V1;
+        let responder_addr = responder_config.chitchat_id.gossip_advertise_addr;
+        let initiator =
+            Chitchat::with_chitchat_id_and_seeds(initiator_config, empty_seeds(), Vec::new());
+        let _handler = spawn_chitchat(responder_config, Vec::new(), &transport)
+            .await
+            .unwrap();
+
+        // ...but the initiator sends a V0 SYN.
+        let syn = initiator.create_syn_message();
+        initiator_transport
+            .send(
+                responder_addr,
+                ChitchatEnvelope {
+                    version: ProtocolVersion::V0,
+                    message: syn,
+                },
+            )
+            .await
+            .unwrap();
+
+        let (_from, envelope) = timeout(initiator_transport.recv()).await.unwrap();
+        assert_eq!(envelope.version, ProtocolVersion::V0);
+        assert!(matches!(envelope.message, ChitchatMessage::SynAck { .. }));
     }
 
     #[tokio::test]
@@ -560,10 +621,19 @@ mod tests {
             .unwrap();
 
         let syn = outsider.create_syn_message();
-        outsider_transport.send(server_addr, syn).await.unwrap();
+        outsider_transport
+            .send(
+                server_addr,
+                ChitchatEnvelope {
+                    version: ProtocolVersion::V0,
+                    message: syn,
+                },
+            )
+            .await
+            .unwrap();
 
-        let (_from_addr, syn_ack) = timeout(outsider_transport.recv()).await.unwrap();
-        match syn_ack {
+        let (_from_addr, envelope) = timeout(outsider_transport.recv()).await.unwrap();
+        match envelope.message {
             ChitchatMessage::BadCluster => (),
             message => panic!("unexpected message: {message:?}"),
         }
@@ -583,10 +653,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (from, message) = timeout(seed_transport.recv()).await.unwrap();
+        let (from, envelope) = timeout(seed_transport.recv()).await.unwrap();
         assert_eq!(from, client_addr);
 
-        match message {
+        match envelope.message {
             ChitchatMessage::Syn { .. } => (),
             message => panic!("unexpected message: {message:?}"),
         }
@@ -633,16 +703,25 @@ mod tests {
         assert_eq!(heartbeat, Heartbeat(2));
 
         // Wait for syn, with updated heartbeat
-        let (_, syn) = timeout(test_transport.recv()).await.unwrap();
+        let (_, syn_envelope) = timeout(test_transport.recv()).await.unwrap();
 
         // Reply.
-        let syn_ack = test_chitchat.process_message(syn).unwrap();
-        test_transport.send(server_addr, syn_ack).await.unwrap();
+        let syn_ack = test_chitchat.process_message(syn_envelope.message).unwrap();
+        test_transport
+            .send(
+                server_addr,
+                ChitchatEnvelope {
+                    version: ProtocolVersion::V0,
+                    message: syn_ack,
+                },
+            )
+            .await
+            .unwrap();
 
         // Wait for delta to ensure heartbeat key was incremented.
         let delta = loop {
-            let (_, chitchat_message) = timeout(test_transport.recv()).await.unwrap();
-            if let ChitchatMessage::Ack { delta } = chitchat_message {
+            let (_, envelope) = timeout(test_transport.recv()).await.unwrap();
+            if let ChitchatMessage::Ack { delta } = envelope.message {
                 break delta;
             };
         };
@@ -795,7 +874,10 @@ mod tests {
             .unwrap();
 
         test_transport
-            .send(server_listen_addr, ChitchatMessage::PanicForTest)
+            .send(
+                server_listen_addr,
+                ChitchatEnvelope::new_panic_for_test_v0(),
+            )
             .await
             .unwrap();
         let err = server_handle.termination_watcher().await.unwrap_err();
