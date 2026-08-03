@@ -39,7 +39,7 @@ The difference is subtle, but comes from an important optimization of scuttlebut
 If a node asks for an update above $max\_version = m$, and that for a given key $k$ there are two updates after $m$, there is no need to send the first one: it will eventually be overridden by the second one.
 
 - `last_gc_version`: Rather than being deleted right away, the algorithm is using a tombstone mechanism. Key entries are kept by marked as deleted. From the client point of view, everything looks like the key really has been deleted. Eventually, in order
-to free memory, we garbage collect all of the key values marked for deletion that are older than a few hours. We then keep track of the maximum `last_gc_version`.
+to free memory, we garbage collect all of the key values marked for deletion that are older than 15 minutes or so. We then keep track of the maximum `last_gc_version`.
 
 At each round of the protocol, a node maintains a pair $(last\_gc\_version, max\_version)$ which can only increase in lexicographical order.
 
@@ -62,7 +62,3 @@ increase $(last\_gc\_version, max\_version)$ lexicographically.
 
 Due to the nature of UDP and to the concurrent handshake, deltas may not arrive in order or be duplicated. For this reason, upon reception of a delta, a node must ensure that the delta can be applied to the current state, without breaking the invariant,
 and increasing $(last\_gc\_version, max\_version)$.
-
-
-
-

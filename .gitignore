@@ -16,3 +16,5 @@ Cargo.lock
 
 .cargo
 deps
+
+**/.DS_Store

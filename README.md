@@ -60,8 +60,11 @@ To avoid keeping deleted KV indefinitely, the library includes a GC mechanism.
 Every tombstone is associated with a monotonic timestamp.
 It is local in the sense that it is computed locally to the given node, and never shared with other servers.
 
-All KV with a timestamp older than a given `marked_for_deletion_grace_period` will be deleted upon delete operations. (Note for a given KV, GC can happen at different
-times on different nodes.)
+All KVs with a timestamp older than the configured
+`marked_for_deletion_grace_period` are garbage-collected during periodic gossip
+rounds. GC can happen at different times on different nodes. `ChitchatConfig`
+requires callers to configure this value explicitly; the recommended value is
+15 minutes.
 
 This yields the following problem. If a node was disconnected for more than
 `marked_for_deletion_grace_period`, they could have missed the deletion of a KV and never be aware of it.
@@ -93,28 +96,39 @@ For this reason, we keep emitting KVs from dead nodes too.
 To avoid keeping the state of dead nodes indefinitely, we make
 a very important trade off.
 
-If a node is marked as dead for more than `DEAD_NODE_GRACE_PERIOD`, we assume that its state can be safely removed from the system. The grace period is
-computed from the last time we received an update from the dead node.
+If a node is marked as dead for more than `dead_node_grace_period`, we assume
+that its state can be safely removed from the system. The grace period is
+computed from the last time we received an update from the dead node. It is
+configured through `FailureDetectorConfig` and defaults to 24 hours.
 
-Just deleting the state is of course impossible. After the given `DEAD_NODE_GRACE_PERIOD / 2`, we will mark the dead node as `ScheduledForDeletion`.
+Just deleting the state is of course impossible. After the given
+`dead_node_grace_period / 2`, we will mark the dead node as
+`ScheduledForDeletion`.
 
 We first stop sharing data about nodes in the `ScheduledForDeletion` state,
-nor listing them node in our digest.
+and we stop including them in our digests.
 
 We also ignore any updates received about the dead node. For simplification, we do not even keep track of the last update received. Eventually, all the nodes of the cluster will have marked the dead node as `ScheduledForDeletion`.
 
-After another `DEAD_NODE_GRACE_PERIOD` / 2 has elapsed since the last update received, we delete the dead node state.
+After another `dead_node_grace_period / 2` has elapsed since the last update
+received, we delete the dead node state.
 
-It is important to set `DEAD_NODE_GRACE_PERIOD` with a value such `DEAD_NODE_GRACE_PERIOD / 2` is much greater than the period it takes to detect a faulty node.
+It is important to set `dead_node_grace_period` to a value such that
+`dead_node_grace_period / 2` is much greater than the period it takes to detect
+a faulty node.
 
 Note that we are here breaking the reliable broadcast nature of chitchat.
-New nodes joining after `DEAD_NODE_GRACE_PERIOD` for instance, will never know about the state of the dead node.
+New nodes joining after `dead_node_grace_period`, for instance, will never know
+about the state of the dead node.
 
-Also, if a node was disconnected from the cluster for more than `DEAD_NODE_GRACE_PERIOD / 2` and reconnects, it is likely to spread information
+Also, if a node was disconnected from the cluster for more than
+`dead_node_grace_period / 2` and reconnects, it is likely to spread information
 about the dead node again. Worse, it could not know about the deletion
 of some specific KV and spread them again.
 
-The chitchat library does not include any mechanism to prevent this from happening. They should however eventually get deleted (after a bit more than `DEAD_NODE_GRACE_PERIOD`) if the node is really dead.
+The chitchat library does not include any mechanism to prevent this from
+happening. They should however eventually get deleted (after a bit more than
+`dead_node_grace_period`) if the node is really dead.
 
 If the node is alive, it should be able to fix everyone's state via reset or regular delta.
 
