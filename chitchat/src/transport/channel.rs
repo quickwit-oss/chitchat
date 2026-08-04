@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
 
 use crate::message::ChitchatEnvelope;
-use crate::transport::{Socket, Transport};
+use crate::transport::{RecvOutcome, SendOutcome, Socket, Transport};
 
 const MAX_MESSAGE_PER_CHANNEL: usize = 100;
 
@@ -27,7 +27,7 @@ impl Statistics {
 
 #[derive(Default)]
 struct ChannelTransportInner {
-    send_channels: HashMap<SocketAddr, Sender<(SocketAddr, ChitchatEnvelope)>>,
+    send_channels: HashMap<SocketAddr, Sender<RecvOutcome>>,
     statistics: Statistics,
     pub removed_links: HashMap<SocketAddr, HashSet<SocketAddr>>,
 }
@@ -40,9 +40,19 @@ pub struct ChannelTransport {
 
 #[async_trait]
 impl Transport for ChannelTransport {
-    async fn open(&self, listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
+    async fn open(&self, mut listen_addr: SocketAddr) -> anyhow::Result<Box<dyn Socket>> {
         let mut inner_lock = self.inner.lock().unwrap();
         let (envelope_tx, envelope_rx) = tokio::sync::mpsc::channel(MAX_MESSAGE_PER_CHANNEL);
+        if listen_addr.port() == 0 {
+            // Find an available "logical" port.
+            let available_port = (1..=u16::MAX)
+                .find(|port| {
+                    listen_addr.set_port(*port);
+                    !inner_lock.send_channels.contains_key(&listen_addr)
+                })
+                .context("could not find available port")?;
+            listen_addr.set_port(available_port);
+        }
         if inner_lock.send_channels.contains_key(&listen_addr) {
             bail!("Address not available `{listen_addr}`");
         }
@@ -55,14 +65,16 @@ impl Transport for ChannelTransport {
     }
 }
 
-fn serialize_deserialize_chitchat_envelope(envelope: ChitchatEnvelope) -> ChitchatEnvelope {
+fn serialize_deserialize_chitchat_envelope(
+    envelope: ChitchatEnvelope,
+) -> (ChitchatEnvelope, usize) {
     let buf = envelope.serialize_to_vec();
-    assert_eq!(buf.len(), envelope.serialized_len());
+    let num_bytes = buf.len();
     let mut read_cursor: &[u8] = &buf[..];
     let envelope_ser_deser = ChitchatEnvelope::deserialize(&mut read_cursor).unwrap();
     assert_eq!(envelope, envelope_ser_deser);
     assert!(read_cursor.is_empty());
-    envelope
+    (envelope_ser_deser, num_bytes)
 }
 
 impl ChannelTransport {
@@ -100,27 +112,31 @@ impl ChannelTransport {
         from_addr: SocketAddr,
         to_addr: SocketAddr,
         envelope: ChitchatEnvelope,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<SendOutcome> {
         // We serialize/deserialize the envelope to get closer to the real world.
-        let envelope = serialize_deserialize_chitchat_envelope(envelope);
-        let num_bytes = envelope.serialized_len();
+        let (envelope, num_bytes_sent) = serialize_deserialize_chitchat_envelope(envelope);
+        let send_outcome = SendOutcome { num_bytes_sent };
         if let Some(mtu) = self.mtu_opt {
-            if num_bytes > mtu {
+            if num_bytes_sent > mtu {
                 bail!("Serialized message size exceeds MTU.");
             }
         }
         let mut inner_lock = self.inner.lock().unwrap();
-        inner_lock.statistics.record_message_len(num_bytes);
+        inner_lock.statistics.record_message_len(num_bytes_sent);
         if let Some(to_addrs) = inner_lock.removed_links.get(&from_addr) {
             if to_addrs.contains(&to_addr) {
-                return Ok(());
+                return Ok(send_outcome);
             }
         }
         if let Some(envelope_tx) = inner_lock.send_channels.get(&to_addr) {
             // if the channel is saturated, we start dropping messages.
-            let _ = envelope_tx.try_send((from_addr, envelope));
+            let _ = envelope_tx.try_send(RecvOutcome {
+                from_addr,
+                envelope,
+                num_bytes_received: num_bytes_sent
+            });
         }
-        Ok(())
+        Ok(send_outcome)
     }
 
     fn close(&self, addr: SocketAddr) {
@@ -133,26 +149,26 @@ impl ChannelTransport {
 struct InProcessSocket {
     listen_addr: SocketAddr,
     broker: ChannelTransport,
-    envelope_rx: Receiver<(SocketAddr, ChitchatEnvelope)>,
+    envelope_rx: Receiver<RecvOutcome>,
 }
 
 #[async_trait]
 impl Socket for InProcessSocket {
+    fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(self.listen_addr)
+    }
+
     async fn send(
         &mut self,
         to_addr: SocketAddr,
         envelope: ChitchatEnvelope,
-    ) -> anyhow::Result<()> {
-        self.broker
-            .send(self.listen_addr, to_addr, envelope)
-            .await?;
-        Ok(())
+    ) -> anyhow::Result<SendOutcome> {
+        self.broker.send(self.listen_addr, to_addr, envelope).await
     }
 
     /// Recv needs to be cancellable.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)> {
-        let (from_addr, envelope) = self.envelope_rx.recv().await.context("Channel closed")?;
-        Ok((from_addr, envelope))
+    async fn recv(&mut self) -> anyhow::Result<RecvOutcome> {
+        self.envelope_rx.recv().await.context("Channel closed")
     }
 }
 

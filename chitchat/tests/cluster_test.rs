@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{SocketAddr, TcpListener};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -444,7 +444,7 @@ impl Simulator {
 }
 
 pub fn create_chitchat_id(id: &str) -> ChitchatId {
-    let port = find_available_tcp_port().unwrap();
+    let port = next_simulated_port();
     ChitchatId {
         node_id: Arc::from(id),
         generation_id: 0,
@@ -460,30 +460,13 @@ pub fn test_chitchat_id(port: u16) -> ChitchatId {
     }
 }
 
-/// Finds a random available TCP port.
-///
-/// We keep a process-wide memory of used ports, otherwise multiple calls to
-/// this function might return the same port, introducing an annoying race
-/// condition. This works as long as this function is kept private and all tests
-/// in this file are executed in the same process (this is the case with `cargo
-/// test` but not `nextest`).
-fn find_available_tcp_port() -> anyhow::Result<u16> {
-    static USED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
-    let socket: SocketAddr = ([127, 0, 0, 1], 0u16).into();
-    let listener = TcpListener::bind(socket)?;
-    let port = listener.local_addr()?.port();
-    {
-        let mut used_ports_guard = USED_PORTS
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-            .unwrap();
-        if !used_ports_guard.contains(&port) {
-            used_ports_guard.insert(port);
-            return Ok(port);
-        }
-    }
-    info!(port=%port, "port already in use, look for another one");
-    find_available_tcp_port()
+/// Returns a unique address identifier for the in-memory transport.
+fn next_simulated_port() -> u16 {
+    static NEXT_PORT: AtomicU32 = AtomicU32::new(10_000);
+    NEXT_PORT
+        .fetch_add(1, Ordering::Relaxed)
+        .try_into()
+        .expect("simulation should not exhaust ports")
 }
 
 #[tokio::test]

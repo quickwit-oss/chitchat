@@ -14,7 +14,7 @@ use tokio::time;
 use tracing::{debug, warn};
 
 use crate::message::ChitchatEnvelope;
-use crate::transport::{Socket, Transport};
+use crate::transport::{RecvOutcome, Socket, Transport};
 use crate::{Chitchat, ChitchatConfig, ChitchatId};
 
 /// Number of nodes picked for random gossip.
@@ -243,7 +243,7 @@ impl Server {
         loop {
             tokio::select! {
                 result = self.transport.recv() => match result {
-                    Ok((from_addr, envelope)) => {
+                    Ok(RecvOutcome { from_addr, envelope, .. }) => {
                         let _ = self.handle_envelope(from_addr, envelope).await;
                     }
                     // Transient errors (e.g. ENOBUFS) are swallowed inside
@@ -507,9 +507,9 @@ mod tests {
             .await
             .unwrap();
         server.gossip(peer_addr).unwrap();
-        let (from, envelope) = timeout(peer_transport.recv()).await.unwrap();
-        assert_eq!(from, test_addr);
-        match envelope.message {
+        let recv_outcome = timeout(peer_transport.recv()).await.unwrap();
+        assert_eq!(recv_outcome.from_addr, test_addr);
+        match recv_outcome.envelope.message {
             ChitchatMessage::Syn { cluster_id, digest } => {
                 assert_eq!(cluster_id, "default-cluster");
                 assert_eq!(digest.node_digests.len(), 1);
@@ -553,9 +553,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (from1, envelope) = transport2.recv().await.unwrap();
-        assert_eq!(from1, addr1);
-        match envelope.message {
+        let recv_outcome = transport2.recv().await.unwrap();
+        assert_eq!(recv_outcome.from_addr, addr1);
+        match recv_outcome.envelope.message {
             ChitchatMessage::SynAck { .. } => (),
             message => panic!("unexpected message: {message:?}"),
         }
@@ -597,9 +597,12 @@ mod tests {
             .await
             .unwrap();
 
-        let (_from, envelope) = timeout(initiator_transport.recv()).await.unwrap();
-        assert_eq!(envelope.version, ProtocolVersion::V0);
-        assert!(matches!(envelope.message, ChitchatMessage::SynAck { .. }));
+        let recv_outcome = timeout(initiator_transport.recv()).await.unwrap();
+        assert_eq!(recv_outcome.envelope.version, ProtocolVersion::V0);
+        assert!(matches!(
+            recv_outcome.envelope.message,
+            ChitchatMessage::SynAck { .. }
+        ));
     }
 
     #[tokio::test]
@@ -632,8 +635,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (_from_addr, envelope) = timeout(outsider_transport.recv()).await.unwrap();
-        match envelope.message {
+        let recv_outcome = timeout(outsider_transport.recv()).await.unwrap();
+        match recv_outcome.envelope.message {
             ChitchatMessage::BadCluster => (),
             message => panic!("unexpected message: {message:?}"),
         }
@@ -653,10 +656,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (from, envelope) = timeout(seed_transport.recv()).await.unwrap();
-        assert_eq!(from, client_addr);
+        let recv_outcome = timeout(seed_transport.recv()).await.unwrap();
+        assert_eq!(recv_outcome.from_addr, client_addr);
 
-        match envelope.message {
+        match recv_outcome.envelope.message {
             ChitchatMessage::Syn { .. } => (),
             message => panic!("unexpected message: {message:?}"),
         }
@@ -703,7 +706,7 @@ mod tests {
         assert_eq!(heartbeat, Heartbeat(2));
 
         // Wait for syn, with updated heartbeat
-        let (_, syn_envelope) = timeout(test_transport.recv()).await.unwrap();
+        let syn_envelope = timeout(test_transport.recv()).await.unwrap().envelope;
 
         // Reply.
         let syn_ack = test_chitchat.process_message(syn_envelope.message).unwrap();
@@ -720,7 +723,7 @@ mod tests {
 
         // Wait for delta to ensure heartbeat key was incremented.
         let delta = loop {
-            let (_, envelope) = timeout(test_transport.recv()).await.unwrap();
+            let envelope = timeout(test_transport.recv()).await.unwrap().envelope;
             if let ChitchatMessage::Ack { delta } = envelope.message {
                 break delta;
             };
