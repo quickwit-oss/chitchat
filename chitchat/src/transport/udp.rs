@@ -7,7 +7,7 @@ use tracing::warn;
 
 use crate::MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
 use crate::message::ChitchatEnvelope;
-use crate::transport::{Socket, Transport};
+use crate::transport::{RecvOutcome, SendOutcome, Socket, Transport};
 
 pub struct UdpTransport;
 
@@ -51,19 +51,25 @@ fn is_transient_io_error(err: &io::Error) -> bool {
 
 #[async_trait]
 impl Socket for UdpSocket {
+    fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+        self.socket
+            .local_addr()
+            .context("failed to get UDP socket address")
+    }
+
     async fn send(
         &mut self,
         to_addr: SocketAddr,
         envelope: ChitchatEnvelope,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<SendOutcome> {
         self.buf_send.clear();
         envelope.serialize(&mut self.buf_send);
-        self.send_bytes(to_addr, &self.buf_send).await?;
-        Ok(())
+        let num_bytes_sent = self.send_bytes(to_addr, &self.buf_send).await?;
+        Ok(SendOutcome { num_bytes_sent })
     }
 
     /// Recv needs to be cancellable.
-    async fn recv(&mut self) -> anyhow::Result<(SocketAddr, ChitchatEnvelope)> {
+    async fn recv(&mut self) -> anyhow::Result<RecvOutcome> {
         loop {
             if let Some(envelope) = self.receive_one().await? {
                 return Ok(envelope);
@@ -73,22 +79,27 @@ impl Socket for UdpSocket {
 }
 
 impl UdpSocket {
-    async fn receive_one(&mut self) -> anyhow::Result<Option<(SocketAddr, ChitchatEnvelope)>> {
-        let (len, from_addr) = match self.socket.recv_from(&mut self.buf_recv[..]).await {
-            Ok(result) => result,
-            Err(err) if is_transient_io_error(&err) => {
-                warn!(error=%err, "transient UDP recv error");
-                return Ok(None);
-            }
-            Err(err) => {
-                return Err(err).context("fatal UDP recv error");
-            }
-        };
-        let mut buf = &self.buf_recv[..len];
+    async fn receive_one(&mut self) -> anyhow::Result<Option<RecvOutcome>> {
+        let (num_bytes_received, from_addr) =
+            match self.socket.recv_from(&mut self.buf_recv[..]).await {
+                Ok(result) => result,
+                Err(err) if is_transient_io_error(&err) => {
+                    warn!(error=%err, "transient UDP recv error");
+                    return Ok(None);
+                }
+                Err(err) => {
+                    return Err(err).context("fatal UDP recv error");
+                }
+            };
+        let mut buf = &self.buf_recv[..num_bytes_received];
         match ChitchatEnvelope::deserialize(&mut buf) {
-            Ok(envelope) => Ok(Some((from_addr, envelope))),
+            Ok(envelope) => Ok(Some(RecvOutcome {
+                from_addr,
+                envelope,
+                num_bytes_received,
+            })),
             Err(err) => {
-                warn!(payload_len=len, from=%from_addr, err=%err, "invalid-chitchat-payload");
+                warn!(payload_len=num_bytes_received, from=%from_addr, err=%err, "invalid-chitchat-payload");
                 Ok(None)
             }
         }
@@ -98,11 +109,12 @@ impl UdpSocket {
         &self,
         to_addr: SocketAddr,
         payload: &[u8],
-    ) -> anyhow::Result<()> {
-        self.socket
+    ) -> anyhow::Result<usize> {
+        let num_bytes = self
+            .socket
             .send_to(payload, to_addr)
             .await
             .context("failed to send chitchat message to peer")?;
-        Ok(())
+        Ok(num_bytes)
     }
 }
