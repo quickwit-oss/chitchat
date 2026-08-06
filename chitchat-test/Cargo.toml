@@ -8,7 +8,7 @@ rust-version = "1.86"
 
 [dependencies]
 anyhow = "1"
-chitchat = { version = "0.12.0", path = "../chitchat" }
+chitchat = { version = "0.13.0", path = "../chitchat" }
 cool-id-generator = "1"
 poem = "3.1"
 poem-openapi = { version = "5.1", features = ["swagger-ui"] }
