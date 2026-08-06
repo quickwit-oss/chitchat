@@ -133,7 +133,7 @@ impl ChannelTransport {
             let _ = envelope_tx.try_send(RecvOutcome {
                 from_addr,
                 envelope,
-                num_bytes_received: num_bytes_sent
+                num_bytes_received: num_bytes_sent,
             });
         }
         Ok(send_outcome)
