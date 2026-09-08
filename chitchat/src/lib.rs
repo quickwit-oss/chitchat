@@ -150,7 +150,12 @@ impl Chitchat {
 
         match msg {
             ChitchatMessage::Syn { cluster_id, digest } => {
-                if cluster_id != self.cluster_id() {
+                if cluster_id != self.cluster_id()
+                    && !self
+                        .config
+                        .additional_acceptable_cluster_ids
+                        .contains(&cluster_id)
+                {
                     warn!(
                         our_cluster_id=%self.cluster_id(),
                         their_cluster_id=%cluster_id,
@@ -572,6 +577,27 @@ mod tests {
         assert!(peer_node.process_message(ack_message).is_none());
     }
 
+    #[test]
+    fn test_process_syn_accepts_additional_cluster_id() {
+        let mut config = ChitchatConfig::for_test(10_001);
+        config.cluster_id = "new-cluster".to_string();
+        config.additional_acceptable_cluster_ids = vec!["old-cluster".to_string()];
+        let (_seed_addrs_rx, seed_addrs_tx) = tokio::sync::watch::channel(Default::default());
+        let mut node = Chitchat::with_chitchat_id_and_seeds(config, seed_addrs_tx, Vec::new());
+
+        let response = node.process_message(ChitchatMessage::Syn {
+            cluster_id: "old-cluster".to_string(),
+            digest: Digest::default(),
+        });
+        assert!(matches!(response, Some(ChitchatMessage::SynAck { .. })));
+
+        let response = node.process_message(ChitchatMessage::Syn {
+            cluster_id: "unrelated-cluster".to_string(),
+            digest: Digest::default(),
+        });
+        assert!(matches!(response, Some(ChitchatMessage::BadCluster)));
+    }
+
     /// Checks that all of the non-deleted key-values pairs are the same in
     /// lhs and rhs.
     ///
@@ -614,6 +640,7 @@ mod tests {
         let config = ChitchatConfig {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
+            additional_acceptable_cluster_ids: Vec::new(),
             gossip_interval: Duration::from_millis(100),
             listen_addr: chitchat_id.gossip_advertise_addr,
             seed_nodes: seeds.to_vec(),
@@ -824,6 +851,7 @@ mod tests {
         let make_config = |chitchat_id: &ChitchatId| ChitchatConfig {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
+            additional_acceptable_cluster_ids: Vec::new(),
             gossip_interval: Duration::from_millis(100),
             listen_addr: chitchat_id.gossip_advertise_addr,
             seed_nodes: vec![chitchat_ids[0].gossip_advertise_addr.to_string()],
