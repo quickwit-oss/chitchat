@@ -23,7 +23,7 @@ async fn spawn_one(chitchat_id: u16, transport: &dyn Transport) -> ChitchatHandl
     let config = ChitchatConfig {
         chitchat_id,
         cluster_id: "default-cluster".to_string(),
-        additional_acceptable_cluster_ids: Vec::new(),
+        extra_cluster_ids: Vec::new(),
         gossip_interval,
         listen_addr,
         seed_nodes: vec!["127.0.0.1:10000".to_string()],
