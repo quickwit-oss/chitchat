@@ -17,7 +17,7 @@ pub struct ChitchatConfig {
     pub chitchat_id: ChitchatId,
     pub cluster_id: String,
     /// Additional cluster IDs accepted during a gossip handshake.
-    pub additional_acceptable_cluster_ids: Vec<String>,
+    pub extra_cluster_ids: Vec<String>,
     pub gossip_interval: Duration,
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
@@ -53,7 +53,7 @@ impl ChitchatConfig {
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
-            additional_acceptable_cluster_ids: Vec::new(),
+            extra_cluster_ids: Vec::new(),
             gossip_interval: Duration::from_millis(50),
             listen_addr,
             seed_nodes: Vec::new(),
@@ -74,7 +74,7 @@ impl Default for ChitchatConfig {
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
-            additional_acceptable_cluster_ids: Vec::new(),
+            extra_cluster_ids: Vec::new(),
             gossip_interval: Duration::from_millis(1_000),
             listen_addr,
             seed_nodes: Vec::new(),

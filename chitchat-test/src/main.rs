@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let chitchat_id = ChitchatId::new(node_id, generation, public_addr);
     let config = ChitchatConfig {
         cluster_id: "testing".to_string(),
-        additional_acceptable_cluster_ids: Vec::new(),
+        extra_cluster_ids: Vec::new(),
         chitchat_id,
         gossip_interval: Duration::from_millis(opt.interval),
         listen_addr: opt.listen_addr,
