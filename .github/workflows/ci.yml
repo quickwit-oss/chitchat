@@ -21,14 +21,14 @@ jobs:
     name: Check (fmt, dependency check, clippy, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install rustup
         run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain none -y
       - name: Setup stable Rust Toolchain
         run: rustup show
       - name: Setup nightly Rust Toolchain (for rustfmt)
         run: rustup toolchain install nightly
-      - uses: actions/cache@v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo
@@ -36,11 +36,11 @@ jobs:
           key: ${{ runner.os }}-cargolint-${{ hashFiles('Cargo.lock') }}
       - name: rustfmt
         run: cargo +nightly fmt --all -- --check
-      - uses: actions-rs/clippy-check@v1
+      - uses: actions-rs/clippy-check@b5b5f21f4797c02da247df37026fcd0a5024aa4d # v1.0.7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --workspace --tests
-      - uses: actions-rs/cargo@v1
+      - uses: actions-rs/cargo@ae10961054e4aa8b4aa7dffede299aaf087aa33b # v1.0.1
         name: cargo test
         with:
           command: test
@@ -50,12 +50,12 @@ jobs:
     name: Check Datadog third-party license file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo tools
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin
           key: ${{ runner.os }}-cargo-tools-${{ hashFiles('**/Cargo.lock') }}
