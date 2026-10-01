@@ -1,5 +1,6 @@
 #![allow(clippy::derive_partial_eq_without_eq)]
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ pub struct ChitchatConfig {
     pub chitchat_id: ChitchatId,
     pub cluster_id: String,
     /// Additional cluster IDs accepted during a gossip handshake.
-    pub extra_cluster_ids: Vec<String>,
+    pub extra_cluster_ids: HashSet<String>,
     pub gossip_interval: Duration,
     pub listen_addr: SocketAddr,
     pub seed_nodes: Vec<String>,
@@ -53,7 +54,7 @@ impl ChitchatConfig {
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
-            extra_cluster_ids: Vec::new(),
+            extra_cluster_ids: HashSet::new(),
             gossip_interval: Duration::from_millis(50),
             listen_addr,
             seed_nodes: Vec::new(),
@@ -74,7 +75,7 @@ impl Default for ChitchatConfig {
         Self {
             chitchat_id,
             cluster_id: "default-cluster".to_string(),
-            extra_cluster_ids: Vec::new(),
+            extra_cluster_ids: HashSet::new(),
             gossip_interval: Duration::from_millis(1_000),
             listen_addr,
             seed_nodes: Vec::new(),

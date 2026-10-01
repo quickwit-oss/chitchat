@@ -423,7 +423,7 @@ impl Simulator {
         let config = ChitchatConfig {
             chitchat_id: chitchat_id.clone(),
             cluster_id: "default-cluster".to_string(),
-            extra_cluster_ids: Vec::new(),
+            extra_cluster_ids: HashSet::new(),
             gossip_interval: self.gossip_interval,
             listen_addr: chitchat_id.gossip_advertise_addr,
             seed_nodes,
