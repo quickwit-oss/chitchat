@@ -431,8 +431,11 @@ impl NodeState {
         &self,
         floor_version: u64,
     ) -> impl Iterator<Item = (&str, &VersionedValue)> {
-        // TODO optimize by checking the max version.
-        self.key_values_including_deleted()
+        let key_values_to_scan =
+            (self.max_version > floor_version).then(|| self.key_values_including_deleted());
+        key_values_to_scan
+            .into_iter()
+            .flatten()
             .filter(move |(_key, versioned_value)| versioned_value.version > floor_version)
     }
 
@@ -891,15 +894,9 @@ mod tests {
         {
             let node = ChitchatId::for_local_test(10_001);
             let mut node_state = NodeState::for_test();
-            node_state
-                .key_values
-                .insert("key_a".to_string(), VersionedValue::for_test("value_a", 3));
-            node_state
-                .key_values
-                .insert("key_b".to_string(), VersionedValue::for_test("value_b", 2));
-            node_state
-                .key_values
-                .insert("key_c".to_string(), VersionedValue::for_test("value_c", 1));
+            node_state.set_with_version("key_c", "value_c", 1);
+            node_state.set_with_version("key_b", "value_b", 2);
+            node_state.set_with_version("key_a", "value_a", 3);
 
             let stale_node = StaleNode {
                 chitchat_id: &node,
@@ -914,6 +911,20 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn test_node_state_stale_key_values_returns_empty_at_or_above_max_version() {
+        let mut node_state = NodeState::for_test();
+        node_state.set_with_version("key_a", "value_a", 1);
+        node_state.set_with_version("key_b", "value_b", 2);
+
+        assert_eq!(
+            node_state.stale_key_values(1).collect::<Vec<_>>(),
+            vec![("key_b", &VersionedValue::for_test("value_b", 2))]
+        );
+        assert!(node_state.stale_key_values(2).next().is_none());
+        assert!(node_state.stale_key_values(3).next().is_none());
     }
 
     #[test]
