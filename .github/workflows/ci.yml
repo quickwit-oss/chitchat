@@ -19,7 +19,7 @@ env:
 jobs:
   check:
     name: Check (fmt, dependency check, clippy, test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Install rustup
@@ -48,7 +48,7 @@ jobs:
 
   thirdparty-license:
     name: Check Datadog third-party license file
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
