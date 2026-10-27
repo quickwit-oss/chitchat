@@ -28,7 +28,7 @@ tokio = { version = "1.53", features = [
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 assert-json-diff = "2"
